@@ -34,6 +34,7 @@ func AuthMiddleware(cfg *config.JWTConfig) fiber.Handler {
 		c.Locals("userID", claims.UserID)
 		c.Locals("email", claims.Email)
 		c.Locals("role", claims.Role)
+		c.Locals("username", claims.Email) // Use email as username fallback
 
 		return c.Next()
 	}
@@ -41,7 +42,12 @@ func AuthMiddleware(cfg *config.JWTConfig) fiber.Handler {
 
 func RoleMiddleware(allowedRoles ...string) fiber.Handler {
 	return func(c fiber.Ctx) error {
-		role := c.Locals("role").(string)
+		role, ok := c.Locals("role").(string)
+		if !ok {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"error": "role not found in context",
+			})
+		}
 
 		for _, allowedRole := range allowedRoles {
 			if role == allowedRole {
