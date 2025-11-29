@@ -1,0 +1,9 @@
+.git
+.gitignore
+README.md
+.env
+bin/
+*.log
+.vscode/
+.idea/
+internal/database/db/
