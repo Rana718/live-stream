@@ -114,3 +114,59 @@ func (s *Service) ValidateStreamKey(ctx context.Context, streamKey string) (*db.
 	}
 	return &stream, nil
 }
+
+// StartStreamByKey starts a stream using its stream key (called by RTMP auth callback)
+func (s *Service) StartStreamByKey(ctx context.Context, streamKey string) (*db.Stream, error) {
+	fmt.Printf("StartStreamByKey called with key: %s\n", streamKey)
+
+	// Get stream by key first
+	stream, err := s.queries.GetStreamByKey(ctx, streamKey)
+	if err != nil {
+		fmt.Printf("GetStreamByKey error: %v\n", err)
+		return nil, fmt.Errorf("invalid stream key: %v", err)
+	}
+
+	fmt.Printf("Found stream: ID=%v, Title=%s\n", stream.ID, stream.Title)
+
+	// Start the stream (update status to live)
+	updatedStream, err := s.queries.StartStream(ctx, stream.ID)
+	if err != nil {
+		fmt.Printf("StartStream error: %v\n", err)
+		return nil, err
+	}
+
+	fmt.Printf("Stream started successfully: ID=%v, Status=%v\n", updatedStream.ID, updatedStream.Status)
+
+	s.producer.PublishEvent(ctx, uuid.UUID(updatedStream.ID.Bytes).String(), map[string]interface{}{
+		"event":      "stream_started",
+		"stream_id":  uuid.UUID(updatedStream.ID.Bytes).String(),
+		"stream_key": streamKey,
+		"timestamp":  time.Now(),
+	})
+
+	return &updatedStream, nil
+}
+
+// EndStreamByKey ends a stream using its stream key (called by RTMP done callback)
+func (s *Service) EndStreamByKey(ctx context.Context, streamKey string) (*db.Stream, error) {
+	// Get stream by key first
+	stream, err := s.queries.GetStreamByKey(ctx, streamKey)
+	if err != nil {
+		return nil, fmt.Errorf("invalid stream key")
+	}
+
+	// End the stream (update status to ended)
+	updatedStream, err := s.queries.EndStream(ctx, stream.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	s.producer.PublishEvent(ctx, uuid.UUID(updatedStream.ID.Bytes).String(), map[string]interface{}{
+		"event":      "stream_ended",
+		"stream_id":  uuid.UUID(updatedStream.ID.Bytes).String(),
+		"stream_key": streamKey,
+		"timestamp":  time.Now(),
+	})
+
+	return &updatedStream, nil
+}

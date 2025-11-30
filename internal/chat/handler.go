@@ -2,23 +2,24 @@ package chat
 
 import (
 	"encoding/json"
+	"live-platform/internal/config"
+	"live-platform/internal/utils"
 	"log"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/adaptor"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
-	"github.com/valyala/fasthttp"
-	"github.com/valyala/fasthttp/fasthttpadaptor"
 )
 
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		return true
+		return true // Allow all origins for development
 	},
 }
 
@@ -43,6 +44,7 @@ type Message struct {
 	UserID    string      `json:"user_id"`
 	Username  string      `json:"username"`
 	Message   string      `json:"message"`
+	Content   string      `json:"content,omitempty"`
 	Type      string      `json:"type"`
 	Timestamp time.Time   `json:"timestamp"`
 	Data      interface{} `json:"data,omitempty"`
@@ -125,53 +127,71 @@ func (h *Hub) Run() {
 }
 
 type Handler struct {
-	hub *Hub
+	hub    *Hub
+	jwtCfg *config.JWTConfig
 }
 
-func NewHandler(hub *Hub) *Handler {
-	return &Handler{hub: hub}
+func NewHandler(hub *Hub, jwtCfg *config.JWTConfig) *Handler {
+	return &Handler{hub: hub, jwtCfg: jwtCfg}
 }
 
 func (h *Handler) HandleWebSocket(c fiber.Ctx) error {
 	streamID := c.Params("stream_id")
-	userID := c.Locals("userID").(uuid.UUID)
-	
-	// Get username from context or use userID as fallback
-	username := userID.String()
-	if uname, ok := c.Locals("username").(string); ok {
-		username = uname
+
+	// Get token from query parameter for WebSocket connections
+	token := c.Query("token")
+	if token == "" {
+		log.Printf("WebSocket: No token provided")
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "token required"})
 	}
 
-	// Convert Fiber context to fasthttp context
-	fctx := c.Context()
-	
-	// Create HTTP handler for WebSocket upgrade
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Validate JWT token
+	claims, err := utils.ValidateToken(token, h.jwtCfg.AccessSecret)
+	if err != nil {
+		log.Printf("WebSocket: Invalid token: %v", err)
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid token"})
+	}
+
+	userID := claims.UserID
+	username := claims.Email
+	if username == "" {
+		username = userID.String()
+	}
+
+	log.Printf("WebSocket: Authenticated user %s for stream %s", username, streamID)
+
+	// Create a custom HTTP handler that upgrades to WebSocket
+	wsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log.Printf("WebSocket upgrade error: %v", err)
 			return
 		}
 
-		client := &Client{
-			conn:     conn,
-			streamID: streamID,
-			userID:   userID.String(),
-			username: username,
-			send:     make(chan []byte, 256),
-		}
-
-		h.hub.register <- client
-
-		// Start goroutines for reading and writing
-		go h.writePump(client)
-		go h.readPump(client)
+		// Handle the WebSocket connection
+		h.handleWSConnection(conn, streamID, userID.String(), username)
 	})
 
-	// Adapt and call the handler
-	fasthttpadaptor.NewFastHTTPHandler(handler)(fctx.(*fasthttp.RequestCtx))
-	
-	return nil
+	// Use Fiber's adaptor to convert and handle the HTTP request
+	return adaptor.HTTPHandlerFunc(wsHandler)(c)
+}
+
+func (h *Handler) handleWSConnection(conn *websocket.Conn, streamID, userID, username string) {
+	client := &Client{
+		conn:     conn,
+		streamID: streamID,
+		userID:   userID,
+		username: username,
+		send:     make(chan []byte, 256),
+	}
+
+	h.hub.register <- client
+
+	// Start write pump in a goroutine
+	go h.writePump(client)
+
+	// Read pump runs in the current goroutine (blocks until connection closes)
+	h.readPump(client)
 }
 
 func (h *Handler) readPump(client *Client) {
@@ -181,8 +201,7 @@ func (h *Handler) readPump(client *Client) {
 	}()
 
 	for {
-		var msg Message
-		err := client.conn.ReadJSON(&msg)
+		_, msgBytes, err := client.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("WebSocket error: %v", err)
@@ -190,10 +209,19 @@ func (h *Handler) readPump(client *Client) {
 			break
 		}
 
+		var msg Message
+		if err := json.Unmarshal(msgBytes, &msg); err != nil {
+			// Try to parse as simple content
+			msg = Message{Content: string(msgBytes)}
+		}
+
 		msg.StreamID = client.streamID
 		msg.UserID = client.userID
 		msg.Username = client.username
 		msg.Type = "message"
+		if msg.Message == "" {
+			msg.Message = msg.Content
+		}
 
 		h.hub.broadcast <- msg
 	}
