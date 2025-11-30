@@ -40,3 +40,12 @@ Thumbs.db
 
 # Generated files
 internal/database/db/
+
+# Air
+tmp/
+.air.toml.bak
+
+# Docs
+docs/docs.go
+docs/swagger.json
+docs/swagger.yaml

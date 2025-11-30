@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stream Test Player</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: white;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        h1 { margin-bottom: 20px; color: #00d4ff; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        input {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            background: #16213e;
+            color: white;
+            font-size: 14px;
+        }
+        button {
+            padding: 12px 24px;
+            background: #00d4ff;
+            color: #1a1a2e;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover { background: #00b8e6; }
+        
+        .video-container {
+            background: black;
+            border-radius: 12px;
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+        video {
+            width: 100%;
+            max-height: 600px;
+        }
+        
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .status.info { background: #16213e; }
+        .status.success { background: #0f5132; }
+        .status.error { background: #842029; }
+        
+        .info-box {
+            background: #16213e;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .info-box h3 { color: #00d4ff; margin-bottom: 10px; }
+        .info-box code {
+            background: #0d1117;
+            padding: 8px 12px;
+            border-radius: 4px;
+            display: block;
+            margin: 5px 0;
+            word-break: break-all;
+        }
+        
+        .quick-links {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+        .quick-links button {
+            background: #16213e;
+            color: #00d4ff;
+            font-size: 12px;
+            padding: 8px 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎬 Stream Test Player</h1>
+        
+        <div class="info-box">
+            <h3>How to use:</h3>
+            <p>Enter your stream key to watch the HLS stream:</p>
+            <code>Stream Key: 088a1c1a-24c1-4b2b-8fc5-99e106c9e7c7</code>
+            <p style="margin-top: 10px;">Or the full HLS URL:</p>
+            <code>http://localhost:8080/hls/{stream_key}.m3u8</code>
+        </div>
+        
+        <div class="input-group">
+            <input type="text" id="streamInput" placeholder="Enter stream key or full HLS URL">
+            <button onclick="loadStream()">▶ Play</button>
+        </div>
+        
+        <div class="quick-links">
+            <button onclick="loadStreamKey('088a1c1a-24c1-4b2b-8fc5-99e106c9e7c7')">
+                Load: 088a1c1a-24c1-4b2b-8fc5-99e106c9e7c7
+            </button>
+        </div>
+        
+        <div id="status" class="status info">Ready to play. Enter a stream key or URL above.</div>
+        
+        <div class="video-container">
+            <video id="video" controls autoplay muted></video>
+        </div>
+        
+        <div class="info-box">
+            <h3>Stream Info</h3>
+            <div id="streamInfo">No stream loaded</div>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const statusEl = document.getElementById('status');
+        const streamInfoEl = document.getElementById('streamInfo');
+        let hls = null;
+
+        function setStatus(message, type = 'info') {
+            statusEl.textContent = message;
+            statusEl.className = `status ${type}`;
+        }
+
+        function loadStreamKey(key) {
+            document.getElementById('streamInput').value = key;
+            loadStream();
+        }
+
+        function loadStream() {
+            const input = document.getElementById('streamInput').value.trim();
+            if (!input) {
+                setStatus('Please enter a stream key or URL', 'error');
+                return;
+            }
+
+            // Build HLS URL
+            let hlsUrl;
+            if (input.startsWith('http')) {
+                hlsUrl = input;
+            } else {
+                // Assume it's a stream key
+                hlsUrl = `http://localhost:8080/hls/${input}.m3u8`;
+            }
+
+            setStatus(`Loading: ${hlsUrl}...`, 'info');
+
+            // Destroy previous instance
+            if (hls) {
+                hls.destroy();
+                hls = null;
+            }
+
+            if (Hls.isSupported()) {
+                hls = new Hls({
+                    debug: false,
+                    enableWorker: true,
+                    lowLatencyMode: true,
+                    backBufferLength: 90
+                });
+
+                hls.loadSource(hlsUrl);
+                hls.attachMedia(video);
+
+                hls.on(Hls.Events.MANIFEST_PARSED, function(event, data) {
+                    setStatus(`✅ Stream loaded! ${data.levels.length} quality level(s) available`, 'success');
+                    video.play().catch(e => console.log('Autoplay blocked:', e));
+                    updateStreamInfo(hlsUrl, data);
+                });
+
+                hls.on(Hls.Events.ERROR, function(event, data) {
+                    console.error('HLS Error:', data);
+                    if (data.fatal) {
+                        switch (data.type) {
+                            case Hls.ErrorTypes.NETWORK_ERROR:
+                                setStatus(`❌ Network error - Stream may not exist or not be live. URL: ${hlsUrl}`, 'error');
+                                break;
+                            case Hls.ErrorTypes.MEDIA_ERROR:
+                                setStatus('❌ Media error - trying to recover...', 'error');
+                                hls.recoverMediaError();
+                                break;
+                            default:
+                                setStatus(`❌ Fatal error: ${data.details}`, 'error');
+                                hls.destroy();
+                                break;
+                        }
+                    }
+                });
+
+                hls.on(Hls.Events.FRAG_LOADED, function(event, data) {
+                    console.log('Fragment loaded:', data.frag.sn);
+                });
+
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Safari native HLS
+                video.src = hlsUrl;
+                video.addEventListener('loadedmetadata', function() {
+                    setStatus('✅ Stream loaded (native HLS)', 'success');
+                    video.play();
+                });
+                video.addEventListener('error', function(e) {
+                    setStatus(`❌ Error loading stream: ${e.message}`, 'error');
+                });
+            } else {
+                setStatus('❌ HLS is not supported in this browser', 'error');
+            }
+        }
+
+        function updateStreamInfo(url, data) {
+            const levels = data.levels.map((l, i) => 
+                `Level ${i}: ${l.width}x${l.height} @ ${Math.round(l.bitrate/1000)}kbps`
+            ).join('<br>');
+
+            streamInfoEl.innerHTML = `
+                <p><strong>URL:</strong> <code>${url}</code></p>
+                <p><strong>Levels:</strong></p>
+                <p style="margin-left: 20px; font-size: 12px;">${levels || 'Single quality'}</p>
+            `;
+        }
+
+        // Auto-load if there's a stream key in URL hash
+        if (window.location.hash) {
+            document.getElementById('streamInput').value = window.location.hash.slice(1);
+            setTimeout(loadStream, 500);
+        }
+    </script>
+</body>
+</html>

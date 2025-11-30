@@ -9,9 +9,10 @@ A complete Go Fiber v3 backend for a live class streaming platform with PostgreS
 - ✅ **Live Streaming**: RTMP ingest with HLS playback
 - ✅ **Stream Management**: Create, start, end, and monitor streams
 - ✅ **Video Recording**: Automatic recording storage in MinIO
-- ✅ **Real-time Chat**: Live chat during streams
+- ✅ **Real-time Chat**: WebSocket-based live chat during streams
 - ✅ **Event Streaming**: Kafka for async event processing
 - ✅ **Caching**: Redis for session management
+- ✅ **API Documentation**: Complete Swagger/OpenAPI documentation
 
 ## Tech Stack
 
@@ -21,6 +22,7 @@ A complete Go Fiber v3 backend for a live class streaming platform with PostgreS
 - **MinIO**: S3-compatible object storage
 - **Kafka**: Event streaming
 - **Nginx-RTMP**: Live streaming server
+- **Swagger**: API documentation
 - **Docker**: Containerized deployment
 
 ## Project Structure
@@ -80,7 +82,12 @@ make docker-up
 make sqlc
 ```
 
-5. **Build and run:**
+5. **Generate Swagger documentation:**
+```bash
+make swagger
+```
+
+6. **Build and run:**
 ```bash
 make build
 ./bin/server
@@ -92,6 +99,24 @@ make run
 ```
 
 The API will be available at `http://localhost:3000`
+
+## API Documentation
+
+Interactive Swagger documentation is available at:
+```
+http://localhost:3000/swagger/index.html
+```
+
+The Swagger UI provides:
+- Complete API endpoint documentation
+- Request/response schemas
+- Try-it-out functionality
+- Authentication support
+
+To regenerate Swagger docs after making changes:
+```bash
+make swagger
+```
 
 ## API Endpoints
 
@@ -333,6 +358,19 @@ make docker-build
 ```
 
 ## Development
+
+### Run with Hot-Reload (Recommended)
+
+Using Air for automatic reloading on code changes:
+
+```bash
+make dev
+```
+
+This will:
+- Watch for file changes
+- Automatically rebuild and restart the server
+- Show build errors in real-time
 
 ### Run Locally (without Docker)
 

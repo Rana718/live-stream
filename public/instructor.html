@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Instructor - Live Streaming</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; background: #1a1a1a; color: #fff; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        .header { background: #2d2d2d; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+        .header h1 { margin-bottom: 10px; }
+        .auth-section { background: #2d2d2d; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+        .auth-section input, .auth-section button { padding: 10px; margin: 5px; border-radius: 4px; border: none; }
+        .auth-section input { background: #3d3d3d; color: #fff; width: 200px; }
+        .auth-section button { background: #4CAF50; color: white; cursor: pointer; }
+        .auth-section button:hover { background: #45a049; }
+        .main-content { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
+        .video-section { background: #2d2d2d; padding: 20px; border-radius: 8px; }
+        .control-section { background: #2d2d2d; padding: 20px; border-radius: 8px; }
+        video { width: 100%; max-height: 500px; background: #000; border-radius: 8px; }
+        .controls { margin-top: 20px; }
+        .controls button { padding: 12px 24px; margin: 5px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
+        .btn-primary { background: #2196F3; color: white; }
+        .btn-success { background: #4CAF50; color: white; }
+        .btn-danger { background: #f44336; color: white; }
+        .btn-warning { background: #ff9800; color: white; }
+        .btn-primary:hover { background: #0b7dda; }
+        .btn-success:hover { background: #45a049; }
+        .btn-danger:hover { background: #da190b; }
+        .btn-warning:hover { background: #e68900; }
+        .btn-primary:disabled, .btn-success:disabled, .btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }
+        .stream-info { background: #3d3d3d; padding: 15px; border-radius: 4px; margin-top: 20px; }
+        .stream-info p { margin: 8px 0; }
+        .status { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: bold; }
+        .status.offline { background: #666; }
+        .status.live { background: #f44336; animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+        .form-group { margin: 15px 0; }
+        .form-group label { display: block; margin-bottom: 5px; }
+        .form-group input, .form-group textarea { width: 100%; padding: 10px; background: #3d3d3d; border: 1px solid #555; border-radius: 4px; color: #fff; }
+        .form-group textarea { resize: vertical; min-height: 80px; }
+        .hidden { display: none; }
+        .error { color: #f44336; margin-top: 10px; }
+        .success { color: #4CAF50; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎥 Instructor Dashboard</h1>
+            <p>Stream your class live to students</p>
+        </div>
+
+        <div class="auth-section" id="authSection">
+            <h3>Login</h3>
+            <input type="email" id="email" placeholder="Email" value="instructor@example.com">
+            <input type="password" id="password" placeholder="Password" value="password123">
+            <button onclick="login()">Login</button>
+            <button onclick="register()">Register</button>
+            <div id="authMessage"></div>
+        </div>
+
+        <div class="hidden" id="mainContent">
+            <div class="main-content">
+                <div class="video-section">
+                    <h2>Preview</h2>
+                    <video id="preview" autoplay muted playsinline></video>
+                    
+                    <div class="controls">
+                        <button class="btn-primary" onclick="selectWebcam()">📹 Webcam</button>
+                        <button class="btn-primary" onclick="selectScreen()">🖥️ Screen Share</button>
+                        <button class="btn-success" id="startBtn" onclick="startStream()" disabled>▶️ Start Stream</button>
+                        <button class="btn-danger" id="stopBtn" onclick="stopStream()" >⏹️ Stop Stream</button>
+                    </div>
+
+                    <div class="stream-info">
+                        <p><strong>Status:</strong> <span class="status offline" id="status">Offline</span></p>
+                        <p id="viewerCount" class="hidden"><strong>Viewers:</strong> <span id="viewers">0</span></p>
+                        <p id="streamUrl" class="hidden"><strong>Stream URL:</strong> <span id="url"></span></p>
+                    </div>
+                </div>
+
+                <div class="control-section">
+                    <h3>Create Stream</h3>
+                    <div class="form-group">
+                        <label>Title</label>
+                        <input type="text" id="title" placeholder="Introduction to Programming">
+                    </div>
+                    <div class="form-group">
+                        <label>Description</label>
+                        <textarea id="description" placeholder="Learn the basics of programming..."></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Scheduled Time</label>
+                        <input type="datetime-local" id="scheduledAt">
+                    </div>
+                    <button class="btn-success" onclick="createStream()">Create Stream</button>
+                    <div id="createMessage"></div>
+
+                    <div id="streamDetails" class="hidden" style="margin-top: 20px; padding: 15px; background: #3d3d3d; border-radius: 4px;">
+                        <h4>Stream Created!</h4>
+                        <p><strong>Stream Key:</strong> <code id="streamKey" style="background: #2d2d2d; padding: 4px 8px; border-radius: 4px;"></code></p>
+                        <p><strong>Stream ID:</strong> <code id="streamId" style="background: #2d2d2d; padding: 4px 8px; border-radius: 4px;"></code></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:3000/api';
+        const RTMP_URL = 'rtmp://localhost:1935/live';
+        let token = null;
+        let currentStream = null;
+        let mediaStream = null;
+        let mediaRecorder = null;
+        let ws = null;
+
+        async function login() {
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            
+            try {
+                const res = await fetch(`${API_URL}/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+                
+                if (!res.ok) {
+                    const text = await res.text();
+                    let errorMsg = 'Login failed';
+                    try {
+                        const data = JSON.parse(text);
+                        errorMsg = data.error || errorMsg;
+                    } catch (e) {
+                        errorMsg = `Server error: ${res.status} - ${text}`;
+                    }
+                    showMessage('authMessage', errorMsg, 'error');
+                    return;
+                }
+                
+                const data = await res.json();
+                token = data.access_token;
+                document.getElementById('authSection').classList.add('hidden');
+                document.getElementById('mainContent').classList.remove('hidden');
+                showMessage('authMessage', 'Login successful!', 'success');
+            } catch (err) {
+                showMessage('authMessage', 'Connection error: ' + err.message + '. Is server running?', 'error');
+            }
+        }
+
+        async function register() {
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            
+            try {
+                const res = await fetch(`${API_URL}/auth/register/instructor`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        email, 
+                        password,
+                        username: email.split('@')[0],
+                        full_name: 'Instructor'
+                    })
+                });
+                
+                const data = await res.json();
+                if (res.ok) {
+                    showMessage('authMessage', 'Registration successful! Please login.', 'success');
+                } else {
+                    showMessage('authMessage', data.error || 'Registration failed', 'error');
+                }
+            } catch (err) {
+                showMessage('authMessage', 'Connection error: ' + err.message, 'error');
+            }
+        }
+
+        async function createStream() {
+            const title = document.getElementById('title').value;
+            const description = document.getElementById('description').value;
+            const scheduledAt = document.getElementById('scheduledAt').value;
+
+            if (!title) {
+                showMessage('createMessage', 'Title is required', 'error');
+                return;
+            }
+
+            const scheduledTime = scheduledAt ? new Date(scheduledAt).toISOString() : new Date().toISOString();
+
+            try {
+                const res = await fetch(`${API_URL}/streams`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        title: title,
+                        description: description,
+                        scheduled_at: scheduledTime
+                    })
+                });
+
+                const data = await res.json();
+                if (res.ok) {
+                    currentStream = data;
+                    document.getElementById('streamKey').textContent = data.stream_key;
+                    document.getElementById('streamId').textContent = data.id;
+                    document.getElementById('streamDetails').classList.remove('hidden');
+                    document.getElementById('startBtn').disabled = false;
+                    showMessage('createMessage', 'Stream created successfully!', 'success');
+                } else {
+                    showMessage('createMessage', data.error || 'Failed to create stream', 'error');
+                }
+            } catch (err) {
+                showMessage('createMessage', 'Connection error: ' + err.message, 'error');
+            }
+        }
+
+        async function selectWebcam() {
+            try {
+                if (mediaStream) {
+                    mediaStream.getTracks().forEach(track => track.stop());
+                }
+                mediaStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: true, 
+                    audio: true 
+                });
+                document.getElementById('preview').srcObject = mediaStream;
+                showMessage('createMessage', 'Webcam selected', 'success');
+            } catch (err) {
+                showMessage('createMessage', 'Webcam access denied: ' + err.message, 'error');
+            }
+        }
+
+        async function selectScreen() {
+            try {
+                if (mediaStream) {
+                    mediaStream.getTracks().forEach(track => track.stop());
+                }
+                const screenStream = await navigator.mediaDevices.getDisplayMedia({ 
+                    video: { cursor: "always" }, 
+                    audio: true 
+                });
+                const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                mediaStream = new MediaStream([
+                    ...screenStream.getVideoTracks(),
+                    ...audioStream.getAudioTracks()
+                ]);
+                
+                document.getElementById('preview').srcObject = mediaStream;
+                showMessage('createMessage', 'Screen share selected', 'success');
+            } catch (err) {
+                showMessage('createMessage', 'Screen share denied: ' + err.message, 'error');
+            }
+        }
+
+        async function startStream() {
+            if (!currentStream || !mediaStream) {
+                alert('Please create a stream and select video source first');
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_URL}/streams/${currentStream.id}/start`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+
+                if (res.ok) {
+                    document.getElementById('status').textContent = 'Live';
+                    document.getElementById('status').className = 'status live';
+                    document.getElementById('startBtn').disabled = true;
+                    document.getElementById('stopBtn').disabled = false;
+                    document.getElementById('viewerCount').classList.remove('hidden');
+                    document.getElementById('streamUrl').classList.remove('hidden');
+                    document.getElementById('url').textContent = `http://localhost:8080/hls/${currentStream.stream_key}.m3u8`;
+                    
+                    // Start recording for RTMP simulation
+                    startRecording();
+                    
+                    showMessage('createMessage', 'Stream started! Students can now watch.', 'success');
+                } else {
+                    const data = await res.json();
+                    showMessage('createMessage', data.error || 'Failed to start stream', 'error');
+                }
+            } catch (err) {
+                showMessage('createMessage', 'Error: ' + err.message, 'error');
+            }
+        }
+
+        function startRecording() {
+            // Note: Browser can't directly push to RTMP. In production, use:
+            // 1. OBS with browser source
+            // 2. FFmpeg with canvas capture
+            // 3. WebRTC to media server that converts to RTMP
+            
+            mediaRecorder = new MediaRecorder(mediaStream, {
+                mimeType: 'video/webm;codecs=vp8,opus'
+            });
+            
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    // In production: send chunks to media server
+                    console.log('Recording chunk:', event.data.size, 'bytes');
+                }
+            };
+            
+            mediaRecorder.start(1000); // Capture every second
+        }
+
+        async function stopStream() {
+            if (!currentStream) return;
+
+            try {
+                const res = await fetch(`${API_URL}/streams/${currentStream.id}/end`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+
+                if (res.ok) {
+                    document.getElementById('status').textContent = 'Offline';
+                    document.getElementById('status').className = 'status offline';
+                    document.getElementById('startBtn').disabled = false;
+                    document.getElementById('stopBtn').disabled = true;
+                    
+                    if (mediaRecorder) {
+                        mediaRecorder.stop();
+                    }
+                    if (mediaStream) {
+                        mediaStream.getTracks().forEach(track => track.stop());
+                    }
+                    
+                    showMessage('createMessage', 'Stream ended', 'success');
+                } else {
+                    const data = await res.json();
+                    showMessage('createMessage', data.error || 'Failed to stop stream', 'error');
+                }
+            } catch (err) {
+                showMessage('createMessage', 'Error: ' + err.message, 'error');
+            }
+        }
+
+        function showMessage(elementId, message, type) {
+            const el = document.getElementById(elementId);
+            el.textContent = message;
+            el.className = type;
+            setTimeout(() => el.textContent = '', 5000);
+        }
+
+        // Set default scheduled time to now
+        const now = new Date();
+        now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+        document.getElementById('scheduledAt').value = now.toISOString().slice(0, 16);
+    </script>
+</body>
+</html>

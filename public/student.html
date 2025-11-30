@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Stream - Student View</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #0f0f0f;
+            color: #fff;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            display: grid;
+            grid-template-columns: 1fr 350px;
+            gap: 20px;
+        }
+        .video-section {
+            background: #1a1a1a;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .video-container {
+            position: relative;
+            width: 100%;
+            padding-top: 56.25%;
+            background: #000;
+        }
+        #video-player {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+        .stream-info {
+            padding: 20px;
+        }
+        .stream-title {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+        .stream-meta {
+            display: flex;
+            gap: 15px;
+            color: #aaa;
+            font-size: 14px;
+        }
+        .live-badge {
+            background: #f00;
+            color: #fff;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .chat-section {
+            background: #1a1a1a;
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 40px);
+            max-height: 700px;
+        }
+        .chat-header {
+            padding: 15px 20px;
+            border-bottom: 1px solid #333;
+            font-weight: 600;
+        }
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+        }
+        .chat-message {
+            margin-bottom: 12px;
+            animation: fadeIn 0.3s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .chat-message .username {
+            font-weight: 600;
+            color: #3ea6ff;
+            margin-right: 8px;
+        }
+        .chat-message .content {
+            color: #fff;
+            word-break: break-word;
+        }
+        .chat-message .time {
+            font-size: 11px;
+            color: #666;
+            margin-left: 8px;
+        }
+        .chat-input-container {
+            padding: 15px;
+            border-top: 1px solid #333;
+        }
+        .chat-input-wrapper {
+            display: flex;
+            gap: 10px;
+        }
+        #chat-input {
+            flex: 1;
+            background: #0f0f0f;
+            border: 1px solid #333;
+            border-radius: 20px;
+            padding: 10px 15px;
+            color: #fff;
+            font-size: 14px;
+            outline: none;
+        }
+        #chat-input:focus {
+            border-color: #3ea6ff;
+        }
+        #send-btn {
+            background: #3ea6ff;
+            border: none;
+            border-radius: 20px;
+            padding: 10px 20px;
+            color: #fff;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        #send-btn:hover {
+            background: #2d8cd4;
+        }
+        #send-btn:disabled {
+            background: #333;
+            cursor: not-allowed;
+        }
+        .connection-status {
+            font-size: 12px;
+            padding: 5px 15px;
+            text-align: center;
+        }
+        .connection-status.connected {
+            color: #4caf50;
+        }
+        .connection-status.disconnected {
+            color: #f44336;
+        }
+        .connection-status.connecting {
+            color: #ff9800;
+        }
+        .streams-list {
+            margin-bottom: 20px;
+        }
+        .streams-list h3 {
+            margin-bottom: 15px;
+            color: #fff;
+        }
+        .stream-card {
+            background: #1a1a1a;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: background 0.2s;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .stream-card:hover {
+            background: #252525;
+        }
+        .stream-card .title {
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+        .stream-card .instructor {
+            color: #aaa;
+            font-size: 13px;
+        }
+        .offline-message {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #666;
+        }
+        .offline-message svg {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 15px;
+            opacity: 0.5;
+        }
+        .login-section {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.9);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .login-form {
+            background: #1a1a1a;
+            padding: 40px;
+            border-radius: 12px;
+            width: 100%;
+            max-width: 400px;
+        }
+        .login-form h2 {
+            margin-bottom: 25px;
+            text-align: center;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #aaa;
+        }
+        .form-group input {
+            width: 100%;
+            background: #0f0f0f;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 12px 15px;
+            color: #fff;
+            font-size: 14px;
+            outline: none;
+        }
+        .form-group input:focus {
+            border-color: #3ea6ff;
+        }
+        .login-btn {
+            width: 100%;
+            background: #3ea6ff;
+            border: none;
+            border-radius: 8px;
+            padding: 12px;
+            color: #fff;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .login-btn:hover {
+            background: #2d8cd4;
+        }
+        .error-message {
+            color: #f44336;
+            font-size: 14px;
+            margin-top: 15px;
+            text-align: center;
+        }
+        .hidden {
+            display: none !important;
+        }
+        .latency-info {
+            font-size: 11px;
+            color: #666;
+            padding: 5px 15px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Login Section -->
+    <div id="login-section" class="login-section">
+        <div class="login-form">
+            <h2>🎓 Live Class</h2>
+            <div class="form-group">
+                <label>Email</label>
+                <input type="email" id="login-email" placeholder="student@example.com">
+            </div>
+            <div class="form-group">
+                <label>Password</label>
+                <input type="password" id="login-password" placeholder="Your password">
+            </div>
+            <button class="login-btn" onclick="login()">Sign In</button>
+            <div id="login-error" class="error-message hidden"></div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div id="main-content" class="container hidden">
+        <div class="video-section">
+            <div class="video-container">
+                <video id="video-player" controls></video>
+            </div>
+            <div class="stream-info">
+                <h1 id="stream-title" class="stream-title">Select a live stream</h1>
+                <div class="stream-meta">
+                    <span id="live-indicator" class="live-badge hidden">LIVE</span>
+                    <span id="instructor-name">-</span>
+                    <span id="viewer-count">0 viewers</span>
+                </div>
+            </div>
+            <div class="streams-list" style="padding: 20px;">
+                <h3>📺 Live Streams</h3>
+                <div id="streams-container">
+                    <p style="color: #666;">Loading streams...</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="chat-section">
+            <div class="chat-header">
+                💬 Live Chat
+                <span id="connection-status" class="connection-status disconnected">Disconnected</span>
+            </div>
+            <div id="chat-messages" class="chat-messages">
+                <div class="offline-message">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                    </svg>
+                    <p>Select a stream to join chat</p>
+                </div>
+            </div>
+            <div class="latency-info" id="latency-info"></div>
+            <div class="chat-input-container">
+                <div class="chat-input-wrapper">
+                    <input type="text" id="chat-input" placeholder="Type a message..." disabled>
+                    <button id="send-btn" onclick="sendMessage()" disabled>Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:3000/api';
+        const HLS_BASE = 'http://localhost:8080/hls';
+        const WS_BASE = 'ws://localhost:3000/api/chat/ws';
+        
+        let token = localStorage.getItem('token');
+        let currentUser = null;
+        let currentStreamId = null;
+        let hls = null;
+        let ws = null;
+        let reconnectAttempts = 0;
+        const MAX_RECONNECT_ATTEMPTS = 5;
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            if (token) {
+                validateToken();
+            }
+            
+            // Enter key sends message
+            document.getElementById('chat-input').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    sendMessage();
+                }
+            });
+        });
+
+        async function validateToken() {
+            try {
+                const res = await fetch(`${API_BASE}/auth/me`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (res.ok) {
+                    currentUser = await res.json();
+                    showMainContent();
+                    loadLiveStreams();
+                } else {
+                    logout();
+                }
+            } catch (err) {
+                console.error('Token validation failed:', err);
+                logout();
+            }
+        }
+
+        async function login() {
+            const email = document.getElementById('login-email').value;
+            const password = document.getElementById('login-password').value;
+            const errorEl = document.getElementById('login-error');
+            
+            if (!email || !password) {
+                errorEl.textContent = 'Please enter email and password';
+                errorEl.classList.remove('hidden');
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+                
+                const data = await res.json();
+                
+                if (res.ok) {
+                    token = data.access_token;
+                    localStorage.setItem('token', token);
+                    currentUser = data.user;
+                    showMainContent();
+                    loadLiveStreams();
+                } else {
+                    errorEl.textContent = data.error || 'Login failed';
+                    errorEl.classList.remove('hidden');
+                }
+            } catch (err) {
+                errorEl.textContent = 'Connection error';
+                errorEl.classList.remove('hidden');
+            }
+        }
+
+        function logout() {
+            token = null;
+            currentUser = null;
+            localStorage.removeItem('token');
+            document.getElementById('login-section').classList.remove('hidden');
+            document.getElementById('main-content').classList.add('hidden');
+            disconnectChat();
+        }
+
+        function showMainContent() {
+            document.getElementById('login-section').classList.add('hidden');
+            document.getElementById('main-content').classList.remove('hidden');
+        }
+
+        async function loadLiveStreams() {
+            try {
+                const res = await fetch(`${API_BASE}/streams/live`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                if (res.ok) {
+                    const streams = await res.json();
+                    renderStreams(streams);
+                }
+            } catch (err) {
+                console.error('Failed to load streams:', err);
+            }
+        }
+
+        function renderStreams(streams) {
+            const container = document.getElementById('streams-container');
+            
+            if (!streams || streams.length === 0) {
+                container.innerHTML = '<p style="color: #666;">No live streams at the moment</p>';
+                return;
+            }
+
+            container.innerHTML = streams.map(stream => `
+                <div class="stream-card" onclick="watchStream('${stream.id}', '${stream.stream_key}', '${escapeHtml(stream.title)}', '${escapeHtml(stream.instructor_name || 'Instructor')}')">
+                    <div>
+                        <div class="title">${escapeHtml(stream.title)}</div>
+                        <div class="instructor">${escapeHtml(stream.instructor_name || 'Instructor')}</div>
+                    </div>
+                    <span class="live-badge">LIVE</span>
+                </div>
+            `).join('');
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function watchStream(streamId, streamKey, title, instructor) {
+            currentStreamId = streamId;
+            
+            // Update UI
+            document.getElementById('stream-title').textContent = title;
+            document.getElementById('instructor-name').textContent = instructor;
+            document.getElementById('live-indicator').classList.remove('hidden');
+            
+            // Setup HLS player
+            const video = document.getElementById('video-player');
+            const hlsUrl = `${HLS_BASE}/${streamKey}.m3u8`;
+            
+            if (hls) {
+                hls.destroy();
+            }
+
+            if (Hls.isSupported()) {
+                hls = new Hls({
+                    // Stable live streaming configuration
+                    enableWorker: true,
+                    lowLatencyMode: false,          // Disable for stability
+                    
+                    // Buffering - prioritize stability
+                    liveSyncDurationCount: 3,       // Sync to 3 fragments behind live
+                    liveMaxLatencyDurationCount: 10, // Allow up to 10 fragments behind
+                    liveDurationInfinity: true,
+                    
+                    // Larger buffer for stability
+                    maxBufferLength: 30,            // 30 seconds buffer
+                    maxMaxBufferLength: 60,         // Max 60 seconds
+                    maxBufferSize: 60 * 1000 * 1000, // 60MB buffer
+                    maxBufferHole: 0.5,
+                    
+                    // Back buffer
+                    backBufferLength: 30,
+                    
+                    // Start settings - start from beginning of playlist
+                    startPosition: -1,
+                    
+                    // Loading retries - more forgiving
+                    levelLoadingMaxRetry: 6,
+                    levelLoadingRetryDelay: 500,
+                    fragLoadingMaxRetry: 6,
+                    fragLoadingRetryDelay: 500,
+                    manifestLoadingMaxRetry: 4,
+                    manifestLoadingRetryDelay: 500
+                });
+                hls.loadSource(hlsUrl);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                    video.play().catch(e => console.log('Autoplay prevented:', e));
+                });
+                hls.on(Hls.Events.ERROR, (event, data) => {
+                    // Only log fatal errors or important ones
+                    if (data.fatal) {
+                        console.error('HLS Fatal Error:', data);
+                        switch(data.type) {
+                            case Hls.ErrorTypes.NETWORK_ERROR:
+                                console.log('Network error, trying to recover...');
+                                hls.startLoad();
+                                break;
+                            case Hls.ErrorTypes.MEDIA_ERROR:
+                                console.log('Media error, trying to recover...');
+                                hls.recoverMediaError();
+                                break;
+                            default:
+                                hls.destroy();
+                                break;
+                        }
+                    }
+                    // Non-fatal errors like bufferStalledError, bufferSeekOverHole are normal
+                    // during live streaming and auto-recover - no need to log them
+                });
+                
+                // Display latency info
+                setInterval(() => {
+                    if (hls && hls.latency !== undefined) {
+                        const latency = hls.latency;
+                        document.getElementById('latency-info').textContent = `Latency: ${latency.toFixed(1)}s`;
+                    }
+                }, 1000);
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = hlsUrl;
+                video.addEventListener('loadedmetadata', () => {
+                    video.play().catch(e => console.log('Autoplay prevented:', e));
+                });
+            }
+
+            // Connect to chat
+            connectChat(streamId);
+            
+            // Enable chat input
+            document.getElementById('chat-input').disabled = false;
+            document.getElementById('send-btn').disabled = false;
+            document.getElementById('chat-messages').innerHTML = '';
+        }
+
+        function connectChat(streamId) {
+            disconnectChat();
+            
+            const statusEl = document.getElementById('connection-status');
+            statusEl.textContent = 'Connecting...';
+            statusEl.className = 'connection-status connecting';
+
+            // WebSocket connection with token as query parameter
+            ws = new WebSocket(`${WS_BASE}/${streamId}?token=${token}`);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                statusEl.textContent = 'Connected';
+                statusEl.className = 'connection-status connected';
+                reconnectAttempts = 0;
+                
+                // Add system message
+                addMessage({
+                    username: 'System',
+                    content: 'Connected to chat',
+                    is_system: true
+                });
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    addMessage(msg);
+                } catch (err) {
+                    console.error('Failed to parse message:', err);
+                }
+            };
+
+            ws.onclose = (event) => {
+                console.log('WebSocket closed:', event.code, event.reason);
+                statusEl.textContent = 'Disconnected';
+                statusEl.className = 'connection-status disconnected';
+                
+                // Try to reconnect if stream is still active
+                if (currentStreamId === streamId && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                    reconnectAttempts++;
+                    console.log(`Reconnecting... attempt ${reconnectAttempts}`);
+                    setTimeout(() => connectChat(streamId), 2000 * reconnectAttempts);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                statusEl.textContent = 'Error';
+                statusEl.className = 'connection-status disconnected';
+            };
+        }
+
+        function disconnectChat() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function sendMessage() {
+            const input = document.getElementById('chat-input');
+            const content = input.value.trim();
+            
+            if (!content || !ws || ws.readyState !== WebSocket.OPEN) {
+                return;
+            }
+
+            ws.send(JSON.stringify({
+                type: 'message',
+                content: content
+            }));
+            
+            input.value = '';
+        }
+
+        function addMessage(msg) {
+            const container = document.getElementById('chat-messages');
+            const messageEl = document.createElement('div');
+            messageEl.className = 'chat-message';
+            
+            const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            
+            if (msg.is_system) {
+                messageEl.innerHTML = `
+                    <span class="content" style="color: #888; font-style: italic;">${escapeHtml(msg.content)}</span>
+                    <span class="time">${time}</span>
+                `;
+            } else {
+                messageEl.innerHTML = `
+                    <span class="username">${escapeHtml(msg.username || msg.user_name || 'Anonymous')}</span>
+                    <span class="content">${escapeHtml(msg.content || msg.message)}</span>
+                    <span class="time">${time}</span>
+                `;
+            }
+            
+            container.appendChild(messageEl);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // Refresh streams every 30 seconds
+        setInterval(() => {
+            if (token) {
+                loadLiveStreams();
+            }
+        }, 30000);
+    </script>
+</body>
+</html>
