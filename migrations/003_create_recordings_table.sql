@@ -14,5 +14,3 @@ CREATE TABLE IF NOT EXISTS recordings (
 CREATE INDEX idx_recordings_stream ON recordings(stream_id);
 CREATE INDEX idx_recordings_status ON recordings(status);
 
--- +migrate Down
-DROP TABLE IF EXISTS recordings;

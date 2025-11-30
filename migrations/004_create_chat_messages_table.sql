@@ -11,5 +11,3 @@ CREATE INDEX idx_chat_stream ON chat_messages(stream_id);
 CREATE INDEX idx_chat_user ON chat_messages(user_id);
 CREATE INDEX idx_chat_created ON chat_messages(created_at);
 
--- +migrate Down
-DROP TABLE IF EXISTS chat_messages;

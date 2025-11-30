@@ -19,5 +19,4 @@ CREATE INDEX idx_streams_instructor ON streams(instructor_id);
 CREATE INDEX idx_streams_status ON streams(status);
 CREATE INDEX idx_streams_stream_key ON streams(stream_key);
 
--- +migrate Down
-DROP TABLE IF EXISTS streams;
+
