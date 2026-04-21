@@ -1,9 +1,12 @@
 .git
 .gitignore
-README.md
 .env
-bin/
 *.log
-.vscode/
+*.test
+bin/
+tmp/
+.air.toml
 .idea/
-internal/database/db/
+.vscode/
+node_modules/
+coverage.out
