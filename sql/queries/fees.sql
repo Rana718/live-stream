@@ -63,6 +63,9 @@ INSERT INTO fee_installments (student_fee_id, installment_number, amount, due_da
 VALUES ($1, $2, $3, $4)
 RETURNING *;
 
+-- name: GetInstallmentByID :one
+SELECT * FROM fee_installments WHERE id = $1 LIMIT 1;
+
 -- name: ListInstallmentsForFee :many
 SELECT * FROM fee_installments WHERE student_fee_id = $1 ORDER BY installment_number ASC;
 

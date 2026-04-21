@@ -170,20 +170,95 @@ func (s *Service) StartInstallmentCheckout(ctx context.Context, userID uuid.UUID
 	if s.rp == nil {
 		return nil, errors.New("razorpay not configured")
 	}
-	installments, err := s.q.ListInstallmentsForFee(ctx, utils.UUIDToPg(uuid.Nil)) // we need direct-by-id lookup
-	_ = installments
+	inst, err := s.q.GetInstallmentByID(ctx, utils.UUIDToPg(req.InstallmentID))
 	if err != nil {
-		// not fatal; we'll fetch via a different approach
+		return nil, fmt.Errorf("installment not found: %w", err)
+	}
+	if utils.TextFromPg(inst.Status) == "paid" {
+		return nil, errors.New("installment already paid")
 	}
 
-	// Fetch the installment to get amount + student_fee info
-	// Using ListInstallmentsForFee here would require knowing the student_fee_id.
-	// We'll use a direct SQL query via sqlc missing — fallback: read student_fees from installment's student_fee_id via a separate query.
-	// Simpler: the client sends us the installment_id; we look up from installments by student_fee then filter.
-	// For simplicity, we'll accept the client also passing student_fee_id. Let me adjust the request struct instead:
-	// Actually the installment_number is unique per student_fee, not global. We need a GetInstallmentByID query.
-	// Keep current request contract by reading installments via a dedicated query. For now return a TODO-friendly error.
-	return nil, errors.New("not implemented: add GetInstallmentByID query and re-run sqlc")
+	sf, err := s.q.GetStudentFeeByID(ctx, inst.StudentFeeID)
+	if err != nil {
+		return nil, err
+	}
+	if utils.UUIDFromPg(sf.UserID) != userID.String() {
+		return nil, errors.New("forbidden")
+	}
+
+	amount := utils.NumericToFloat(inst.Amount)
+	amountPaise := int64(amount * 100)
+	currency := utils.TextFromPg(sf.Currency)
+	if currency == "" {
+		currency = "INR"
+	}
+	receipt := fmt.Sprintf("inst_%s", utils.UUIDFromPg(inst.ID))
+	order, err := s.rp.CreateOrder(ctx, amountPaise, currency, receipt, map[string]string{
+		"user_id":        userID.String(),
+		"installment_id": utils.UUIDFromPg(inst.ID),
+		"student_fee_id": utils.UUIDFromPg(inst.StudentFeeID),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	meta, _ := json.Marshal(map[string]any{"receipt": receipt, "installment_number": inst.InstallmentNumber})
+	pay, err := s.q.CreatePayment(ctx, db.CreatePaymentParams{
+		UserID:          utils.UUIDToPg(userID),
+		SubscriptionID:  utils.UUIDPtrToPg(nil),
+		Amount:          utils.NumericFromFloat(amount),
+		Currency:        utils.TextToPg(currency),
+		Provider:        utils.TextToPg("razorpay"),
+		ProviderOrderID: utils.TextToPg(order.ID),
+		Status:          utils.TextToPg("created"),
+		Metadata:        meta,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &PayResponse{
+		PaymentID:     utils.UUIDFromPg(pay.ID),
+		RazorpayOrder: order.ID,
+		Amount:        amount,
+		Currency:      currency,
+		PublicKey:     publicKey,
+	}, nil
+}
+
+// VerifyInstallmentRequest carries Razorpay signature fields + the installment id.
+type VerifyInstallmentRequest struct {
+	InstallmentID     uuid.UUID `json:"installment_id" validate:"required"`
+	RazorpayOrderID   string    `json:"razorpay_order_id" validate:"required"`
+	RazorpayPaymentID string    `json:"razorpay_payment_id" validate:"required"`
+	RazorpaySignature string    `json:"razorpay_signature" validate:"required"`
+}
+
+// VerifyInstallmentPayment verifies a Razorpay signature and marks the installment paid.
+func (s *Service) VerifyInstallmentPayment(ctx context.Context, userID uuid.UUID, req VerifyInstallmentRequest) error {
+	if s.rp == nil {
+		return errors.New("razorpay not configured")
+	}
+	if !s.rp.VerifyPaymentSignature(req.RazorpayOrderID, req.RazorpayPaymentID, req.RazorpaySignature) {
+		return errors.New("invalid signature")
+	}
+	pay, err := s.q.GetPaymentByProviderOrderID(ctx, utils.TextToPg(req.RazorpayOrderID))
+	if err != nil {
+		return err
+	}
+	if utils.UUIDFromPg(pay.UserID) != userID.String() {
+		return errors.New("forbidden")
+	}
+	if _, err := s.q.UpdatePaymentStatus(ctx, db.UpdatePaymentStatusParams{
+		ID:                pay.ID,
+		Status:            utils.TextToPg("captured"),
+		ProviderPaymentID: utils.TextToPg(req.RazorpayPaymentID),
+		ProviderSignature: utils.TextToPg(req.RazorpaySignature),
+	}); err != nil {
+		return err
+	}
+	payID, _ := uuid.Parse(utils.UUIDFromPg(pay.ID))
+	return s.MarkInstallmentPaid(ctx, req.InstallmentID, payID)
 }
 
 // MarkPaid is invoked after Razorpay verifies a payment; sums up against the parent fee.

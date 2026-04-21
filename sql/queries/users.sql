@@ -25,3 +25,27 @@ DELETE FROM users WHERE id = $1;
 SELECT * FROM users
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2;
+
+-- name: AdminSetUserRole :one
+UPDATE users
+SET role = $2, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1
+RETURNING *;
+
+-- name: AdminSetUserActive :one
+UPDATE users
+SET is_active = $2, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1
+RETURNING *;
+
+-- name: AdminUpdateUser :one
+UPDATE users
+SET full_name = $2, email = $3, username = $4, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1
+RETURNING *;
+
+-- name: AdminResetUserPassword :one
+UPDATE users
+SET password_hash = $2, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1
+RETURNING *;

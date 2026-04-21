@@ -436,6 +436,8 @@ func main() {
 	fg.Get("/my", feesHandler.ListMine)
 	fg.Get("/pending", middleware.AdminOnly(), feesHandler.ListPending)
 	fg.Get("/installments/overdue", middleware.AdminOnly(), feesHandler.ListOverdueInstallments)
+	fg.Post("/installments/pay", feesHandler.PayInstallment)
+	fg.Post("/installments/verify", feesHandler.VerifyInstallment)
 	fg.Get("/revenue", middleware.AdminOnly(), feesHandler.Revenue)
 	fg.Get("/:id/installments", feesHandler.GetInstallments)
 
@@ -451,10 +453,16 @@ func main() {
 	adm.Get("/dashboard", adminHandler.Dashboard)
 	adm.Get("/users", adminHandler.ListUsers)
 	adm.Get("/users/export", adminHandler.ExportUsersCSV)
+	adm.Put("/users/:id", adminHandler.UpdateUser)
+	adm.Post("/users/:id/role", adminHandler.SetUserRole)
+	adm.Post("/users/:id/active", adminHandler.SetUserActive)
+	adm.Post("/users/:id/password", adminHandler.ResetUserPassword)
+	adm.Delete("/users/:id", adminHandler.DeleteUser)
 	adm.Get("/attendance/batches", adminHandler.BatchAttendance)
 	adm.Get("/courses/pending", adminHandler.ListPendingApproval)
 	adm.Post("/courses/:id/approve", adminHandler.ApproveCourse)
 	adm.Post("/courses/:id/reject", adminHandler.RejectCourse)
+	adm.Post("/notifications/send", notifHandler.AdminSend)
 
 	// RTMP callbacks
 	rtmpAuthHandler := func(c fiber.Ctx) error {

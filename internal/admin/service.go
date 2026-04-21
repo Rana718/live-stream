@@ -108,3 +108,61 @@ func (s *Service) ListPendingApproval(ctx context.Context, limit, offset int32) 
 		Limit: limit, Offset: offset,
 	})
 }
+
+// --- Admin user management ---
+
+type AdminUpdateUserRequest struct {
+	FullName string `json:"full_name"`
+	Email    string `json:"email"`
+	Username string `json:"username"`
+}
+
+func (s *Service) UpdateUser(ctx context.Context, id uuid.UUID, req AdminUpdateUserRequest) (*db.User, error) {
+	u, err := s.q.AdminUpdateUser(ctx, db.AdminUpdateUserParams{
+		ID:       utils.UUIDToPg(id),
+		FullName: utils.TextToPg(req.FullName),
+		Email:    req.Email,
+		Username: req.Username,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (s *Service) SetUserRole(ctx context.Context, id uuid.UUID, role string) (*db.User, error) {
+	u, err := s.q.AdminSetUserRole(ctx, db.AdminSetUserRoleParams{
+		ID:   utils.UUIDToPg(id),
+		Role: utils.TextToPg(role),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (s *Service) SetUserActive(ctx context.Context, id uuid.UUID, active bool) (*db.User, error) {
+	u, err := s.q.AdminSetUserActive(ctx, db.AdminSetUserActiveParams{
+		ID:       utils.UUIDToPg(id),
+		IsActive: utils.BoolToPg(active),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (s *Service) ResetUserPassword(ctx context.Context, id uuid.UUID, newHash string) (*db.User, error) {
+	u, err := s.q.AdminResetUserPassword(ctx, db.AdminResetUserPasswordParams{
+		ID:           utils.UUIDToPg(id),
+		PasswordHash: newHash,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (s *Service) DeleteUser(ctx context.Context, id uuid.UUID) error {
+	return s.q.DeleteUser(ctx, utils.UUIDToPg(id))
+}

@@ -236,6 +236,47 @@ func (h *Handler) GetInstallments(c fiber.Ctx) error {
 	return c.JSON(out)
 }
 
+// PayInstallment godoc
+// @Summary Start a Razorpay checkout for an installment
+// @Tags fees
+// @Security BearerAuth
+// @Router /fees/installments/pay [post]
+func (h *Handler) PayInstallment(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(uuid.UUID)
+	var req PayInstallmentRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
+	}
+	if err := middleware.ValidateStruct(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	resp, err := h.service.StartInstallmentCheckout(c.Context(), userID, req, "")
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(resp)
+}
+
+// VerifyInstallment godoc
+// @Summary Verify Razorpay signature and mark installment paid
+// @Tags fees
+// @Security BearerAuth
+// @Router /fees/installments/verify [post]
+func (h *Handler) VerifyInstallment(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(uuid.UUID)
+	var req VerifyInstallmentRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
+	}
+	if err := middleware.ValidateStruct(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := h.service.VerifyInstallmentPayment(c.Context(), userID, req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"status": "paid"})
+}
+
 // Revenue godoc
 // @Summary Revenue summary over a date range (admin dashboard)
 // @Tags fees

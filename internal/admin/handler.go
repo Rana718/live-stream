@@ -6,10 +6,12 @@ import (
 	"strconv"
 	"time"
 
+	"live-platform/internal/middleware"
 	"live-platform/internal/utils"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type Handler struct{ service *Service }
@@ -158,6 +160,133 @@ func (h *Handler) RejectCourse(c fiber.Ctx) error {
 		"approval_status":  utils.TextFromPg(course.ApprovalStatus),
 		"rejection_reason": utils.TextFromPg(course.RejectionReason),
 	})
+}
+
+// UpdateUser godoc
+// @Summary Admin: update user profile fields
+// @Tags admin
+// @Security BearerAuth
+// @Router /admin/users/{id} [put]
+func (h *Handler) UpdateUser(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	var req AdminUpdateUserRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
+	}
+	u, err := h.service.UpdateUser(c.Context(), id, req)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{
+		"id":        utils.UUIDFromPg(u.ID),
+		"email":     u.Email,
+		"username":  u.Username,
+		"full_name": utils.TextFromPg(u.FullName),
+		"role":      utils.TextFromPg(u.Role),
+	})
+}
+
+// SetUserRole godoc
+// @Summary Admin: change a user's role (student/instructor/admin)
+// @Tags admin
+// @Security BearerAuth
+// @Router /admin/users/{id}/role [post]
+func (h *Handler) SetUserRole(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	var req struct {
+		Role string `json:"role" validate:"required,oneof=student instructor admin"`
+	}
+	if err := c.Bind().JSON(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
+	}
+	if err := middleware.ValidateStruct(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	u, err := h.service.SetUserRole(c.Context(), id, req.Role)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{
+		"id":   utils.UUIDFromPg(u.ID),
+		"role": utils.TextFromPg(u.Role),
+	})
+}
+
+// SetUserActive godoc
+// @Summary Admin: activate / deactivate a user
+// @Tags admin
+// @Security BearerAuth
+// @Router /admin/users/{id}/active [post]
+func (h *Handler) SetUserActive(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	var req struct {
+		Active bool `json:"active"`
+	}
+	if err := c.Bind().JSON(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
+	}
+	u, err := h.service.SetUserActive(c.Context(), id, req.Active)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{
+		"id":        utils.UUIDFromPg(u.ID),
+		"is_active": utils.BoolFromPg(u.IsActive),
+	})
+}
+
+// ResetUserPassword godoc
+// @Summary Admin: reset a user's password
+// @Tags admin
+// @Security BearerAuth
+// @Router /admin/users/{id}/password [post]
+func (h *Handler) ResetUserPassword(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	var req struct {
+		NewPassword string `json:"new_password" validate:"required,min=8"`
+	}
+	if err := c.Bind().JSON(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
+	}
+	if err := middleware.ValidateStruct(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "hash failed"})
+	}
+	if _, err := h.service.ResetUserPassword(c.Context(), id, string(hash)); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"message": "password reset"})
+}
+
+// DeleteUser godoc
+// @Summary Admin: delete a user
+// @Tags admin
+// @Security BearerAuth
+// @Router /admin/users/{id} [delete]
+func (h *Handler) DeleteUser(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	if err := h.service.DeleteUser(c.Context(), id); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"message": "deleted"})
 }
 
 // ExportUsersCSV godoc

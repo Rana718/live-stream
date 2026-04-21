@@ -135,6 +135,33 @@ func (h *Handler) Delete(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": "deleted"})
 }
 
+// AdminSend godoc
+// @Summary Admin: push a notification to a specific user
+// @Tags notifications
+// @Security BearerAuth
+// @Router /admin/notifications/send [post]
+func (h *Handler) AdminSend(c fiber.Ctx) error {
+	var req struct {
+		UserID       uuid.UUID  `json:"user_id" validate:"required"`
+		Type         string     `json:"type" validate:"required"`
+		Title        string     `json:"title" validate:"required"`
+		Body         string     `json:"body"`
+		ResourceType string     `json:"resource_type"`
+		ResourceID   *uuid.UUID `json:"resource_id"`
+	}
+	if err := c.Bind().JSON(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
+	}
+	if err := middleware.ValidateStruct(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	n, err := h.service.Create(c.Context(), req.UserID, req.Type, req.Title, req.Body, req.ResourceType, req.ResourceID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.Status(fiber.StatusCreated).JSON(notifToMap(n))
+}
+
 // CreateAnnouncement godoc
 // @Summary Create a (possibly fan-out) announcement (instructor/admin)
 // @Tags announcements
