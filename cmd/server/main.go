@@ -152,13 +152,15 @@ func main() {
 	chapterHandler := chapters.NewHandler(chapters.NewService(pgPool))
 	topicHandler := topics.NewHandler(topics.NewService(pgPool))
 	lectureHandler := lectures.NewHandler(lectures.NewService(pgPool))
-	materialHandler := materials.NewHandler(materials.NewService(pgPool, minioClient, cfg.MinIO.MaterialsBucket))
+	_ = minioClient.EnsureBucket(ctx, cfg.MinIO.MaterialsBucket)
+	_ = minioClient.EnsureBucket(ctx, cfg.MinIO.DownloadsBucket)
+	materialHandler := materials.NewHandler(materials.NewService(pgPool, minioClient.Raw(), cfg.MinIO.MaterialsBucket))
 	testHandler := tests.NewHandler(tests.NewService(pgPool))
 	doubtHandler := doubts.NewHandler(doubts.NewService(pgPool, claude))
 	subsHandler := subscriptions.NewHandler(subscriptions.NewService(pgPool, razorpay), cfg.Razorpay.KeyID)
 	analyticsHandler := analytics.NewHandler(analytics.NewService(pgPool))
 	searchHandler := search.NewHandler(search.NewService(pgPool))
-	downloadHandler := downloads.NewHandler(downloads.NewService(pgPool, minioClient, cfg.MinIO.DownloadsBucket, cfg.App.BaseURL))
+	downloadHandler := downloads.NewHandler(downloads.NewService(pgPool, minioClient.Raw(), cfg.MinIO.DownloadsBucket, cfg.App.BaseURL))
 
 	attendanceHandler := attendance.NewHandler(attendance.NewService(pgPool))
 	assignmentHandler := assignments.NewHandler(assignments.NewService(pgPool))
@@ -206,7 +208,7 @@ func main() {
 		return c.JSON(fiber.Map{"status": "ok"})
 	})
 	app.Get("/health/deep", func(c fiber.Ctx) error {
-		report := database.CollectHealth(c.Context(), pgPool, redisClient, minioClient, cfg.Kafka.Brokers)
+		report := database.CollectHealth(c.Context(), pgPool, redisClient, minioClient.Raw(), cfg.Kafka.Brokers)
 		status := fiber.StatusOK
 		if report.Status != "ok" {
 			status = fiber.StatusServiceUnavailable
@@ -509,15 +511,15 @@ func main() {
 	// --- Graceful shutdown ---
 	go func() {
 		addr := ":" + cfg.Server.Port
-		var err error
+		listenCfg := fiber.ListenConfig{DisableStartupMessage: false}
 		if cfg.TLS.Enabled {
+			listenCfg.CertFile = cfg.TLS.CertFile
+			listenCfg.CertKeyFile = cfg.TLS.KeyFile
 			log.Info("listening with TLS", "addr", addr)
-			err = app.ListenTLS(addr, cfg.TLS.CertFile, cfg.TLS.KeyFile)
 		} else {
 			log.Info("listening", "addr", addr)
-			err = app.Listen(addr)
 		}
-		if err != nil {
+		if err := app.Listen(addr, listenCfg); err != nil {
 			log.Error("server exited", "err", err)
 			cancel()
 		}

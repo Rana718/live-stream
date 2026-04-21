@@ -97,7 +97,6 @@ func (s *Service) ListByInstructor(ctx context.Context, instructorID uuid.UUID, 
 func (s *Service) Search(ctx context.Context, q string, limit, offset int32) ([]db.Lecture, error) {
 	return s.q.SearchLectures(ctx, db.SearchLecturesParams{
 		PlaintoTsquery: q,
-		Column2:        q,
 		Limit:          limit,
 		Offset:         offset,
 	})

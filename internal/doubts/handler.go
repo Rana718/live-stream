@@ -24,7 +24,7 @@ func doubtToMap(d *db.Doubt) fiber.Map {
 		"topic_id":      utils.UUIDFromPg(d.TopicID),
 		"question_text": d.QuestionText,
 		"input_type":    utils.TextFromPg(d.InputType),
-		"voice_url":     utils.TextFromPg(d.VoiceURL),
+		"voice_url":     utils.TextFromPg(d.VoiceUrl),
 		"status":        utils.TextFromPg(d.Status),
 		"language":      utils.TextFromPg(d.Language),
 		"created_at":    d.CreatedAt,

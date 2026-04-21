@@ -96,19 +96,19 @@ func (s *Service) CreateAnnouncement(ctx context.Context, creatorID uuid.UUID, r
 	if req.FanOut {
 		if req.BatchID != nil {
 			_ = s.q.FanOutToBatchEnrollees(ctx, db.FanOutToBatchEnrolleesParams{
-				Column1:      "announcement",
-				Title:        req.Title,
-				Body:         utils.TextToPg(req.Body),
-				Column4:      a.ID,
-				BatchID:      utils.UUIDToPg(*req.BatchID),
+				Type:       "announcement",
+				Title:      req.Title,
+				Body:       utils.TextToPg(req.Body),
+				ResourceID: a.ID,
+				BatchID:    utils.UUIDToPg(*req.BatchID),
 			})
 		} else if req.CourseID != nil {
 			_ = s.q.FanOutToCourseEnrollees(ctx, db.FanOutToCourseEnrolleesParams{
-				Column1:  "announcement",
-				Title:    req.Title,
-				Body:     utils.TextToPg(req.Body),
-				Column4:  a.ID,
-				CourseID: utils.UUIDToPg(*req.CourseID),
+				Type:       "announcement",
+				Title:      req.Title,
+				Body:       utils.TextToPg(req.Body),
+				ResourceID: a.ID,
+				CourseID:   utils.UUIDToPg(*req.CourseID),
 			})
 		}
 	}

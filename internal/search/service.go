@@ -27,13 +27,13 @@ type UnifiedResult struct {
 
 func (s *Service) Unified(ctx context.Context, q string, limit, offset int32) ([]UnifiedResult, error) {
 	courses, err := s.q.SearchCourses(ctx, db.SearchCoursesParams{
-		PlaintoTsquery: q, Column2: q, Limit: limit, Offset: offset,
+		PlaintoTsquery: q, Limit: limit, Offset: offset,
 	})
 	if err != nil {
 		return nil, err
 	}
 	lectures, err := s.q.SearchLectures(ctx, db.SearchLecturesParams{
-		PlaintoTsquery: q, Column2: q, Limit: limit, Offset: offset,
+		PlaintoTsquery: q, Limit: limit, Offset: offset,
 	})
 	if err != nil {
 		return nil, err

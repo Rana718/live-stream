@@ -109,7 +109,7 @@ func (s *Service) StartCheckout(ctx context.Context, userID uuid.UUID, req Check
 		// Free plan — activate immediately, no payment required.
 		_, err := s.q.ActivateSubscription(ctx, db.ActivateSubscriptionParams{
 			ID:         sub.ID,
-			MakeInterval: plan.DurationDays,
+			Days: plan.DurationDays,
 		})
 		if err != nil {
 			return nil, err
@@ -206,7 +206,7 @@ func (s *Service) VerifyCheckout(ctx context.Context, userID uuid.UUID, req Veri
 	}
 	updated, err := s.q.ActivateSubscription(ctx, db.ActivateSubscriptionParams{
 		ID:           sub.ID,
-		MakeInterval: plan.DurationDays,
+		Days: plan.DurationDays,
 	})
 	if err != nil {
 		return nil, err

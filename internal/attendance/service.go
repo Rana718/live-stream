@@ -20,6 +20,13 @@ type Service struct{ q *db.Queries }
 
 func NewService(pool *pgxpool.Pool) *Service { return &Service{q: db.New(pool)} }
 
+func float8Ptr(p *float64) pgtype.Float8 {
+	if p == nil {
+		return pgtype.Float8{Valid: false}
+	}
+	return pgtype.Float8{Float64: *p, Valid: true}
+}
+
 // Constants for attendance policy
 const (
 	LateGracePeriodMinutes = 10 // join within this many minutes = Present, after = Late
@@ -59,15 +66,6 @@ func (s *Service) AutoMark(ctx context.Context, userID uuid.UUID, req AutoMarkRe
 		status = "viewed"
 	}
 
-	geoLat := 0.0
-	geoLng := 0.0
-	if req.GeoLat != nil {
-		geoLat = *req.GeoLat
-	}
-	if req.GeoLng != nil {
-		geoLng = *req.GeoLng
-	}
-
 	_ = lec // reserved for future geo-fencing/batch lookup
 
 	a, err := s.q.UpsertAttendance(ctx, db.UpsertAttendanceParams{
@@ -79,8 +77,8 @@ func (s *Service) AutoMark(ctx context.Context, userID uuid.UUID, req AutoMarkRe
 		LeaveTime:      pgtype.Timestamp{Valid: false},
 		WatchedSeconds: utils.Int4ToPg(req.WatchedSeconds),
 		IsAuto:         utils.BoolToPg(true),
-		GeoLat:         geoLat,
-		GeoLng:         geoLng,
+		GeoLat:         float8Ptr(req.GeoLat),
+		GeoLng:         float8Ptr(req.GeoLng),
 	})
 	if err != nil {
 		return nil, err
@@ -213,10 +211,8 @@ func (s *Service) MonthlyReport(ctx context.Context, userID uuid.UUID, month tim
 	out := make([]DailyReport, 0, len(rows))
 	for _, r := range rows {
 		day := time.Time{}
-		if r.Day != nil {
-			if t, ok := r.Day.(time.Time); ok {
-				day = t
-			}
+		if r.Day.Valid {
+			day = r.Day.Time
 		}
 		out = append(out, DailyReport{
 			Day: day, Total: r.Total, Present: r.Present, Late: r.Late, Absent: r.Absent,
@@ -237,7 +233,7 @@ type LowAttendanceRow struct {
 func (s *Service) LowAttendance(ctx context.Context, batchID *uuid.UUID, threshold float64) ([]LowAttendanceRow, error) {
 	rows, err := s.q.LowAttendanceUsers(ctx, db.LowAttendanceUsersParams{
 		Column1: utils.UUIDPtrToPg(batchID),
-		Column2: utils.NumericFromFloat(threshold),
+		Status:  fmt.Sprintf("%.2f", threshold),
 	})
 	if err != nil {
 		return nil, err
@@ -295,14 +291,6 @@ func (s *Service) QRCheckIn(ctx context.Context, userID uuid.UUID, req QRCheckIn
 	if err != nil {
 		return nil, errors.New("invalid or expired QR code")
 	}
-	geoLat := 0.0
-	geoLng := 0.0
-	if req.GeoLat != nil {
-		geoLat = *req.GeoLat
-	}
-	if req.GeoLng != nil {
-		geoLng = *req.GeoLng
-	}
 	a, err := s.q.UpsertAttendance(ctx, db.UpsertAttendanceParams{
 		UserID:    utils.UUIDToPg(userID),
 		LectureID: qr.LectureID,
@@ -310,8 +298,8 @@ func (s *Service) QRCheckIn(ctx context.Context, userID uuid.UUID, req QRCheckIn
 		JoinTime:  utils.TimestampToPg(time.Now()),
 		IsAuto:    utils.BoolToPg(true),
 		QrCode:    utils.TextToPg(req.Code),
-		GeoLat:    geoLat,
-		GeoLng:    geoLng,
+		GeoLat:    float8Ptr(req.GeoLat),
+		GeoLng:    float8Ptr(req.GeoLng),
 	})
 	if err != nil {
 		return nil, err

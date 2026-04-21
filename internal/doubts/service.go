@@ -49,7 +49,7 @@ func (s *Service) Ask(ctx context.Context, userID uuid.UUID, req AskDoubtRequest
 		TopicID:      utils.UUIDPtrToPg(req.TopicID),
 		QuestionText: req.QuestionText,
 		InputType:    utils.TextToPg(req.InputType),
-		VoiceURL:     utils.TextToPg(req.VoiceURL),
+		VoiceUrl:     utils.TextToPg(req.VoiceURL),
 		Language:     utils.TextToPg(req.Language),
 	})
 	if err != nil {

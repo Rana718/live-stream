@@ -98,7 +98,6 @@ func (s *Service) ListByLanguage(ctx context.Context, lang string, limit, offset
 func (s *Service) Search(ctx context.Context, q string, limit, offset int32) ([]db.Course, error) {
 	return s.q.SearchCourses(ctx, db.SearchCoursesParams{
 		PlaintoTsquery: q,
-		Column2:        q,
 		Limit:          limit,
 		Offset:         offset,
 	})

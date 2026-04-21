@@ -68,7 +68,7 @@ func (s *Service) GetWeakTopics(ctx context.Context, userID uuid.UUID, limit int
 			TopicID:         utils.UUIDFromPg(r.TopicID),
 			TotalAnswers:    r.TotalAnswers,
 			CorrectAnswers:  r.CorrectAnswers,
-			AccuracyPercent: utils.NumericToFloat(r.AccuracyPercent),
+			AccuracyPercent: float64(r.AccuracyPercent),
 		})
 	}
 	if limit > 0 && len(out) > limit {

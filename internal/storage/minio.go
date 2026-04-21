@@ -62,3 +62,20 @@ func (m *MinIOClient) GetFileURL(objectName string) (string, error) {
 func (m *MinIOClient) DeleteFile(ctx context.Context, objectName string) error {
 	return m.client.RemoveObject(ctx, m.bucket, objectName, minio.RemoveObjectOptions{})
 }
+
+// Raw returns the underlying minio client for modules that need direct access.
+func (m *MinIOClient) Raw() *minio.Client {
+	return m.client
+}
+
+// EnsureBucket creates a bucket if it does not already exist.
+func (m *MinIOClient) EnsureBucket(ctx context.Context, name string) error {
+	exists, err := m.client.BucketExists(ctx, name)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return m.client.MakeBucket(ctx, name, minio.MakeBucketOptions{})
+	}
+	return nil
+}
