@@ -27,6 +27,13 @@ install:
 	go install github.com/swaggo/swag/cmd/swag@latest
 	go install github.com/air-verse/air@latest
 
+bootstrap: docker-up
+	@echo "Waiting for services to be ready..."
+	@sleep 10
+	$(MAKE) migrate-up
+	$(MAKE) sqlc
+	$(MAKE) swagger
+
 sqlc:
 	sqlc generate
 

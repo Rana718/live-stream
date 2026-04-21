@@ -2,66 +2,92 @@ package main
 
 import (
 	"context"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	_ "live-platform/docs"
+	"live-platform/internal/aiclient"
+	"live-platform/internal/analytics"
 	"live-platform/internal/auth"
+	"live-platform/internal/batches"
 	"live-platform/internal/chat"
+	"live-platform/internal/chapters"
 	"live-platform/internal/config"
+	"live-platform/internal/courses"
 	"live-platform/internal/database"
+	"live-platform/internal/doubts"
+	"live-platform/internal/downloads"
+	"live-platform/internal/enrollments"
 	"live-platform/internal/events"
+	"live-platform/internal/exams"
+	"live-platform/internal/lectures"
+	"live-platform/internal/logger"
+	"live-platform/internal/materials"
 	"live-platform/internal/middleware"
+	"live-platform/internal/payments"
 	"live-platform/internal/recording"
+	"live-platform/internal/search"
 	"live-platform/internal/storage"
 	"live-platform/internal/stream"
+	"live-platform/internal/subjects"
+	"live-platform/internal/subscriptions"
+	"live-platform/internal/tests"
+	"live-platform/internal/topics"
 	"live-platform/internal/users"
-	"log"
-
-	_ "live-platform/docs" // Import generated docs
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/cors"
-	"github.com/gofiber/fiber/v3/middleware/logger"
 	"github.com/gofiber/fiber/v3/middleware/static"
+	"github.com/google/uuid"
 )
 
-// @title Live Class Streaming Platform API
-// @version 1.0
-// @description A complete Go Fiber v3 backend for live class streaming with PostgreSQL, Redis, MinIO, Kafka, and Nginx-RTMP
+// @title PW-Style Live Class Streaming + Learning Platform API
+// @version 2.0
+// @description Full-stack edtech backend: live streaming, recorded lectures, AI doubt solving,
+// @description practice tests, PYQs, analytics, subscriptions, and multi-language support.
 // @termsOfService http://swagger.io/terms/
-
 // @contact.name API Support
 // @contact.email support@liveplatform.com
-
 // @license.name MIT
 // @license.url https://opensource.org/licenses/MIT
-
 // @host localhost:3000
 // @BasePath /api/v1
-
 // @securityDefinitions.apikey BearerAuth
 // @in header
 // @name Authorization
 // @description Type "Bearer" followed by a space and JWT token.
-
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatal("Failed to load config:", err)
+		slog.Error("failed to load config", "err", err)
+		os.Exit(1)
 	}
 
+	log := logger.Init(cfg.Logging.Level, cfg.Logging.Format)
+	log.Info("starting server", "env", cfg.Server.Env, "port", cfg.Server.Port)
+
+	// --- Infra connections ---
 	pgPool, err := database.NewPostgresPool(&cfg.Database)
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
+		log.Error("postgres connect failed", "err", err)
+		os.Exit(1)
 	}
 	defer pgPool.Close()
 
 	redisClient, err := database.NewRedisClient(&cfg.Redis)
 	if err != nil {
-		log.Fatal("Failed to connect to Redis:", err)
+		log.Error("redis connect failed", "err", err)
+		os.Exit(1)
 	}
 	defer redisClient.Close()
 
 	minioClient, err := storage.NewMinIOClient(&cfg.MinIO)
 	if err != nil {
-		log.Fatal("Failed to connect to MinIO:", err)
+		log.Error("minio connect failed", "err", err)
+		os.Exit(1)
 	}
 
 	kafkaProducer := events.NewProducer(&cfg.Kafka)
@@ -70,19 +96,32 @@ func main() {
 	kafkaConsumer := events.NewConsumer(&cfg.Kafka, "stream-processor")
 	defer kafkaConsumer.Close()
 
-	// Kafka event processor
+	// Background Kafka consumer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	go func() {
 		for {
-			msg, err := kafkaConsumer.ReadMessage(context.Background())
-			if err != nil {
-				log.Printf("Error reading kafka message: %v", err)
-				continue
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				msg, err := kafkaConsumer.ReadMessage(ctx)
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					log.Warn("kafka read error", "err", err)
+					continue
+				}
+				log.Info("kafka event", "value", string(msg.Value))
 			}
-			log.Printf("Received event: %s", string(msg.Value))
 		}
 	}()
 
-	// Initialize services
+	// --- Services ---
+	claude := aiclient.NewClaude(cfg.Claude.APIKey, cfg.Claude.Model, cfg.Claude.MaxTokens)
+	razorpay := payments.NewRazorpay(cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret, cfg.Razorpay.WebhookSecret)
+
 	authService := auth.NewService(pgPool, redisClient, cfg)
 	authHandler := auth.NewHandler(authService)
 
@@ -99,193 +138,317 @@ func main() {
 	go chatHub.Run()
 	chatHandler := chat.NewHandler(chatHub, &cfg.JWT)
 
-	// Initialize Fiber app
+	examHandler := exams.NewHandler(exams.NewService(pgPool))
+	courseHandler := courses.NewHandler(courses.NewService(pgPool))
+	batchHandler := batches.NewHandler(batches.NewService(pgPool))
+	enrollHandler := enrollments.NewHandler(enrollments.NewService(pgPool))
+	subjectHandler := subjects.NewHandler(subjects.NewService(pgPool))
+	chapterHandler := chapters.NewHandler(chapters.NewService(pgPool))
+	topicHandler := topics.NewHandler(topics.NewService(pgPool))
+	lectureHandler := lectures.NewHandler(lectures.NewService(pgPool))
+	materialHandler := materials.NewHandler(materials.NewService(pgPool, minioClient, cfg.MinIO.MaterialsBucket))
+	testHandler := tests.NewHandler(tests.NewService(pgPool))
+	doubtHandler := doubts.NewHandler(doubts.NewService(pgPool, claude))
+	subsHandler := subscriptions.NewHandler(subscriptions.NewService(pgPool, razorpay), cfg.Razorpay.KeyID)
+	analyticsHandler := analytics.NewHandler(analytics.NewService(pgPool))
+	searchHandler := search.NewHandler(search.NewService(pgPool))
+	downloadHandler := downloads.NewHandler(downloads.NewService(pgPool, minioClient, cfg.MinIO.DownloadsBucket, cfg.App.BaseURL))
+
+	// --- Fiber app ---
 	app := fiber.New(fiber.Config{
-		AppName:      "Live Platform API",
-		ServerHeader: "Live-Platform",
+		AppName:      "PW-Style Learning Platform API",
+		ServerHeader: "live-platform/2.0",
+		ReadTimeout:  time.Duration(cfg.Server.ReadTimeoutSec) * time.Second,
+		WriteTimeout: time.Duration(cfg.Server.WriteTimeoutSec) * time.Second,
+		IdleTimeout:  time.Duration(cfg.Server.IdleTimeoutSec) * time.Second,
 	})
 
-	// Global middleware
-	app.Use(logger.New())
+	// Global middleware (order matters)
+	app.Use(middleware.RequestLogger(log))
+	app.Use(middleware.LocaleMiddleware(cfg.App.DefaultLocale))
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: []string{"*"},
-		AllowHeaders: []string{"Origin", "Content-Type", "Accept", "Authorization"},
+		AllowHeaders: []string{"Origin", "Content-Type", "Accept", "Authorization", "Accept-Language"},
 		AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 	}))
+	if cfg.RateLimit.Enabled {
+		app.Use(middleware.RateLimit(cfg.RateLimit.RequestsPerMinute, cfg.RateLimit.Burst))
+	}
 
-	// Swagger documentation
+	// Swagger + static
 	app.Get("/swagger/doc.json", func(c fiber.Ctx) error {
 		return c.SendFile("./docs/swagger.json")
 	})
 	app.Use("/web", static.New("./public"))
 
-	// Root endpoint
+	// Root + health
 	app.Get("/", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{
-			"message": "Live Platform API",
-			"version": "1.0.0",
-			"status":  "running",
+			"message": "PW-Style Learning Platform API",
+			"version": "2.0.0",
 			"docs":    "/swagger/index.html",
 		})
 	})
-
-	// Health check
 	app.Get("/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok"})
 	})
+	app.Get("/health/deep", func(c fiber.Ctx) error {
+		report := database.CollectHealth(c.Context(), pgPool, redisClient, minioClient, cfg.Kafka.Brokers)
+		status := fiber.StatusOK
+		if report.Status != "ok" {
+			status = fiber.StatusServiceUnavailable
+		}
+		return c.Status(status).JSON(report)
+	})
 
-	// API v1 routes
-	api := app.Group("/api")
+	// --- API v1 routes ---
+	api := app.Group("/api/v1")
 
-	// ==========================================
-	// PUBLIC ROUTES (No authentication required)
-	// ==========================================
-
-	// Auth routes (public)
+	// Auth
 	authRoutes := api.Group("/auth")
 	authRoutes.Post("/register/student", authHandler.RegisterStudent)
 	authRoutes.Post("/register/instructor", authHandler.RegisterInstructor)
 	authRoutes.Post("/login", authHandler.Login)
 	authRoutes.Post("/refresh", authHandler.RefreshToken)
-
-	// Protected auth routes
 	authRoutes.Post("/logout", middleware.AuthMiddleware(&cfg.JWT), authHandler.Logout)
 	authRoutes.Get("/me", middleware.AuthMiddleware(&cfg.JWT), authHandler.GetMe)
-	// Admin-only: register new admin
 	authRoutes.Post("/register/admin", middleware.AuthMiddleware(&cfg.JWT), middleware.AdminOnly(), authHandler.RegisterAdmin)
 
-	// Public stream routes (anyone can view live streams)
-	streams := api.Group("/streams")
-	streams.Get("/live", streamHandler.ListLiveStreams)                                       // Public: view live streams
-	streams.Get("/:id", middleware.OptionalAuthMiddleware(&cfg.JWT), streamHandler.GetStream) // Public: view stream details
-
-	// ==========================================
-	// PROTECTED ROUTES (Authentication required)
-	// ==========================================
-
-	// User routes (all authenticated users)
+	// Users
 	userRoutes := api.Group("/users", middleware.AuthMiddleware(&cfg.JWT))
-	userRoutes.Get("/profile", userHandler.GetProfile)                 // All authenticated users
-	userRoutes.Put("/profile", userHandler.UpdateProfile)              // All authenticated users
-	userRoutes.Get("/", middleware.AdminOnly(), userHandler.ListUsers) // Admin only: list all users
+	userRoutes.Get("/profile", userHandler.GetProfile)
+	userRoutes.Put("/profile", userHandler.UpdateProfile)
+	userRoutes.Get("/", middleware.AdminOnly(), userHandler.ListUsers)
 
-	// Stream management routes (instructor/admin only)
+	// Streaming (existing)
+	streams := api.Group("/streams")
+	streams.Get("/live", streamHandler.ListLiveStreams)
+	streams.Get("/:id", middleware.OptionalAuthMiddleware(&cfg.JWT), streamHandler.GetStream)
 	streams.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), streamHandler.CreateStream)
 	streams.Post("/:id/start", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), streamHandler.StartStream)
 	streams.Post("/:id/end", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), streamHandler.EndStream)
 
-	// Recording routes (authenticated users with role-based access)
-	recordings := api.Group("/recordings")
-	recordings.Get("/my", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), recordingHandler.GetMyRecordings)      // Instructor: get my recordings
-	recordings.Post("/upload", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), recordingHandler.UploadRecording) // Instructor/Admin: upload recording
-	recordings.Get("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.StudentOrAbove(), recordingHandler.GetRecording)           // All authenticated users
-	recordings.Get("/:id/url", middleware.AuthMiddleware(&cfg.JWT), middleware.StudentOrAbove(), recordingHandler.GetRecordingURL)    // All authenticated users
-	recordings.Get("/stream/:stream_id", middleware.AuthMiddleware(&cfg.JWT), middleware.StudentOrAbove(), recordingHandler.GetRecordingsByStream)
+	// Recordings (existing)
+	recs := api.Group("/recordings")
+	recs.Get("/my", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), recordingHandler.GetMyRecordings)
+	recs.Post("/upload", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), recordingHandler.UploadRecording)
+	recs.Get("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.StudentOrAbove(), recordingHandler.GetRecording)
+	recs.Get("/:id/url", middleware.AuthMiddleware(&cfg.JWT), middleware.StudentOrAbove(), recordingHandler.GetRecordingURL)
+	recs.Get("/stream/:stream_id", middleware.AuthMiddleware(&cfg.JWT), middleware.StudentOrAbove(), recordingHandler.GetRecordingsByStream)
 
-	// Chat routes (WebSocket for live chat like YouTube)
+	// Chat (existing)
 	chatRoutes := api.Group("/chat")
-	chatRoutes.Get("/ws/:stream_id", chatHandler.HandleWebSocket)                                          // WebSocket auth via query param
-	chatRoutes.Post("/:stream_id/send", middleware.AuthMiddleware(&cfg.JWT), chatHandler.SendMessage)      // REST fallback for sending messages
-	chatRoutes.Get("/:stream_id/history", middleware.AuthMiddleware(&cfg.JWT), chatHandler.GetChatHistory) // Get chat history
+	chatRoutes.Get("/ws/:stream_id", chatHandler.HandleWebSocket)
+	chatRoutes.Post("/:stream_id/send", middleware.AuthMiddleware(&cfg.JWT), chatHandler.SendMessage)
+	chatRoutes.Get("/:stream_id/history", middleware.AuthMiddleware(&cfg.JWT), chatHandler.GetChatHistory)
 
-	// ==========================================
-	// RTMP CALLBACKS (for Nginx-RTMP server)
-	// ==========================================
+	// Exam categories
+	ec := api.Group("/exam-categories")
+	ec.Get("/", examHandler.List)
+	ec.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.AdminOnly(), examHandler.Create)
+	ec.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.AdminOnly(), examHandler.Update)
+	ec.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.AdminOnly(), examHandler.Delete)
 
-	// RTMP authentication handler (supports both GET and POST)
-	// This is called when OBS starts streaming - auto-starts the stream
+	// Courses
+	cg := api.Group("/courses")
+	cg.Get("/", courseHandler.List)
+	cg.Get("/:id", courseHandler.Get)
+	cg.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), courseHandler.Create)
+	cg.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), courseHandler.Update)
+	cg.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.AdminOnly(), courseHandler.Delete)
+
+	// Batches
+	bg := api.Group("/batches")
+	bg.Get("/course/:course_id", batchHandler.ListByCourse)
+	bg.Get("/my", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), batchHandler.ListMine)
+	bg.Get("/:id", batchHandler.Get)
+	bg.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), batchHandler.Create)
+	bg.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), batchHandler.Update)
+	bg.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.AdminOnly(), batchHandler.Delete)
+
+	// Enrollments
+	eg := api.Group("/enrollments", middleware.AuthMiddleware(&cfg.JWT))
+	eg.Post("/", enrollHandler.Enroll)
+	eg.Get("/my", enrollHandler.ListMine)
+	eg.Delete("/:course_id", enrollHandler.Cancel)
+
+	// Subjects / Chapters / Topics
+	subj := api.Group("/subjects")
+	subj.Get("/course/:course_id", subjectHandler.ListByCourse)
+	subj.Get("/:id", subjectHandler.Get)
+	subj.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), subjectHandler.Create)
+	subj.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), subjectHandler.Update)
+	subj.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), subjectHandler.Delete)
+
+	ch := api.Group("/chapters")
+	ch.Get("/subject/:subject_id", chapterHandler.ListBySubject)
+	ch.Get("/:id", chapterHandler.Get)
+	ch.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), chapterHandler.Create)
+	ch.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), chapterHandler.Update)
+	ch.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), chapterHandler.Delete)
+
+	tp := api.Group("/topics")
+	tp.Get("/chapter/:chapter_id", topicHandler.ListByChapter)
+	tp.Get("/:id", topicHandler.Get)
+	tp.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), topicHandler.Create)
+	tp.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), topicHandler.Update)
+	tp.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), topicHandler.Delete)
+
+	// Lectures
+	lg := api.Group("/lectures")
+	lg.Get("/", lectureHandler.List)
+	lg.Get("/:id", lectureHandler.Get)
+	lg.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), lectureHandler.Create)
+	lg.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), lectureHandler.Update)
+	lg.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), lectureHandler.Delete)
+	lg.Post("/watch", middleware.AuthMiddleware(&cfg.JWT), lectureHandler.RecordWatch)
+	lg.Get("/history/my", middleware.AuthMiddleware(&cfg.JWT), lectureHandler.History)
+
+	// Study materials
+	mg := api.Group("/materials")
+	mg.Post("/upload", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), materialHandler.Upload)
+	mg.Get("/chapter/:chapter_id", materialHandler.ListByChapter)
+	mg.Get("/topic/:topic_id", materialHandler.ListByTopic)
+	mg.Get("/:id", materialHandler.Get)
+	mg.Get("/:id/download", middleware.AuthMiddleware(&cfg.JWT), materialHandler.GetDownloadURL)
+	mg.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), materialHandler.Delete)
+
+	// Tests / Questions / Attempts (DPPs + PYQs share this API via test_type)
+	tg := api.Group("/tests")
+	tg.Get("/", testHandler.ListTests)
+	tg.Get("/:id", middleware.AuthMiddleware(&cfg.JWT), testHandler.GetTest)
+	tg.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), testHandler.CreateTest)
+	tg.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), testHandler.UpdateTest)
+	tg.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), testHandler.DeleteTest)
+	tg.Post("/questions", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), testHandler.CreateQuestion)
+	tg.Delete("/questions/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), testHandler.DeleteQuestion)
+	tg.Post("/:id/attempts", middleware.AuthMiddleware(&cfg.JWT), testHandler.StartAttempt)
+	tg.Post("/attempts/answer", middleware.AuthMiddleware(&cfg.JWT), testHandler.SubmitAnswer)
+	tg.Post("/attempts/:id/submit", middleware.AuthMiddleware(&cfg.JWT), testHandler.SubmitAttempt)
+	tg.Get("/attempts/my", middleware.AuthMiddleware(&cfg.JWT), testHandler.ListMyAttempts)
+	tg.Get("/attempts/:id", middleware.AuthMiddleware(&cfg.JWT), testHandler.GetAttempt)
+
+	// Doubts
+	dg := api.Group("/doubts", middleware.AuthMiddleware(&cfg.JWT))
+	dg.Post("/", doubtHandler.Ask)
+	dg.Get("/my", doubtHandler.ListMine)
+	dg.Get("/pending", middleware.InstructorOrAdmin(), doubtHandler.ListPending)
+	dg.Get("/lecture/:lecture_id", doubtHandler.ListByLecture)
+	dg.Get("/:id", doubtHandler.Get)
+	dg.Post("/answer", middleware.InstructorOrAdmin(), doubtHandler.InstructorAnswer)
+	dg.Post("/answers/:id/accept", doubtHandler.AcceptAnswer)
+	dg.Delete("/:id", doubtHandler.Delete)
+
+	// Subscriptions + payments
+	sg := api.Group("/subscriptions")
+	sg.Get("/plans", subsHandler.ListPlans)
+	sg.Post("/plans", middleware.AuthMiddleware(&cfg.JWT), middleware.AdminOnly(), subsHandler.CreatePlan)
+	sg.Post("/checkout", middleware.AuthMiddleware(&cfg.JWT), subsHandler.Checkout)
+	sg.Post("/verify", middleware.AuthMiddleware(&cfg.JWT), subsHandler.Verify)
+	sg.Get("/me", middleware.AuthMiddleware(&cfg.JWT), subsHandler.GetMine)
+	sg.Get("/history", middleware.AuthMiddleware(&cfg.JWT), subsHandler.ListMyHistory)
+	sg.Post("/:id/cancel", middleware.AuthMiddleware(&cfg.JWT), subsHandler.Cancel)
+	sg.Post("/webhook", subsHandler.Webhook)
+
+	// Analytics
+	ag := api.Group("/analytics", middleware.AuthMiddleware(&cfg.JWT))
+	ag.Get("/me", analyticsHandler.GetMyStats)
+	ag.Get("/weak-topics", analyticsHandler.GetWeakTopics)
+	ag.Get("/difficulty", analyticsHandler.GetDifficultyBreakdown)
+	ag.Get("/recent-attempts", analyticsHandler.GetRecentAttempts)
+
+	// Search
+	api.Get("/search", searchHandler.Search)
+
+	// Downloads / video variants / offline tokens
+	dl := api.Group("/downloads")
+	dl.Post("/variants", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), downloadHandler.CreateVariant)
+	dl.Get("/lectures/:lecture_id/variants", downloadHandler.ListVariantsForLecture)
+	dl.Post("/token", middleware.AuthMiddleware(&cfg.JWT), downloadHandler.IssueToken)
+	dl.Get("/fetch", downloadHandler.Fetch)
+
+	// RTMP callbacks
 	rtmpAuthHandler := func(c fiber.Ctx) error {
-		// nginx-rtmp sends stream key as 'name' parameter
-		streamKey := c.Query("name")
-		if streamKey == "" {
-			streamKey = c.FormValue("name")
+		key := c.Query("name")
+		if key == "" {
+			key = c.FormValue("name")
 		}
-		if streamKey == "" {
-			log.Printf("RTMP Auth: No stream key provided")
+		if key == "" {
 			return c.SendStatus(fiber.StatusUnauthorized)
 		}
-
-		// Validate and START the stream (sets status to 'live')
-		stream, err := streamService.StartStreamByKey(c.Context(), streamKey)
-		if err != nil {
-			log.Printf("RTMP Auth: Invalid stream key: %s - %v", streamKey, err)
+		if _, err := streamService.StartStreamByKey(c.Context(), key); err != nil {
+			log.Warn("rtmp invalid key", "key", key, "err", err)
 			return c.SendStatus(fiber.StatusUnauthorized)
 		}
-
-		log.Printf("RTMP Auth: Stream STARTED - Key: %s, Title: %s, Status: live", streamKey, stream.Title)
+		log.Info("rtmp stream started", "key", key)
 		return c.SendStatus(fiber.StatusOK)
 	}
-
-	// RTMP publish done handler (supports both GET and POST)
-	// This is called when OBS stops streaming - auto-ends the stream
 	rtmpDoneHandler := func(c fiber.Ctx) error {
-		streamKey := c.Query("name")
-		if streamKey == "" {
-			streamKey = c.FormValue("name")
+		key := c.Query("name")
+		if key == "" {
+			key = c.FormValue("name")
 		}
-
-		// End the stream (sets status to 'ended')
-		stream, err := streamService.EndStreamByKey(c.Context(), streamKey)
-		if err != nil {
-			log.Printf("RTMP Done: Failed to end stream - Key: %s - %v", streamKey, err)
-		} else {
-			log.Printf("RTMP Done: Stream ENDED - Key: %s, Title: %s, Status: ended", streamKey, stream.Title)
+		if _, err := streamService.EndStreamByKey(c.Context(), key); err != nil {
+			log.Warn("rtmp end failed", "key", key, "err", err)
 		}
-
 		return c.SendStatus(fiber.StatusOK)
 	}
-
-	// RTMP record done handler - uploads recording to MinIO
-	rtmpRecordDoneHandler := func(c fiber.Ctx) error {
-		streamKey := c.Query("name")
-		if streamKey == "" {
-			streamKey = c.FormValue("name")
+	rtmpRecordDone := func(c fiber.Ctx) error {
+		key := c.Query("name")
+		if key == "" {
+			key = c.FormValue("name")
 		}
-		recordingPath := c.Query("path")
-		if recordingPath == "" {
-			recordingPath = c.FormValue("path")
+		path := c.Query("path")
+		if path == "" {
+			path = c.FormValue("path")
 		}
-		filename := c.Query("filename")
-		if filename == "" {
-			filename = c.FormValue("filename")
-		}
-
-		log.Printf("RTMP Record Done: Key=%s, Path=%s, Filename=%s", streamKey, recordingPath, filename)
-
-		if streamKey == "" || recordingPath == "" {
-			log.Printf("RTMP Record Done: Missing stream key or path")
+		if key == "" || path == "" {
 			return c.SendStatus(fiber.StatusBadRequest)
 		}
-
-		// Upload to MinIO
 		go func() {
-			err := recordingService.UploadRecordingFromFile(context.Background(), streamKey, recordingPath)
-			if err != nil {
-				log.Printf("RTMP Record Done: Failed to upload recording - %v", err)
-			} else {
-				log.Printf("RTMP Record Done: Recording uploaded successfully - Key: %s", streamKey)
+			if err := recordingService.UploadRecordingFromFile(context.Background(), key, path); err != nil {
+				log.Error("recording upload failed", "err", err)
 			}
 		}()
-
 		return c.SendStatus(fiber.StatusOK)
 	}
-
-	// Register both GET and POST for RTMP callbacks
 	api.Get("/rtmp/auth", rtmpAuthHandler)
 	api.Post("/rtmp/auth", rtmpAuthHandler)
 	api.Get("/rtmp/done", rtmpDoneHandler)
 	api.Post("/rtmp/done", rtmpDoneHandler)
-	api.Get("/rtmp/record-done", rtmpRecordDoneHandler)
-	api.Post("/rtmp/record-done", rtmpRecordDoneHandler)
+	api.Get("/rtmp/record-done", rtmpRecordDone)
+	api.Post("/rtmp/record-done", rtmpRecordDone)
 
-	// Start server
-	log.Printf("🚀 Server starting on port %s", cfg.Server.Port)
-	log.Printf("📡 Environment: %s", cfg.Server.Env)
-	log.Printf("🔗 API: http://localhost:%s", cfg.Server.Port)
-	log.Printf("📚 Docs: http://localhost:%s/swagger/index.html", cfg.Server.Port)
-	log.Printf("💚 Health: http://localhost:%s/health", cfg.Server.Port)
+	// --- Graceful shutdown ---
+	go func() {
+		addr := ":" + cfg.Server.Port
+		var err error
+		if cfg.TLS.Enabled {
+			log.Info("listening with TLS", "addr", addr)
+			err = app.ListenTLS(addr, cfg.TLS.CertFile, cfg.TLS.KeyFile)
+		} else {
+			log.Info("listening", "addr", addr)
+			err = app.Listen(addr)
+		}
+		if err != nil {
+			log.Error("server exited", "err", err)
+			cancel()
+		}
+	}()
 
-	if err := app.Listen(":" + cfg.Server.Port); err != nil {
-		log.Fatal("Failed to start server:", err)
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-quit
+	log.Info("shutdown signal received", "signal", sig.String())
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Duration(cfg.Server.ShutdownTimeout)*time.Second)
+	defer shutdownCancel()
+	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
+		log.Error("shutdown error", "err", err)
 	}
+	cancel()
+	log.Info("server stopped cleanly")
+
+	// Prevent unused imports if we strip handlers in the future.
+	_ = uuid.Nil
 }

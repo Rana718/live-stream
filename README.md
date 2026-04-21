@@ -1,18 +1,58 @@
-# Live Class Streaming Platform
+# PW-Style Live Class + Learning Platform
 
-A complete Go Fiber v3 backend for a live class streaming platform with PostgreSQL, Redis, MinIO, Kafka, and Nginx-RTMP.
+A complete Go Fiber v3 backend that combines live streaming, recorded lectures,
+practice testing, AI doubt solving, subscriptions, and multi-language content
+— modelled after pw.live's feature set.
 
 ## Features
 
-- ✅ **User Authentication**: JWT-based auth with access & refresh tokens
-- ✅ **Role-Based Access**: Student, Instructor, and Admin roles
-- ✅ **Live Streaming**: RTMP ingest with HLS playback
-- ✅ **Stream Management**: Create, start, end, and monitor streams
-- ✅ **Video Recording**: Automatic recording storage in MinIO
-- ✅ **Real-time Chat**: WebSocket-based live chat during streams
-- ✅ **Event Streaming**: Kafka for async event processing
-- ✅ **Caching**: Redis for session management
-- ✅ **API Documentation**: Complete Swagger/OpenAPI documentation
+### Streaming & classroom
+- ✅ JWT auth with student / instructor / admin roles
+- ✅ RTMP ingest + HLS playback via Nginx-RTMP
+- ✅ Live stream lifecycle (create, start, end) with auto-start from RTMP callbacks
+- ✅ Automatic recording capture to MinIO
+- ✅ WebSocket live chat + REST fallback + chat history
+
+### PW-style learning
+- ✅ **Exam categories** (JEE/NEET/UPSC/School/…) seeded on first migration
+- ✅ **Courses**, **batches**, **enrollments** with progress tracking
+- ✅ **Subjects → Chapters → Topics** taxonomy
+- ✅ **Lectures** (live + recorded) tied to streams / recordings
+- ✅ **Study materials** (PDFs/notes) uploaded to MinIO with presigned downloads
+- ✅ **Lecture view history** for resume-watching & progress
+- ✅ **Tests** (DPPs, chapter, subject, mocks, PYQs) with auto-scoring
+
+### AI + doubts
+- ✅ **Doubt solving** with text or voice URL input
+- ✅ **Claude API** integration for instant AI answers
+- ✅ Instructor answers, answer acceptance, pending queue
+
+### Analytics
+- ✅ Aggregate user stats (avg score, time, best, watched seconds)
+- ✅ **Weak-topic detection** via per-topic accuracy
+- ✅ Difficulty-level breakdown + recent attempts summary
+
+### Subscriptions & payments
+- ✅ Pre-seeded Free / Monthly / Yearly plans
+- ✅ **Razorpay** checkout + signature verification + webhooks
+
+### Discovery & i18n
+- ✅ Postgres **full-text search** across courses + lectures
+- ✅ Multi-language content column + `Accept-Language` / `?lang=` middleware
+
+### Offline / OTT
+- ✅ **Video quality variants** registry (240p – 1080p)
+- ✅ **Time-limited download tokens** for offline use
+
+### Production hardening
+- ✅ Structured logging (`slog`, JSON output)
+- ✅ Per-IP token-bucket rate limiting
+- ✅ Request validation (`go-playground/validator`)
+- ✅ Deep health checks (`/health/deep` pings Postgres, Redis, MinIO, Kafka)
+- ✅ Graceful shutdown with configurable timeout
+- ✅ Tuned pgx connection pool
+- ✅ Optional TLS serving
+- ✅ Startup secret validation
 
 ## Tech Stack
 

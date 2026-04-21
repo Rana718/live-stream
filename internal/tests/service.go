@@ -9,6 +9,7 @@ import (
 	"live-platform/internal/utils"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -45,7 +46,10 @@ func (s *Service) CreateTest(ctx context.Context, creator uuid.UUID, req CreateT
 	if req.Language == "" {
 		req.Language = "en"
 	}
-	examYear := pgInt4FromInt32(req.ExamYear)
+	examYear := utils.Int4ToPg(req.ExamYear)
+	if req.ExamYear == 0 {
+		examYear = pgtype.Int4{Valid: false}
+	}
 	t, err := s.q.CreateTest(ctx, db.CreateTestParams{
 		CourseID:         utils.UUIDPtrToPg(req.CourseID),
 		SubjectID:        utils.UUIDPtrToPg(req.SubjectID),
@@ -71,11 +75,6 @@ func (s *Service) CreateTest(ctx context.Context, creator uuid.UUID, req CreateT
 		return nil, err
 	}
 	return &t, nil
-}
-
-func pgInt4FromInt32(n int32) (v interface{ GetValid() bool }) {
-	// Helper not strictly required; using utils.Int4ToPg inline suffices.
-	return nil
 }
 
 func (s *Service) GetTest(ctx context.Context, id uuid.UUID) (*db.Test, error) {
@@ -161,10 +160,14 @@ type CreateQuestionRequest struct {
 	Options                []QuestionOptionRequest `json:"options"`
 }
 
-func (s *Service) CreateQuestion(ctx context.Context, req CreateQuestionRequest) (*db.Question, []db.QuestionOption, error) {
-	var correctNum interface{}
-	_ = correctNum // placeholder
+func optionalNumeric(p *float64) pgtype.Numeric {
+	if p == nil {
+		return pgtype.Numeric{Valid: false}
+	}
+	return utils.NumericFromFloat(*p)
+}
 
+func (s *Service) CreateQuestion(ctx context.Context, req CreateQuestionRequest) (*db.Question, []db.QuestionOption, error) {
 	q, err := s.q.CreateQuestion(ctx, db.CreateQuestionParams{
 		TestID:                 utils.UUIDToPg(req.TestID),
 		TopicID:                utils.UUIDPtrToPg(req.TopicID),
@@ -175,7 +178,7 @@ func (s *Service) CreateQuestion(ctx context.Context, req CreateQuestionRequest)
 		NegativeMarks:          utils.NumericFromFloat(req.NegativeMarks),
 		Difficulty:             utils.TextToPg(req.Difficulty),
 		Explanation:            utils.TextToPg(req.Explanation),
-		CorrectNumericalAnswer: nilableFloatNumeric(req.CorrectNumericalAnswer),
+		CorrectNumericalAnswer: optionalNumeric(req.CorrectNumericalAnswer),
 		DisplayOrder:           utils.Int4ToPg(req.DisplayOrder),
 	})
 	if err != nil {
@@ -199,14 +202,6 @@ func (s *Service) CreateQuestion(ctx context.Context, req CreateQuestionRequest)
 	return &q, opts, nil
 }
 
-func nilableFloatNumeric(p *float64) (v interface{}) {
-	// pgtype.Numeric with Valid=false when nil
-	if p == nil {
-		return utils.NumericFromString("")
-	}
-	return utils.NumericFromFloat(*p)
-}
-
 func (s *Service) ListQuestions(ctx context.Context, testID uuid.UUID) ([]db.Question, error) {
 	return s.q.ListQuestionsByTest(ctx, utils.UUIDToPg(testID))
 }
@@ -222,7 +217,6 @@ func (s *Service) DeleteQuestion(ctx context.Context, id uuid.UUID) error {
 // --- Attempts ---
 
 func (s *Service) StartAttempt(ctx context.Context, userID, testID uuid.UUID) (*db.TestAttempt, error) {
-	// Reuse in-progress attempt if present.
 	if cur, err := s.q.GetActiveAttempt(ctx, db.GetActiveAttemptParams{
 		UserID: utils.UUIDToPg(userID),
 		TestID: utils.UUIDToPg(testID),
@@ -288,7 +282,7 @@ func (s *Service) SubmitAnswer(ctx context.Context, userID uuid.UUID, req Submit
 			}
 		}
 	case "subjective":
-		// Graded manually, skip auto-scoring.
+		// Subjective answers are graded manually; skip auto-scoring.
 	}
 	if isCorrect {
 		marksAwarded = utils.NumericToFloat(q.Marks)
@@ -300,7 +294,7 @@ func (s *Service) SubmitAnswer(ctx context.Context, userID uuid.UUID, req Submit
 		AttemptID:        utils.UUIDToPg(req.AttemptID),
 		QuestionID:       utils.UUIDToPg(req.QuestionID),
 		SelectedOptionID: utils.UUIDPtrToPg(req.SelectedOptionID),
-		NumericalAnswer:  nilableFloatNumeric(req.NumericalAnswer).(interface{ GetValid() bool }).(any).(pgtypeNumericWrapper), // converted below
+		NumericalAnswer:  optionalNumeric(req.NumericalAnswer),
 		SubjectiveAnswer: utils.TextToPg(req.SubjectiveAnswer),
 		IsCorrect:        utils.BoolToPg(isCorrect),
 		MarksObtained:    utils.NumericFromFloat(marksAwarded),
@@ -311,9 +305,6 @@ func (s *Service) SubmitAnswer(ctx context.Context, userID uuid.UUID, req Submit
 	}
 	return &ans, nil
 }
-
-// pgtypeNumericWrapper placeholder
-type pgtypeNumericWrapper struct{}
 
 func almostEqual(a, b, eps float64) bool {
 	d := a - b
@@ -340,11 +331,15 @@ func (s *Service) SubmitAttempt(ctx context.Context, userID, attemptID uuid.UUID
 	if skipped < 0 {
 		skipped = 0
 	}
-	timeTaken := int32(time.Since(utils.TsOrNow(att.StartedAt)).Seconds())
+	startedAt := utils.TimestampFromPg(att.StartedAt)
+	var timeTaken int32
+	if startedAt != nil {
+		timeTaken = int32(time.Since(*startedAt).Seconds())
+	}
 
 	updated, err := s.q.SubmitTestAttempt(ctx, db.SubmitTestAttemptParams{
 		ID:               utils.UUIDToPg(attemptID),
-		Score:            totalMarks, // already pgtype.Numeric
+		Score:            totalMarks,
 		CorrectCount:     utils.Int4ToPg(int32(correct)),
 		WrongCount:       utils.Int4ToPg(int32(wrong)),
 		SkippedCount:     utils.Int4ToPg(skipped),
