@@ -14,6 +14,7 @@ import (
 	"live-platform/internal/analytics"
 	"live-platform/internal/assignments"
 	"live-platform/internal/attendance"
+	"live-platform/internal/audit"
 	"live-platform/internal/auth"
 	"live-platform/internal/batches"
 	"live-platform/internal/bookmarks"
@@ -31,6 +32,7 @@ import (
 	"live-platform/internal/lectures"
 	"live-platform/internal/logger"
 	"live-platform/internal/materials"
+	"live-platform/internal/metrics"
 	"live-platform/internal/middleware"
 	"live-platform/internal/notifications"
 	"live-platform/internal/payments"
@@ -168,6 +170,8 @@ func main() {
 	feesHandler := fees.NewHandler(fees.NewService(pgPool, razorpay))
 	bookmarkHandler := bookmarks.NewHandler(bookmarks.NewService(pgPool))
 	adminHandler := admin.NewHandler(admin.NewService(pgPool))
+	auditService := audit.NewService(pgPool)
+	auditHandler := audit.NewHandler(auditService)
 
 	// --- Fiber app ---
 	app := fiber.New(fiber.Config{
@@ -179,20 +183,36 @@ func main() {
 	})
 
 	// Global middleware (order matters)
+	app.Use(middleware.RequestID())
+	app.Use(middleware.Recovery(log))
+	app.Use(middleware.SecurityHeaders(cfg.TLS.Enabled))
+	app.Use(metrics.Middleware())
 	app.Use(middleware.RequestLogger(log))
 	app.Use(middleware.LocaleMiddleware(cfg.App.DefaultLocale))
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: []string{"*"},
-		AllowHeaders: []string{"Origin", "Content-Type", "Accept", "Authorization", "Accept-Language"},
-		AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders: []string{"Origin", "Content-Type", "Accept", "Authorization", "Accept-Language", "X-Request-ID"},
+		AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
 	}))
 	if cfg.RateLimit.Enabled {
 		app.Use(middleware.RateLimit(cfg.RateLimit.RequestsPerMinute, cfg.RateLimit.Burst))
 	}
 
-	// Swagger + static
+	// Prometheus
+	app.Get("/metrics", metrics.Handler())
+
+	// Swagger UI + JSON
 	app.Get("/swagger/doc.json", func(c fiber.Ctx) error {
 		return c.SendFile("./docs/swagger.json")
+	})
+	app.Get("/swagger", func(c fiber.Ctx) error {
+		return c.Redirect().To("/swagger/index.html")
+	})
+	app.Get("/swagger/", func(c fiber.Ctx) error {
+		return c.Redirect().To("/swagger/index.html")
+	})
+	app.Get("/swagger/index.html", func(c fiber.Ctx) error {
+		return c.SendFile("./public/swagger-ui.html")
 	})
 	app.Use("/web", static.New("./public"))
 
@@ -225,8 +245,12 @@ func main() {
 	authRoutes.Post("/register/instructor", authHandler.RegisterInstructor)
 	authRoutes.Post("/login", authHandler.Login)
 	authRoutes.Post("/refresh", authHandler.RefreshToken)
+	authRoutes.Post("/forgot-password", authHandler.ForgotPassword)
+	authRoutes.Post("/reset-password", authHandler.ResetPassword)
+	authRoutes.Post("/verify-email", authHandler.ConfirmEmailVerification)
 	authRoutes.Post("/logout", middleware.AuthMiddleware(&cfg.JWT), authHandler.Logout)
 	authRoutes.Get("/me", middleware.AuthMiddleware(&cfg.JWT), authHandler.GetMe)
+	authRoutes.Post("/verify-email/start", middleware.AuthMiddleware(&cfg.JWT), authHandler.SendEmailVerification)
 	authRoutes.Post("/register/admin", middleware.AuthMiddleware(&cfg.JWT), middleware.AdminOnly(), authHandler.RegisterAdmin)
 
 	// Users
@@ -463,6 +487,9 @@ func main() {
 	adm.Post("/courses/:id/approve", adminHandler.ApproveCourse)
 	adm.Post("/courses/:id/reject", adminHandler.RejectCourse)
 	adm.Post("/notifications/send", notifHandler.AdminSend)
+	adm.Get("/audit", auditHandler.List)
+	// Attach audit middleware last so it only records admin-scope mutations.
+	adm.Use(middleware.Audit(auditService))
 
 	// RTMP callbacks
 	rtmpAuthHandler := func(c fiber.Ctx) error {
