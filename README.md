@@ -44,6 +44,18 @@ practice testing, AI doubt solving, subscriptions, and multi-language content
 - ✅ **Video quality variants** registry (240p – 1080p)
 - ✅ **Time-limited download tokens** for offline use
 
+### Coaching app (student + instructor + admin)
+- ✅ **Attendance** — auto-mark from join time / watched seconds, manual override,
+    bulk marking, monthly report, subject-wise %, low-attendance alerts, CSV export,
+    geo-location + QR-code check-in for offline centers
+- ✅ **Assignments** — create/update/delete, file + text submission, grading with feedback
+- ✅ **Notifications** — per-user in-app notifications + read state + unread count
+- ✅ **Announcements** — batch/course/global, optional fan-out to enrolled students
+- ✅ **Fees management** — fee structures, student fees, installment scheduling,
+    pending/overdue alerts, revenue dashboard
+- ✅ **Bookmarks** — timestamped lecture/material bookmarks
+- ✅ **Admin dashboard** — aggregate stats, course approval workflow, CSV exports
+
 ### Production hardening
 - ✅ Structured logging (`slog`, JSON output)
 - ✅ Per-IP token-bucket rate limiting

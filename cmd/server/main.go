@@ -9,10 +9,14 @@ import (
 	"time"
 
 	_ "live-platform/docs"
+	"live-platform/internal/admin"
 	"live-platform/internal/aiclient"
 	"live-platform/internal/analytics"
+	"live-platform/internal/assignments"
+	"live-platform/internal/attendance"
 	"live-platform/internal/auth"
 	"live-platform/internal/batches"
+	"live-platform/internal/bookmarks"
 	"live-platform/internal/chat"
 	"live-platform/internal/chapters"
 	"live-platform/internal/config"
@@ -23,10 +27,12 @@ import (
 	"live-platform/internal/enrollments"
 	"live-platform/internal/events"
 	"live-platform/internal/exams"
+	"live-platform/internal/fees"
 	"live-platform/internal/lectures"
 	"live-platform/internal/logger"
 	"live-platform/internal/materials"
 	"live-platform/internal/middleware"
+	"live-platform/internal/notifications"
 	"live-platform/internal/payments"
 	"live-platform/internal/recording"
 	"live-platform/internal/search"
@@ -153,6 +159,13 @@ func main() {
 	analyticsHandler := analytics.NewHandler(analytics.NewService(pgPool))
 	searchHandler := search.NewHandler(search.NewService(pgPool))
 	downloadHandler := downloads.NewHandler(downloads.NewService(pgPool, minioClient, cfg.MinIO.DownloadsBucket, cfg.App.BaseURL))
+
+	attendanceHandler := attendance.NewHandler(attendance.NewService(pgPool))
+	assignmentHandler := assignments.NewHandler(assignments.NewService(pgPool))
+	notifHandler := notifications.NewHandler(notifications.NewService(pgPool))
+	feesHandler := fees.NewHandler(fees.NewService(pgPool, razorpay))
+	bookmarkHandler := bookmarks.NewHandler(bookmarks.NewService(pgPool))
+	adminHandler := admin.NewHandler(admin.NewService(pgPool))
 
 	// --- Fiber app ---
 	app := fiber.New(fiber.Config{
@@ -366,6 +379,80 @@ func main() {
 	dl.Get("/lectures/:lecture_id/variants", downloadHandler.ListVariantsForLecture)
 	dl.Post("/token", middleware.AuthMiddleware(&cfg.JWT), downloadHandler.IssueToken)
 	dl.Get("/fetch", downloadHandler.Fetch)
+
+	// Attendance
+	att := api.Group("/attendance", middleware.AuthMiddleware(&cfg.JWT))
+	att.Post("/auto", attendanceHandler.AutoMark)
+	att.Post("/manual", middleware.InstructorOrAdmin(), attendanceHandler.ManualMark)
+	att.Post("/lecture/:id/bulk", middleware.InstructorOrAdmin(), attendanceHandler.BulkMark)
+	att.Get("/lecture/:id", middleware.InstructorOrAdmin(), attendanceHandler.ListByLecture)
+	att.Get("/my", attendanceHandler.ListMine)
+	att.Get("/my/stats", attendanceHandler.GetMyStats)
+	att.Get("/my/subjects", attendanceHandler.GetMySubjectBreakdown)
+	att.Get("/my/monthly", attendanceHandler.MonthlyReport)
+	att.Get("/low", middleware.InstructorOrAdmin(), attendanceHandler.LowAttendance)
+	att.Get("/batch/:id/export", middleware.InstructorOrAdmin(), attendanceHandler.ExportCSV)
+	att.Post("/qr/:lecture_id", middleware.InstructorOrAdmin(), attendanceHandler.CreateQRCode)
+	att.Post("/qr/check-in", attendanceHandler.QRCheckIn)
+
+	// Assignments
+	asg := api.Group("/assignments")
+	asg.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), assignmentHandler.Create)
+	asg.Get("/mine", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), assignmentHandler.ListMine)
+	asg.Get("/my-submissions", middleware.AuthMiddleware(&cfg.JWT), assignmentHandler.ListMySubmissions)
+	asg.Post("/submit", middleware.AuthMiddleware(&cfg.JWT), assignmentHandler.Submit)
+	asg.Post("/submissions/:id/grade", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), assignmentHandler.Grade)
+	asg.Get("/batch/:batch_id", middleware.AuthMiddleware(&cfg.JWT), assignmentHandler.ListByBatch)
+	asg.Get("/course/:course_id", middleware.AuthMiddleware(&cfg.JWT), assignmentHandler.ListByCourse)
+	asg.Get("/:id", middleware.AuthMiddleware(&cfg.JWT), assignmentHandler.Get)
+	asg.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), assignmentHandler.Update)
+	asg.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), assignmentHandler.Delete)
+	asg.Get("/:id/submissions", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), assignmentHandler.ListSubmissions)
+	asg.Get("/:id/my-submission", middleware.AuthMiddleware(&cfg.JWT), assignmentHandler.GetMySubmission)
+
+	// Notifications
+	ng := api.Group("/notifications", middleware.AuthMiddleware(&cfg.JWT))
+	ng.Get("/", notifHandler.ListMine)
+	ng.Get("/unread-count", notifHandler.UnreadCount)
+	ng.Post("/read-all", notifHandler.MarkAllRead)
+	ng.Post("/:id/read", notifHandler.MarkRead)
+	ng.Delete("/:id", notifHandler.Delete)
+
+	// Announcements
+	anc := api.Group("/announcements")
+	anc.Get("/", notifHandler.ListGlobal)
+	anc.Get("/batch/:batch_id", notifHandler.ListBatch)
+	anc.Get("/course/:course_id", notifHandler.ListCourse)
+	anc.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), notifHandler.CreateAnnouncement)
+	anc.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.AdminOnly(), notifHandler.DeleteAnnouncement)
+
+	// Fees
+	fg := api.Group("/fees", middleware.AuthMiddleware(&cfg.JWT))
+	fg.Post("/structures", middleware.AdminOnly(), feesHandler.CreateStructure)
+	fg.Get("/structures/course/:course_id", feesHandler.ListStructuresByCourse)
+	fg.Post("/assign", middleware.AdminOnly(), feesHandler.Assign)
+	fg.Get("/my", feesHandler.ListMine)
+	fg.Get("/pending", middleware.AdminOnly(), feesHandler.ListPending)
+	fg.Get("/installments/overdue", middleware.AdminOnly(), feesHandler.ListOverdueInstallments)
+	fg.Get("/revenue", middleware.AdminOnly(), feesHandler.Revenue)
+	fg.Get("/:id/installments", feesHandler.GetInstallments)
+
+	// Bookmarks
+	bm := api.Group("/bookmarks", middleware.AuthMiddleware(&cfg.JWT))
+	bm.Post("/", bookmarkHandler.Create)
+	bm.Get("/", bookmarkHandler.ListMine)
+	bm.Get("/lecture/:lecture_id", bookmarkHandler.ListForLecture)
+	bm.Delete("/:id", bookmarkHandler.Delete)
+
+	// Admin
+	adm := api.Group("/admin", middleware.AuthMiddleware(&cfg.JWT), middleware.AdminOnly())
+	adm.Get("/dashboard", adminHandler.Dashboard)
+	adm.Get("/users", adminHandler.ListUsers)
+	adm.Get("/users/export", adminHandler.ExportUsersCSV)
+	adm.Get("/attendance/batches", adminHandler.BatchAttendance)
+	adm.Get("/courses/pending", adminHandler.ListPendingApproval)
+	adm.Post("/courses/:id/approve", adminHandler.ApproveCourse)
+	adm.Post("/courses/:id/reject", adminHandler.RejectCourse)
 
 	// RTMP callbacks
 	rtmpAuthHandler := func(c fiber.Ctx) error {
