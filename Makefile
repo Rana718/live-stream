@@ -16,10 +16,14 @@ help:
 	@echo "  make build         - Build the server binary"
 	@echo "  make clean         - Clean build artifacts"
 
+SQLC_VERSION := 1.31.0
+SQLC_OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
+SQLC_ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+
 install:
 	go mod download
 	go mod tidy
-	go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+	curl -fsSL https://downloads.sqlc.dev/sqlc_$(SQLC_VERSION)_$(SQLC_OS)_$(SQLC_ARCH).tar.gz | tar -xz -C $(shell go env GOPATH)/bin sqlc
 	go install github.com/swaggo/swag/cmd/swag@latest
 	go install github.com/air-verse/air@latest
 
