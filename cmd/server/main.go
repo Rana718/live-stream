@@ -255,6 +255,15 @@ func main() {
 	authRoutes.Post("/verify-email/start", middleware.AuthMiddleware(&cfg.JWT), authHandler.SendEmailVerification)
 	authRoutes.Post("/register/admin", middleware.AuthMiddleware(&cfg.JWT), middleware.AdminOnly(), authHandler.RegisterAdmin)
 
+	// Mobile OTP + Google sign-in. `otp/send` and `otp/verify` are public so
+	// brand-new users can establish accounts; `link/*` require a bearer token
+	// because they mutate an existing identity.
+	authRoutes.Post("/otp/send", authHandler.SendOtp)
+	authRoutes.Post("/otp/verify", authHandler.VerifyOtp)
+	authRoutes.Post("/google", authHandler.GoogleSignIn)
+	authRoutes.Post("/link/phone", middleware.AuthMiddleware(&cfg.JWT), authHandler.LinkPhone)
+	authRoutes.Post("/link/google", middleware.AuthMiddleware(&cfg.JWT), authHandler.LinkGoogle)
+
 	// Users
 	userRoutes := api.Group("/users", middleware.AuthMiddleware(&cfg.JWT))
 	userRoutes.Get("/profile", userHandler.GetProfile)

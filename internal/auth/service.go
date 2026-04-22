@@ -108,6 +108,15 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*TokenResponse, 
 		return nil, fmt.Errorf("invalid credentials")
 	}
 
+	return s.issueTokensForUser(ctx, &user)
+}
+
+// issueTokensForUser mints fresh access + refresh tokens for an authenticated
+// user row and persists the refresh token in Redis, matching the behaviour of
+// the email/password Login path. All alternative login methods (OTP, Google,
+// account linking) go through this helper so refresh-token rotation stays
+// consistent across login surfaces.
+func (s *Service) issueTokensForUser(ctx context.Context, user *db.User) (*TokenResponse, error) {
 	accessExpiry, _ := time.ParseDuration(s.cfg.JWT.AccessExpiry)
 	refreshExpiry, _ := time.ParseDuration(s.cfg.JWT.RefreshExpiry)
 
@@ -127,8 +136,7 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*TokenResponse, 
 		return nil, err
 	}
 
-	err = s.redis.Set(ctx, fmt.Sprintf("refresh:%s", userID.String()), refreshToken, refreshExpiry).Err()
-	if err != nil {
+	if err := s.redis.Set(ctx, fmt.Sprintf("refresh:%s", userID.String()), refreshToken, refreshExpiry).Err(); err != nil {
 		return nil, err
 	}
 
