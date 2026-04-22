@@ -16,6 +16,7 @@ import (
 	"live-platform/internal/attendance"
 	"live-platform/internal/audit"
 	"live-platform/internal/auth"
+	"live-platform/internal/banners"
 	"live-platform/internal/batches"
 	"live-platform/internal/bookmarks"
 	"live-platform/internal/chat"
@@ -172,6 +173,7 @@ func main() {
 	adminHandler := admin.NewHandler(admin.NewService(pgPool))
 	auditService := audit.NewService(pgPool)
 	auditHandler := audit.NewHandler(auditService)
+	bannerHandler := banners.NewHandler(banners.NewService(pgPool))
 
 	// --- Fiber app ---
 	app := fiber.New(fiber.Config{
@@ -399,6 +401,9 @@ func main() {
 	// Search
 	api.Get("/search", searchHandler.Search)
 
+	// Home-page banners (public read; admin CRUD lives under /admin/banners).
+	api.Get("/banners", bannerHandler.ListActive)
+
 	// Downloads / video variants / offline tokens
 	dl := api.Group("/downloads")
 	dl.Post("/variants", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), downloadHandler.CreateVariant)
@@ -488,6 +493,11 @@ func main() {
 	adm.Post("/courses/:id/reject", adminHandler.RejectCourse)
 	adm.Post("/notifications/send", notifHandler.AdminSend)
 	adm.Get("/audit", auditHandler.List)
+	adm.Get("/banners", bannerHandler.ListAll)
+	adm.Post("/banners", bannerHandler.Create)
+	adm.Put("/banners/:id", bannerHandler.Update)
+	adm.Post("/banners/:id/active", bannerHandler.SetActive)
+	adm.Delete("/banners/:id", bannerHandler.Delete)
 	// Attach audit middleware last so it only records admin-scope mutations.
 	adm.Use(middleware.Audit(auditService))
 
