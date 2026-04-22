@@ -95,6 +95,19 @@ func (s *Service) ListByLanguage(ctx context.Context, lang string, limit, offset
 	})
 }
 
+// ListForLearner returns courses matching the learner's onboarding selection.
+// Empty string on either dimension means "don't filter on it", which lets a
+// non-K12 learner (exam_goal-only) or a pure school learner (class_level-only)
+// still get a sensible feed.
+func (s *Service) ListForLearner(ctx context.Context, classLevel, examGoal string, limit, offset int32) ([]db.Course, error) {
+	return s.q.ListCoursesForLearner(ctx, db.ListCoursesForLearnerParams{
+		Column1: classLevel,
+		Column2: examGoal,
+		Limit:   limit,
+		Offset:  offset,
+	})
+}
+
 func (s *Service) Search(ctx context.Context, q string, limit, offset int32) ([]db.Course, error) {
 	return s.q.SearchCourses(ctx, db.SearchCoursesParams{
 		PlaintoTsquery: q,

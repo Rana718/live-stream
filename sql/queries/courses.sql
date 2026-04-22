@@ -47,3 +47,14 @@ DELETE FROM courses WHERE id = $1;
 
 -- name: CountCoursesByExamCategory :one
 SELECT COUNT(*) FROM courses WHERE exam_category_id = $1 AND is_published = TRUE;
+
+-- name: ListCoursesForLearner :many
+-- Personalized feed: a course is shown if its class_level and exam_goal tags
+-- are either NULL (universal) or match the learner's onboarding selection.
+-- Pass '' (empty string) to opt out of a dimension.
+SELECT * FROM courses
+WHERE is_published = TRUE
+  AND (class_level IS NULL OR $1::text = '' OR class_level = $1)
+  AND (exam_goal   IS NULL OR $2::text = '' OR exam_goal   = $2)
+ORDER BY created_at DESC
+LIMIT $3 OFFSET $4;

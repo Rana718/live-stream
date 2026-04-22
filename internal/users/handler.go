@@ -68,6 +68,44 @@ func (h *Handler) UpdateProfile(c fiber.Ctx) error {
 	return c.JSON(user)
 }
 
+// CompleteOnboarding sets the learner's class_level / board / exam_goal and
+// flips onboarding_completed so the mobile router stops redirecting them
+// back to the onboarding screen.
+// @Router /users/me/onboarding [post]
+func (h *Handler) CompleteOnboarding(c fiber.Ctx) error {
+	userID := c.Locals("userID").(uuid.UUID)
+
+	var req struct {
+		FullName   string `json:"full_name"`
+		ClassLevel string `json:"class_level"`
+		Board      string `json:"board"`
+		ExamGoal   string `json:"exam_goal"`
+	}
+	if err := c.Bind().JSON(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
+	}
+	if req.ClassLevel == "" && req.ExamGoal == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "pick at least one of class_level or exam_goal",
+		})
+	}
+
+	if _, err := h.service.CompleteOnboarding(c.Context(), userID, OnboardingInput{
+		FullName:   req.FullName,
+		ClassLevel: req.ClassLevel,
+		Board:      req.Board,
+		ExamGoal:   req.ExamGoal,
+	}); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	profile, err := h.service.GetUserProfile(c.Context(), userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(profile)
+}
+
 // ListUsers godoc
 // @Summary List all users
 // @Description Get a list of all users (Admin only)

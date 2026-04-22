@@ -184,12 +184,10 @@ func (h *Handler) RefreshToken(c fiber.Ctx) error {
 // @Router /auth/me [get]
 func (h *Handler) GetMe(c fiber.Ctx) error {
 	userID := c.Locals("userID").(uuid.UUID)
-	email := c.Locals("email").(string)
-	role := c.Locals("role").(string)
 
-	return c.JSON(fiber.Map{
-		"user_id": userID,
-		"email":   email,
-		"role":    role,
-	})
+	me, err := h.service.GetMe(c.Context(), userID)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
+	}
+	return c.JSON(me)
 }

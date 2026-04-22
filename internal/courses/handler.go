@@ -32,6 +32,8 @@ func courseToMap(c *db.Course) fiber.Map {
 		"level":            utils.TextFromPg(c.Level),
 		"is_free":          utils.BoolFromPg(c.IsFree),
 		"is_published":     utils.BoolFromPg(c.IsPublished),
+		"class_level":      utils.TextFromPg(c.ClassLevel),
+		"exam_goal":        utils.TextFromPg(c.ExamGoal),
 		"created_by":       utils.UUIDFromPg(c.CreatedBy),
 		"created_at":       c.CreatedAt,
 		"updated_at":       c.UpdatedAt,
@@ -83,6 +85,15 @@ func (h *Handler) List(c fiber.Ctx) error {
 	}
 	if lang := c.Query("language"); lang != "" {
 		out, err := h.service.ListByLanguage(c.Context(), lang, limit, offset)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		return renderCourseList(c, out)
+	}
+	classLevel := c.Query("class_level")
+	examGoal := c.Query("exam_goal")
+	if classLevel != "" || examGoal != "" {
+		out, err := h.service.ListForLearner(c.Context(), classLevel, examGoal, limit, offset)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 		}

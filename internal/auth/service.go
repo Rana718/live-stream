@@ -154,6 +154,56 @@ func (s *Service) Logout(ctx context.Context, userID uuid.UUID) error {
 	return s.redis.Del(ctx, fmt.Sprintf("refresh:%s", userID.String())).Err()
 }
 
+// MeResponse is the shape returned by GET /auth/me. The mobile app uses this
+// both to rehydrate the session and to decide whether to force the user into
+// the onboarding flow.
+type MeResponse struct {
+	ID                  uuid.UUID `json:"id"`
+	Email               string    `json:"email"`
+	Username            string    `json:"username"`
+	FullName            string    `json:"full_name"`
+	Role                string    `json:"role"`
+	ClassLevel          *string   `json:"class_level"`
+	Board               *string   `json:"board"`
+	ExamGoal            *string   `json:"exam_goal"`
+	OnboardingCompleted bool      `json:"onboarding_completed"`
+}
+
+func (s *Service) GetMe(ctx context.Context, userID uuid.UUID) (*MeResponse, error) {
+	pgUUID := pgtype.UUID{Bytes: userID, Valid: true}
+	user, err := s.queries.GetUserByID(ctx, pgUUID)
+	if err != nil {
+		return nil, err
+	}
+
+	me := &MeResponse{
+		ID:                  uuid.UUID(user.ID.Bytes),
+		Email:               user.Email,
+		Username:            user.Username,
+		Role:                "student",
+		OnboardingCompleted: user.OnboardingCompleted.Bool,
+	}
+	if user.FullName.Valid {
+		me.FullName = user.FullName.String
+	}
+	if user.Role.Valid {
+		me.Role = user.Role.String
+	}
+	if user.ClassLevel.Valid {
+		v := user.ClassLevel.String
+		me.ClassLevel = &v
+	}
+	if user.Board.Valid {
+		v := user.Board.String
+		me.Board = &v
+	}
+	if user.ExamGoal.Valid {
+		v := user.ExamGoal.String
+		me.ExamGoal = &v
+	}
+	return me, nil
+}
+
 func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (*TokenResponse, error) {
 	claims, err := utils.ValidateRefreshToken(refreshToken, s.cfg.JWT.RefreshSecret)
 	if err != nil {

@@ -18,6 +18,17 @@ SET full_name = $2, updated_at = CURRENT_TIMESTAMP
 WHERE id = $1
 RETURNING *;
 
+-- name: UpdateOnboardingProfile :one
+UPDATE users
+SET full_name = COALESCE(NULLIF($2::text, ''), full_name),
+    class_level = $3,
+    board = $4,
+    exam_goal = $5,
+    onboarding_completed = TRUE,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = $1
+RETURNING *;
+
 -- name: DeleteUser :exec
 DELETE FROM users WHERE id = $1;
 

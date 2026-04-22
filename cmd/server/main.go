@@ -259,6 +259,7 @@ func main() {
 	userRoutes := api.Group("/users", middleware.AuthMiddleware(&cfg.JWT))
 	userRoutes.Get("/profile", userHandler.GetProfile)
 	userRoutes.Put("/profile", userHandler.UpdateProfile)
+	userRoutes.Post("/me/onboarding", userHandler.CompleteOnboarding)
 	userRoutes.Get("/", middleware.AdminOnly(), userHandler.ListUsers)
 
 	// Streaming (existing)
