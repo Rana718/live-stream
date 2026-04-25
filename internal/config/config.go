@@ -23,6 +23,7 @@ type Config struct {
 	Razorpay     RazorpayConfig
 	SMS          SMSConfig
 	Push         PushConfig
+	Codemagic    CodemagicConfig
 	App          AppConfig
 }
 
@@ -133,6 +134,17 @@ type PushConfig struct {
 	TimeoutSec int
 }
 
+// CodemagicConfig configures the per-tenant white-label build pipeline.
+// Leave WorkflowID empty to short-circuit dispatch — the build trigger
+// endpoint then just queues a row for a human operator to pick up.
+type CodemagicConfig struct {
+	APIToken   string
+	WorkflowID string
+	AppID      string
+	BaseURL    string // default https://api.codemagic.io
+	TimeoutSec int
+}
+
 type AppConfig struct {
 	BaseURL       string
 	HLSBaseURL    string
@@ -225,6 +237,13 @@ func Load() (*Config, error) {
 			ServerKey:  getEnv("FCM_SERVER_KEY", ""),
 			BaseURL:    getEnv("FCM_BASE_URL", "https://fcm.googleapis.com/fcm/send"),
 			TimeoutSec: getEnvInt("FCM_TIMEOUT", 6),
+		},
+		Codemagic: CodemagicConfig{
+			APIToken:   getEnv("CODEMAGIC_API_TOKEN", ""),
+			WorkflowID: getEnv("CODEMAGIC_WORKFLOW_ID", ""),
+			AppID:      getEnv("CODEMAGIC_APP_ID", ""),
+			BaseURL:    getEnv("CODEMAGIC_BASE_URL", "https://api.codemagic.io"),
+			TimeoutSec: getEnvInt("CODEMAGIC_TIMEOUT", 10),
 		},
 		Razorpay: RazorpayConfig{
 			KeyID:         getEnv("RAZORPAY_KEY_ID", ""),

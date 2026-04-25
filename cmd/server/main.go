@@ -12,6 +12,7 @@ import (
 	"live-platform/internal/admin"
 	"live-platform/internal/aiclient"
 	"live-platform/internal/analytics"
+	"live-platform/internal/appbuilds"
 	"live-platform/internal/assignments"
 	"live-platform/internal/attendance"
 	"live-platform/internal/audit"
@@ -41,6 +42,7 @@ import (
 	"live-platform/internal/middleware"
 	"live-platform/internal/notifications"
 	"live-platform/internal/payments"
+	"live-platform/internal/platformadmin"
 	"live-platform/internal/push"
 	"live-platform/internal/recording"
 	"live-platform/internal/search"
@@ -370,6 +372,38 @@ func main() {
 		middleware.AuthMiddleware(&cfg.JWT),
 		middleware.SuperAdminContext(pgPool),
 		tenantHandler.CreateTenant,
+	)
+
+	// ─── Super-admin (platform staff) routes ─────────────────────────────
+	// Every endpoint below operates cross-tenant. The SuperAdminContext
+	// middleware bypasses RLS — only mount it on routes that genuinely
+	// need platform-wide visibility.
+	platformSvc := platformadmin.NewService(pgPool)
+	platformHandler := platformadmin.NewHandler(platformSvc)
+	buildSvc := appbuilds.NewService(pgPool, cfg.Codemagic, log)
+	buildHandler := appbuilds.NewHandler(buildSvc)
+
+	platformGroup := api.Group("/admin/platform",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.SuperAdminContext(pgPool),
+	)
+	platformGroup.Get("/stats", platformHandler.Stats)
+	platformGroup.Get("/audit", platformHandler.AuditLogs)
+
+	platformGroup.Get("/tenants", platformHandler.ListTenants)
+	platformGroup.Post("/tenants/:id/suspend", platformHandler.Suspend)
+	platformGroup.Post("/tenants/:id/reactivate", platformHandler.Reactivate)
+	platformGroup.Put("/tenants/:id/plan", platformHandler.UpdatePlan)
+
+	platformGroup.Post("/tenants/:id/build", buildHandler.Trigger)
+	platformGroup.Get("/builds", buildHandler.List)
+	platformGroup.Patch("/builds/:id", buildHandler.PatchStatus)
+
+	// Super-admin lead triage (PATCH lives here too — POST list is below).
+	api.Patch("/admin/leads/:id",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.SuperAdminContext(pgPool),
+		platformHandler.UpdateLeadStatus,
 	)
 
 	// Auth
