@@ -36,6 +36,7 @@ COPY . .
 
 RUN sqlc generate && \
     swag init -g cmd/server/main.go -o docs && \
+    go mod tidy && \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
       -trimpath \
       -ldflags="-s -w -X main.version=docker -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
