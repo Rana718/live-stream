@@ -161,12 +161,36 @@ func (s *Service) VerifyOTP(ctx context.Context, phoneInput, code, orgCode strin
 }
 
 // LoginWithOTP is the handler-facing path: verify + issue tokens scoped to
-// the resolved tenant.
-func (s *Service) LoginWithOTP(ctx context.Context, phone, code, orgCode string) (*TokenResponse, error) {
+// the resolved tenant. If `referralCode` is non-empty AND this verify call
+// freshly created the user, the referrer gets credited via the injected
+// referrals service. Best-effort — bad codes never fail login.
+func (s *Service) LoginWithOTP(ctx context.Context, phone, code, orgCode, referralCode string) (*TokenResponse, error) {
+	wasNew := false
+	{
+		// Pre-check: did a row already exist for this phone in this tenant?
+		// Used to decide whether to fire the referral attach. We can't read
+		// it after VerifyOTP because that path returns the same row whether
+		// it auto-created or not.
+		phoneNorm, _ := normalizePhone(phone)
+		tID, _ := s.resolveTenant(ctx, orgCode)
+		if tID != uuid.Nil {
+			_, err := s.queries.GetUserByPhone(ctx, db.GetUserByPhoneParams{
+				TenantID:    pgtype.UUID{Bytes: tID, Valid: true},
+				PhoneNumber: pgtype.Text{String: phoneNorm, Valid: phoneNorm != ""},
+			})
+			wasNew = err != nil
+		}
+	}
+
 	user, tenantID, err := s.VerifyOTP(ctx, phone, code, orgCode)
 	if err != nil {
 		return nil, err
 	}
+
+	if wasNew && s.referrer != nil && referralCode != "" {
+		s.referrer.AttachToSignup(ctx, tenantID, uuid.UUID(user.ID.Bytes), referralCode)
+	}
+
 	return s.issueTokensForUser(ctx, user, tenantID)
 }
 

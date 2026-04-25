@@ -31,14 +31,15 @@ func (h *Handler) SendOtp(c fiber.Ctx) error {
 // create an account, with onboarding triggered on the next request.
 func (h *Handler) VerifyOtp(c fiber.Ctx) error {
 	var req struct {
-		Phone   string `json:"phone"`
-		Code    string `json:"code"`
-		OrgCode string `json:"org_code"`
+		Phone        string `json:"phone"`
+		Code         string `json:"code"`
+		OrgCode      string `json:"org_code"`
+		ReferralCode string `json:"referral_code"`
 	}
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
-	tokens, err := h.service.LoginWithOTP(c.Context(), req.Phone, req.Code, req.OrgCode)
+	tokens, err := h.service.LoginWithOTP(c.Context(), req.Phone, req.Code, req.OrgCode, req.ReferralCode)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
 	}

@@ -10,7 +10,9 @@ package platformadmin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"live-platform/internal/database/db"
@@ -167,6 +169,75 @@ func (s *Service) UpsertPlatformSubscription(ctx context.Context, in UpsertPlatf
 
 func (s *Service) ListPlatformSubscriptions(ctx context.Context, limit, offset int32) ([]db.ListPlatformSubscriptionsRow, error) {
 	return s.q.ListPlatformSubscriptions(ctx, db.ListPlatformSubscriptionsParams{Limit: limit, Offset: offset})
+}
+
+// BuildConfig is the branding bundle Codemagic fetches before each
+// per-tenant build. We hand-pick fields here rather than dumping the raw
+// tenant row so changes to the schema don't accidentally leak internal
+// state (owner_user_id, razorpay_account_id) to the build pipeline.
+type BuildConfig struct {
+	TenantID               string          `json:"tenant_id"`
+	OrgCode                string          `json:"org_code"`
+	Name                   string          `json:"name"`
+	Slug                   string          `json:"slug"`
+	PackageID              string          `json:"package_id"`
+	VersionName            string          `json:"version_name"`
+	Theme                  json.RawMessage `json:"theme"`
+	LogoURL                string          `json:"logo_url,omitempty"`
+	SplashURL              string          `json:"splash_url,omitempty"`
+	GoogleServicesURL      string          `json:"google_services_url,omitempty"`
+	GoogleServicesPlistURL string          `json:"google_services_plist_url,omitempty"`
+}
+
+// GetBuildConfig is the read-only branding bundle Codemagic GETs at the
+// start of a per-tenant build. The bundle is deterministic for a given
+// (tenant, platform) — no side effects, idempotent, safe to cache.
+//
+// Caller must have super_admin context; SuperAdminContext middleware
+// gates the route so we don't re-check here.
+func (s *Service) GetBuildConfig(ctx context.Context, tenantID uuid.UUID, platform string) (*BuildConfig, error) {
+	t, err := s.q.GetTenantByID(ctx, utils.UUIDToPg(tenantID))
+	if err != nil {
+		return nil, fmt.Errorf("tenant not found")
+	}
+
+	// Package ID convention: `com.school.<slug-without-hyphens>`. Tenants
+	// can override via app_config later; for now this gives a stable,
+	// conflict-free namespace on the Play Store.
+	pkg := "com.school." + strings.ReplaceAll(t.Slug, "-", "")
+	cfg := &BuildConfig{
+		TenantID:    uuid.UUID(t.ID.Bytes).String(),
+		OrgCode:     t.OrgCode,
+		Name:        t.Name,
+		Slug:        t.Slug,
+		PackageID:   pkg,
+		VersionName: time.Now().Format("2006.01.02"),
+		Theme:       t.Theme,
+	}
+	if t.LogoUrl.Valid {
+		cfg.LogoURL = t.LogoUrl.String
+	}
+	// SplashURL + google services live in the JSONB app_config blob; we
+	// peek into it only for those specific keys. Missing keys are fine —
+	// the Dart helper falls back to the shipped placeholder.
+	if len(t.AppConfig) > 0 {
+		var ac map[string]interface{}
+		if json.Unmarshal(t.AppConfig, &ac) == nil {
+			if v, ok := ac["splash_url"].(string); ok {
+				cfg.SplashURL = v
+			}
+			if platform == "ios" {
+				if v, ok := ac["google_services_plist_url"].(string); ok {
+					cfg.GoogleServicesPlistURL = v
+				}
+			} else {
+				if v, ok := ac["google_services_url"].(string); ok {
+					cfg.GoogleServicesURL = v
+				}
+			}
+		}
+	}
+	return cfg, nil
 }
 
 // GetFeatures returns a tenant's feature-flag JSON. Empty `{}` if no row.

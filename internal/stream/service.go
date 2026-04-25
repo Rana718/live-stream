@@ -115,23 +115,32 @@ func (s *Service) ValidateStreamKey(ctx context.Context, streamKey string) (*db.
 	return &stream, nil
 }
 
-// StartStreamByKey starts a stream using its stream key (called by RTMP auth callback)
+// StartStreamByKey starts a stream using its stream key (called by RTMP auth callback).
+//
+// Tenant-scoping: the key→stream lookup uses GetStreamByKey which RLS does
+// not gate (the connection here has no app.tenant_id session var because
+// the RTMP webhook is unauthenticated). We treat the lookup as authoritative
+// — a key that doesn't resolve is an immediate 401. We then re-check the
+// owning tenant's status: a suspended tenant must not be allowed to ingest
+// new content even if their key is still valid.
 func (s *Service) StartStreamByKey(ctx context.Context, streamKey string) (*db.Stream, error) {
-	fmt.Printf("StartStreamByKey called with key: %s\n", streamKey)
-
-	// Get stream by key first
 	stream, err := s.queries.GetStreamByKey(ctx, streamKey)
 	if err != nil {
-		fmt.Printf("GetStreamByKey error: %v\n", err)
 		return nil, fmt.Errorf("invalid stream key: %v", err)
 	}
 
-	fmt.Printf("Found stream: ID=%v, Title=%s\n", stream.ID, stream.Title)
+	// Refuse to ingest for suspended tenants. The tenant lookup runs with
+	// is_super_admin=true so the SELECT bypasses the per-tenant RLS policy.
+	tenantID := uuid.UUID(stream.TenantID.Bytes)
+	if tenantID != uuid.Nil {
+		t, err := s.queries.GetTenantByID(ctx, stream.TenantID)
+		if err == nil && t.Status != "active" {
+			return nil, fmt.Errorf("tenant %s is %s — ingest refused", t.OrgCode, t.Status)
+		}
+	}
 
-	// Start the stream (update status to live)
 	updatedStream, err := s.queries.StartStream(ctx, stream.ID)
 	if err != nil {
-		fmt.Printf("StartStream error: %v\n", err)
 		return nil, err
 	}
 

@@ -21,11 +21,19 @@ type SMSClient interface {
 	SendOTP(ctx context.Context, phone, code string) error
 }
 
+// Referrer is the slice of internal/referrals that auth depends on. We
+// inject it (rather than import the package) so the dependency is one-way
+// and testable. Best-effort: an invalid referral code never fails signup.
+type Referrer interface {
+	AttachToSignup(ctx context.Context, tenantID, newUserID uuid.UUID, code string)
+}
+
 type Service struct {
-	queries *db.Queries
-	redis   *redis.Client
-	cfg     *config.Config
-	sms     SMSClient
+	queries  *db.Queries
+	redis    *redis.Client
+	cfg      *config.Config
+	sms      SMSClient
+	referrer Referrer
 }
 
 func NewService(pool *pgxpool.Pool, redis *redis.Client, cfg *config.Config) *Service {
@@ -39,6 +47,11 @@ func NewService(pool *pgxpool.Pool, redis *redis.Client, cfg *config.Config) *Se
 // WithSMS wires an SMS client. Optional — production sets it via main.go,
 // tests can leave it nil.
 func (s *Service) WithSMS(c SMSClient) *Service { s.sms = c; return s }
+
+// WithReferrer wires the referrals service so OTP verify can attach a
+// referral code to a fresh signup. Optional — leaving nil disables
+// referral tracking without breaking anything else.
+func (s *Service) WithReferrer(r Referrer) *Service { s.referrer = r; return s }
 
 // Email + password registration was removed in favor of phone-OTP and
 // Google sign-in only. The RegisterRequest type is kept here as a thin

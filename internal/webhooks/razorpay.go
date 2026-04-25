@@ -91,17 +91,50 @@ func (h *Handler) Razorpay(c fiber.Ctx) error {
 		h.log.Info("razorpay payment failed",
 			slog.String("order_id", env.Payload.Payment.Entity.OrderID))
 
-	// Subscription lifecycle. We delegate the actual DB write to a tiny
-	// service because the subscription rows live in user_subscriptions
-	// (separate from payments) and the schema there is owned by the
-	// subscriptions package.
+	// Subscription lifecycle — patch user_subscriptions keyed on the
+	// razorpay_subscription_id we stored at create time. Missing rows
+	// are logged but not fatal; the subscription might belong to a flow
+	// we haven't mapped yet (legacy data, manual setup).
 	case "subscription.activated", "subscription.charged":
-		h.log.Info("razorpay subscription active",
-			slog.String("subscription_id", env.Payload.Subscription.Entity.ID),
-			slog.String("status", env.Payload.Subscription.Entity.Status))
+		subID := env.Payload.Subscription.Entity.ID
+		if subID != "" {
+			if _, err := h.q.SetUserSubStatusByProviderID(c.Context(),
+				db.SetUserSubStatusByProviderIDParams{
+					RazorpaySubscriptionID: pgtype.Text{String: subID, Valid: true},
+					Status:                 pgtype.Text{String: "active", Valid: true},
+				}); err != nil {
+				h.log.Warn("subscription status patch failed",
+					slog.String("subscription_id", subID),
+					slog.String("err", err.Error()))
+			}
+		}
+		h.log.Info("razorpay subscription active", slog.String("subscription_id", subID))
 	case "subscription.cancelled", "subscription.completed", "subscription.halted":
+		subID := env.Payload.Subscription.Entity.ID
+		// Map razorpay status to our internal labels:
+		//   cancelled — user-initiated, still has access till period end
+		//   completed — fixed-term subscription ran its course
+		//   halted    — provider-initiated after retry exhaustion
+		status := "cancelled"
+		switch env.Event {
+		case "subscription.completed":
+			status = "completed"
+		case "subscription.halted":
+			status = "halted"
+		}
+		if subID != "" {
+			if _, err := h.q.SetUserSubStatusByProviderID(c.Context(),
+				db.SetUserSubStatusByProviderIDParams{
+					RazorpaySubscriptionID: pgtype.Text{String: subID, Valid: true},
+					Status:                 pgtype.Text{String: status, Valid: true},
+				}); err != nil {
+				h.log.Warn("subscription status patch failed",
+					slog.String("subscription_id", subID),
+					slog.String("err", err.Error()))
+			}
+		}
 		h.log.Info("razorpay subscription ended",
-			slog.String("subscription_id", env.Payload.Subscription.Entity.ID),
+			slog.String("subscription_id", subID),
 			slog.String("event", env.Event))
 	case "refund.created", "refund.processed":
 		h.log.Info("razorpay refund",

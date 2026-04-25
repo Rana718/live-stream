@@ -121,6 +121,25 @@ func (h *Handler) AuditLogs(c fiber.Ctx) error {
 	return c.JSON(rows)
 }
 
+// BuildConfig — GET /api/v1/admin/platform/tenants/:id/build-config
+//
+// Codemagic GETs this at build start to pull the tenant's branding so
+// inject_branding.dart can rewrite pubspec / AndroidManifest / Info.plist
+// before flutter build runs. ?platform=android|ios decides which Firebase
+// config URL to include.
+func (h *Handler) BuildConfig(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	platform := c.Query("platform", "android")
+	cfg, err := h.svc.GetBuildConfig(c.Context(), id, platform)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(cfg)
+}
+
 // GetFeatures — GET /api/v1/admin/platform/tenants/:id/features
 func (h *Handler) GetFeatures(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))

@@ -92,7 +92,12 @@ services:
     container_name: live-platform-app
     environment:
       SERVER_PORT: 3000
-      ENV: production
+      # Local docker-compose runs in development mode. The validator in
+      # internal/config refuses to start in production with the default DB
+      # password / JWT secrets — that's the right behaviour for real
+      # deploys, but it crash-loops the local stack. Flip to production
+      # in your deploy manifest and inject real secrets there.
+      ENV: development
       DB_HOST: postgres
       DB_PORT: 5432
       DB_USER: postgres

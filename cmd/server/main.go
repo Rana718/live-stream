@@ -20,6 +20,7 @@ import (
 	"live-platform/internal/banners"
 	"live-platform/internal/batches"
 	"live-platform/internal/bookmarks"
+	"live-platform/internal/cache"
 	"live-platform/internal/chat"
 	"live-platform/internal/chapters"
 	"live-platform/internal/config"
@@ -45,7 +46,9 @@ import (
 	"live-platform/internal/platformadmin"
 	"live-platform/internal/push"
 	"live-platform/internal/recording"
+	"live-platform/internal/referrals"
 	"live-platform/internal/search"
+	"live-platform/internal/share"
 	"live-platform/internal/storage"
 	"live-platform/internal/stream"
 	"live-platform/internal/sms"
@@ -173,7 +176,13 @@ func main() {
 	// SMS provider — nil if SMS_PROVIDER is unset, in which case the OTP
 	// flow runs in dev mode (logs the code, no real SMS).
 	smsClient := sms.New(cfg.SMS, log)
-	authService := auth.NewService(pgPool, redisClient, cfg).WithSMS(smsClient)
+	// Referral service is consumed by auth via the Referrer interface so
+	// OTP verify can attach a referral code at signup. Re-instantiated
+	// later for the /referrals/me handler — both share the same db.
+	authReferralSvc := referrals.NewService(pgPool)
+	authService := auth.NewService(pgPool, redisClient, cfg).
+		WithSMS(smsClient).
+		WithReferrer(authReferralSvc)
 	authHandler := auth.NewHandler(authService)
 
 	userService := users.NewService(pgPool)
@@ -289,8 +298,22 @@ func main() {
 	api := app.Group("/api/v1")
 
 	// --- Tenants (multi-tenant control plane) ---
-	tenantSvc := tenants.NewService(pgPool)
+	// Hot-read cache for tenant + course lookups. The single Redis client
+	// already in use for refresh-token storage is shared.
+	hotCache := cache.New(redisClient)
+
+	tenantSvc := tenants.NewService(pgPool).WithCache(hotCache)
 	tenantHandler := tenants.NewHandler(tenantSvc)
+
+	// Referrals — per-user code + reward tracking. The OTP verify path
+	// reads `referral_code` from the request body and calls
+	// referralSvc.AttachToSignup; we expose a /referrals/me endpoint for
+	// users to see their own code.
+	referralSvc := referrals.NewService(pgPool)
+	referralHandler := referrals.NewHandler(referralSvc)
+
+	// Course share-card renderer — public 1200×630 PNG for Open Graph.
+	shareHandler := share.NewHandler(share.NewService(pgPool))
 
 	// Public Org Code lookup. No auth required — login/marketing screens
 	// hit this to fetch logo + theme before issuing any JWT.
@@ -304,10 +327,25 @@ func main() {
 	leadHandler := leads.NewHandler(leads.NewService(pgPool))
 	publicGroup.Post("/leads", leadHandler.Create)
 
+	// Course share-card poster — used by Open Graph / Twitter / WhatsApp
+	// link previews. Public, heavily CDN-cached.
+	api.Get("/share/courses/:id/poster.png", shareHandler.CoursePoster)
+
+	// Referrals — every authenticated user has a code + stats. The OTP
+	// verify path reads `referral_code` from the body and attaches the
+	// new signup; this endpoint just exposes the user's own code.
+	api.Get("/referrals/me",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+		referralHandler.MyCode,
+	)
+
 	// Direct course purchase (Phase 3). Authenticated student initiates a
 	// Razorpay order, then verifies the signature on success.
 	courseOrderHandler := courseorders.NewHandler(
-		courseorders.NewService(pgPool, razorpay).WithProducer(kafkaProducer),
+		courseorders.NewService(pgPool, razorpay).
+			WithProducer(kafkaProducer).
+			WithReferrals(authReferralSvc),
 		cfg.Razorpay.KeyID,
 	)
 	api.Post("/courses/:id/buy",
@@ -408,6 +446,7 @@ func main() {
 	platformGroup.Put("/tenants/:id/domain", platformHandler.SetCustomDomain)
 
 	platformGroup.Post("/tenants/:id/build", buildHandler.Trigger)
+	platformGroup.Get("/tenants/:id/build-config", platformHandler.BuildConfig)
 	platformGroup.Get("/builds", buildHandler.List)
 	platformGroup.Patch("/builds/:id", buildHandler.PatchStatus)
 

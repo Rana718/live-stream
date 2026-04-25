@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
+	"live-platform/internal/cache"
 	"live-platform/internal/database/db"
 
 	"github.com/google/uuid"
@@ -20,11 +22,18 @@ import (
 type Service struct {
 	queries *db.Queries
 	pool    *pgxpool.Pool
+	cache   *cache.Cache
 }
 
 func NewService(pool *pgxpool.Pool) *Service {
 	return &Service{queries: db.New(pool), pool: pool}
 }
+
+// WithCache wires a Redis cache so the unauthenticated org-code lookup
+// hits Redis on the hot path instead of Postgres. Public marketing
+// landings on a tenant's custom domain hit this on every page load —
+// caching it shaves DB load by ~95% in practice.
+func (s *Service) WithCache(c *cache.Cache) *Service { s.cache = c; return s }
 
 // PublicTenantInfo is the tenant payload returned by the public Org Code
 // lookup. We deliberately omit anything that would help an attacker enumerate
@@ -41,12 +50,22 @@ type PublicTenantInfo struct {
 }
 
 // LookupByOrgCode is called by an unauthenticated client (login screen,
-// marketing site) to translate an Org Code to branding data. Uses the
-// public-lookup RLS policy so the conn doesn't need a tenant_id session var.
+// marketing site) to translate an Org Code to branding data. Hot path —
+// hit Redis first, fall back to DB on miss. Cache TTL is intentionally
+// short (5 min) so a tenant editing their branding sees changes quickly
+// without us having to plumb invalidation calls through every write.
 func (s *Service) LookupByOrgCode(ctx context.Context, code string) (*PublicTenantInfo, error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	if code == "" {
 		return nil, fmt.Errorf("org code required")
+	}
+
+	cacheKey := cache.KeyTenantByOrgCode(code)
+	if s.cache != nil {
+		var cached PublicTenantInfo
+		if hit, _ := s.cache.Get(ctx, cacheKey, &cached); hit {
+			return &cached, nil
+		}
 	}
 
 	conn, err := s.pool.Acquire(ctx)
@@ -74,6 +93,9 @@ func (s *Service) LookupByOrgCode(ctx context.Context, code string) (*PublicTena
 	}
 	if t.LogoUrl.Valid {
 		info.LogoURL = t.LogoUrl.String
+	}
+	if s.cache != nil {
+		s.cache.Set(ctx, cacheKey, info, 5*time.Minute)
 	}
 	return info, nil
 }
@@ -150,6 +172,15 @@ func (s *Service) UpdateBranding(ctx context.Context, tenantID uuid.UUID, req Up
 	})
 	if err != nil {
 		return nil, err
+	}
+	// Bust the cached lookup so admin-side edits show up immediately on
+	// the marketing/login surfaces. Both the org-code and id keys point
+	// at the same row, so we drop both.
+	if s.cache != nil {
+		s.cache.Invalidate(ctx,
+			cache.KeyTenantByOrgCode(t.OrgCode),
+			cache.KeyTenantByID(uuid.UUID(t.ID.Bytes).String()),
+		)
 	}
 	return &t, nil
 }

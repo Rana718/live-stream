@@ -56,6 +56,28 @@ UPDATE user_subscriptions
 SET status = 'cancelled', cancelled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 WHERE id = $1;
 
+-- name: GetUserSubByProviderID :one
+-- Razorpay webhooks reference the subscription by their internal id
+-- (sub_XXX). We store it on user_subscriptions when the subscription is
+-- created, so the webhook handler can resolve the local row without a
+-- per-event mapping table.
+SELECT * FROM user_subscriptions
+WHERE razorpay_subscription_id = $1
+LIMIT 1;
+
+-- name: SetUserSubStatusByProviderID :one
+-- Patches just the status. We don't touch ends_at on cancellation so
+-- the user keeps access until their paid period ends; cancellation only
+-- prevents the next renewal.
+UPDATE user_subscriptions
+SET status = $2,
+    updated_at = CURRENT_TIMESTAMP,
+    cancelled_at = CASE WHEN $2 IN ('cancelled', 'completed', 'halted')
+                        THEN COALESCE(cancelled_at, CURRENT_TIMESTAMP)
+                        ELSE cancelled_at END
+WHERE razorpay_subscription_id = $1
+RETURNING *;
+
 -- name: CreatePayment :one
 INSERT INTO payments (user_id, subscription_id, amount, currency, provider, provider_order_id, status, metadata)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)

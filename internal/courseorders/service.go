@@ -28,9 +28,10 @@ import (
 )
 
 type Service struct {
-	q        *db.Queries
-	rp       *payments.Razorpay
-	producer *events.Producer
+	q         *db.Queries
+	rp        *payments.Razorpay
+	producer  *events.Producer
+	referrals ReferralRewarder
 }
 
 func NewService(pool *pgxpool.Pool, rp *payments.Razorpay) *Service {
@@ -40,6 +41,19 @@ func NewService(pool *pgxpool.Pool, rp *payments.Razorpay) *Service {
 // WithProducer wires the Kafka producer so successful purchases emit
 // payment.succeeded + course.purchased events. Optional.
 func (s *Service) WithProducer(p *events.Producer) *Service { s.producer = p; return s }
+
+// ReferralRewarder is the slice of internal/referrals that courseorders
+// depends on. Defined here (rather than imported) so the package stays
+// import-cycle-free: referrals doesn't know about courseorders, courseorders
+// just needs "credit a referrer when this user makes a purchase".
+type ReferralRewarder interface {
+	RewardOnPurchase(ctx context.Context, referredUser uuid.UUID) (int64, error)
+}
+
+// WithReferrals wires the reward-on-first-purchase hook. Optional —
+// leaving it nil simply skips the reward step (the purchase still
+// completes normally).
+func (s *Service) WithReferrals(r ReferralRewarder) *Service { s.referrals = r; return s }
 
 // CreateOrderResult is what the buy endpoint hands back to the client.
 // Mirrors what razorpay_flutter / Razorpay JS expects on its checkout call.
@@ -186,6 +200,20 @@ func (s *Service) Verify(ctx context.Context, req VerifyRequest, userID uuid.UUI
 	s.producer.Emit(ctx, events.TypeCoursePurchased, tenantID, userID, map[string]any{
 		"course_id": courseID,
 	})
+
+	// Credit the referrer if this user signed up with a referral code.
+	// Best-effort — we don't fail the purchase if the reward step errors.
+	// The reward only fires on the user's *first* paid purchase because
+	// referrals.RewardOnPurchase looks for status='signed_up' events and
+	// flips them to rewarded; subsequent purchases find no pending event.
+	if s.referrals != nil {
+		if amt, err := s.referrals.RewardOnPurchase(ctx, userID); err == nil && amt > 0 {
+			s.producer.Emit(ctx, "referral.rewarded", tenantID, userID, map[string]any{
+				"reward_paise": amt,
+				"course_id":    courseID,
+			})
+		}
+	}
 
 	return &updated, nil
 }
