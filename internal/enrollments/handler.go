@@ -19,6 +19,7 @@ func NewHandler(s *Service) *Handler { return &Handler{service: s} }
 // @Router /enrollments [post]
 func (h *Handler) Enroll(c fiber.Ctx) error {
 	userID, _ := c.Locals("userID").(uuid.UUID)
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	var req EnrollRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -26,7 +27,7 @@ func (h *Handler) Enroll(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	e, err := h.service.Enroll(c.Context(), userID, req)
+	e, err := h.service.Enroll(c.Context(), tenantID, userID, req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}

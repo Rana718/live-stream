@@ -1,13 +1,17 @@
 -- name: CreateCoupon :one
+-- Caller uppercases the code in Go before passing it in. SQL upper() was
+-- previously inline but sqlc couldn't infer the parameter name from
+-- expressions inside function calls, so the generated struct had an ugly
+-- `Upper interface{}` field.
 INSERT INTO coupons (
     tenant_id, code, discount_type, discount_value, max_discount,
     scope, min_amount, starts_at, ends_at, usage_limit
-) VALUES ($1, upper($2), $3, $4, $5, $6, $7, $8, $9, $10)
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 RETURNING *;
 
 -- name: GetCouponByCode :one
 SELECT * FROM coupons
-WHERE tenant_id = $1 AND code = upper($2) AND is_active = TRUE
+WHERE tenant_id = $1 AND code = $2 AND is_active = TRUE
 LIMIT 1;
 
 -- name: ListCoupons :many

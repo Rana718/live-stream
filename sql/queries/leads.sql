@@ -13,6 +13,8 @@ LIMIT $2 OFFSET $3;
 
 -- name: UpdateLeadStatus :one
 UPDATE leads
-SET status = $2, notes = COALESCE(NULLIF($3::text, ''), notes)
+SET status = $2,
+    notes = COALESCE(NULLIF($3::text, ''), notes),
+    assigned_to = COALESCE($4, assigned_to)
 WHERE id = $1
 RETURNING *;

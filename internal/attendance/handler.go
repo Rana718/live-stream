@@ -293,7 +293,7 @@ func (h *Handler) ExportCSV(c fiber.Ctx) error {
 			lt = r.LeaveTime.Time.Format(time.RFC3339)
 		}
 		_ = w.Write([]string{
-			r.Email,
+			utils.TextFromPg(r.Email),
 			utils.TextFromPg(r.FullName),
 			r.LectureTitle,
 			scheduled,

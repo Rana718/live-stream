@@ -125,7 +125,7 @@ func (s *Service) Apply(ctx context.Context, tenantID, userID uuid.UUID, code st
 	code = strings.ToUpper(strings.TrimSpace(code))
 	coupon, err := s.q.GetCouponByCode(ctx, db.GetCouponByCodeParams{
 		TenantID: pgtype.UUID{Bytes: tenantID, Valid: true},
-		Upper:    code,
+		Code:     code,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("invalid coupon")

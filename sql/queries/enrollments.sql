@@ -1,6 +1,6 @@
 -- name: CreateEnrollment :one
-INSERT INTO enrollments (user_id, course_id, batch_id, status)
-VALUES ($1, $2, $3, $4)
+INSERT INTO enrollments (tenant_id, user_id, course_id, batch_id, status)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (user_id, course_id) DO UPDATE SET status = EXCLUDED.status, enrolled_at = CURRENT_TIMESTAMP
 RETURNING *;
 

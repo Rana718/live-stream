@@ -19,8 +19,9 @@ type EnrollRequest struct {
 	BatchID  *uuid.UUID `json:"batch_id"`
 }
 
-func (s *Service) Enroll(ctx context.Context, userID uuid.UUID, req EnrollRequest) (*db.Enrollment, error) {
+func (s *Service) Enroll(ctx context.Context, tenantID, userID uuid.UUID, req EnrollRequest) (*db.Enrollment, error) {
 	e, err := s.q.CreateEnrollment(ctx, db.CreateEnrollmentParams{
+		TenantID: utils.UUIDToPg(tenantID),
 		UserID:   utils.UUIDToPg(userID),
 		CourseID: utils.UUIDToPg(req.CourseID),
 		BatchID:  utils.UUIDPtrToPg(req.BatchID),

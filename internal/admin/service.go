@@ -155,7 +155,7 @@ func (s *Service) SetUserActive(ctx context.Context, id uuid.UUID, active bool) 
 func (s *Service) ResetUserPassword(ctx context.Context, id uuid.UUID, newHash string) (*db.User, error) {
 	u, err := s.q.AdminResetUserPassword(ctx, db.AdminResetUserPasswordParams{
 		ID:           utils.UUIDToPg(id),
-		PasswordHash: newHash,
+		PasswordHash: utils.TextToPg(newHash),
 	})
 	if err != nil {
 		return nil, err

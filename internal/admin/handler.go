@@ -60,8 +60,7 @@ func (h *Handler) ListUsers(c fiber.Ctx) error {
 	for i, r := range rows {
 		out[i] = fiber.Map{
 			"id":                utils.UUIDFromPg(r.ID),
-			"email":             r.Email,
-			"username":          r.Username,
+			"email":             utils.TextFromPg(r.Email),
 			"full_name":         utils.TextFromPg(r.FullName),
 			"role":              utils.TextFromPg(r.Role),
 			"is_active":         utils.BoolFromPg(r.IsActive),
@@ -182,8 +181,8 @@ func (h *Handler) UpdateUser(c fiber.Ctx) error {
 	}
 	return c.JSON(fiber.Map{
 		"id":        utils.UUIDFromPg(u.ID),
-		"email":     u.Email,
-		"username":  u.Username,
+		"email":     utils.TextFromPg(u.Email),
+		"phone":     utils.TextFromPg(u.PhoneNumber),
 		"full_name": utils.TextFromPg(u.FullName),
 		"role":      utils.TextFromPg(u.Role),
 	})
@@ -316,8 +315,7 @@ func (h *Handler) ExportUsersCSV(c fiber.Ctx) error {
 		}
 		_ = w.Write([]string{
 			utils.UUIDFromPg(r.ID),
-			r.Email,
-			r.Username,
+			utils.TextFromPg(r.Email),
 			utils.TextFromPg(r.FullName),
 			utils.TextFromPg(r.Role),
 			active,

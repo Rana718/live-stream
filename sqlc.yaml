@@ -2,7 +2,11 @@ version: "2"
 sql:
   - engine: "postgresql"
     queries: "sql/queries"
-    schema: "sql/schema"
+    # Point sqlc at the migration files directly instead of a parallel
+    # sql/schema/ directory. Maintaining schema/ by hand was a constant
+    # source of "table doesn't exist" errors. sqlc applies migration files
+    # in lexical order so the generated Go reflects the live database.
+    schema: "migrations"
     gen:
       go:
         package: "db"
@@ -12,3 +16,19 @@ sql:
         emit_prepared_queries: false
         emit_interface: true
         emit_exact_table_names: false
+        # Type overrides — keep pre-1.31 behaviour for the three enums so
+        # existing handler/service code that uses pgtype.Text + manual
+        # validation keeps compiling. Without these sqlc would emit
+        # NullUserRole / NullStreamStatus / NullRecordingStatus types and
+        # break dozens of call sites that have no semantic need for the
+        # stricter typing.
+        overrides:
+          - db_type: "user_role"
+            go_type: "github.com/jackc/pgx/v5/pgtype.Text"
+            nullable: true
+          - db_type: "stream_status"
+            go_type: "github.com/jackc/pgx/v5/pgtype.Text"
+            nullable: true
+          - db_type: "recording_status"
+            go_type: "github.com/jackc/pgx/v5/pgtype.Text"
+            nullable: true

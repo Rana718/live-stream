@@ -105,10 +105,4 @@ WHERE tenant_id = $1 AND status = 'active'
 ORDER BY created_at DESC
 LIMIT 1;
 
--- name: UpdateLeadStatus :one
-UPDATE leads
-SET status = $2,
-    notes = COALESCE(NULLIF($3::text, ''), notes),
-    assigned_to = COALESCE($4, assigned_to)
-WHERE id = $1
-RETURNING *;
+-- (UpdateLeadStatus lives in leads.sql)

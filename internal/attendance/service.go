@@ -242,7 +242,7 @@ func (s *Service) LowAttendance(ctx context.Context, batchID *uuid.UUID, thresho
 	for _, r := range rows {
 		out = append(out, LowAttendanceRow{
 			UserID:   utils.UUIDFromPg(r.UserID),
-			Email:    r.Email,
+			Email:    utils.TextFromPg(r.Email),
 			FullName: utils.TextFromPg(r.FullName),
 			Total:    r.Total,
 			Attended: r.Attended,

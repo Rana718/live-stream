@@ -69,9 +69,6 @@ SET password_hash = $2, updated_at = CURRENT_TIMESTAMP
 WHERE id = $1
 RETURNING *;
 
--- name: GetUserByPhone :one
-SELECT * FROM users WHERE phone_number = $1 LIMIT 1;
-
 -- name: CreateUserWithPhone :one
 -- Used by the OTP login path for first-time sign-ins. No username, no email,
 -- no password — phone is the only identity. The user can attach an email or
