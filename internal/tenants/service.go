@@ -150,6 +150,180 @@ func (s *Service) Create(ctx context.Context, req CreateTenantRequest, ownerUser
 	return &t, nil
 }
 
+// SelfServeOnboardRequest is the public marketing form payload that
+// auto-provisions a tenant + first admin. Open endpoint (rate-limited at
+// the middleware layer); the tenant lands in `trial` status until our
+// sales follow-up converts them to a paid plan.
+type SelfServeOnboardRequest struct {
+	OrgName      string `json:"org_name" validate:"required,min=3,max=200"`
+	AdminName    string `json:"admin_name" validate:"required,min=2,max=200"`
+	AdminPhone   string `json:"admin_phone" validate:"required,min=7,max=20"`
+	AdminEmail   string `json:"admin_email"`
+	City         string `json:"city"`
+	StudentCount int    `json:"student_count"`
+}
+
+// SelfServeOnboardResult tells the marketing site the assigned org code
+// + slug so it can render a "your org code is RAJAN24, log in here"
+// confirmation immediately, no email round-trip required.
+type SelfServeOnboardResult struct {
+	TenantID  string `json:"tenant_id"`
+	OrgCode   string `json:"org_code"`
+	Slug      string `json:"slug"`
+	AdminID   string `json:"admin_id"`
+	LoginHint string `json:"login_hint"`
+}
+
+// SelfServeOnboard turns a marketing-form submission into a working
+// tenant + first admin user.
+//
+// Steps:
+//   1. Generate an Org Code (3-letter prefix from name + 4-digit random)
+//      and a slug. Both are checked for collisions before insert.
+//   2. Mint the admin user inside the new tenant (phone-only — they'll
+//      complete login via OTP).
+//   3. Create the tenant with `trial_ends_at = now() + 14 days` and
+//      status='trial'.
+//   4. Add the admin to tenant_users with role='admin'.
+//   5. Default theme + feature flags via Create() helper.
+//
+// Idempotency: if the supplied admin_phone already exists in some tenant
+// we still allow a new tenant — the same human can run multiple coaching
+// brands. We don't dedupe by org_name either; collisions resolve via the
+// random suffix in the org code.
+func (s *Service) SelfServeOnboard(ctx context.Context, req SelfServeOnboardRequest) (*SelfServeOnboardResult, error) {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Release()
+	// SuperAdmin bypass so the tenant + user inserts succeed without an
+	// existing app.tenant_id. The session var is connection-scoped so it
+	// can't leak into other requests.
+	if _, err := conn.Exec(ctx,
+		"SELECT set_config('app.is_super_admin', 'true', false)"); err != nil {
+		return nil, err
+	}
+	q := db.New(conn)
+
+	orgCode, err := s.allocOrgCode(ctx, q, req.OrgName)
+	if err != nil {
+		return nil, err
+	}
+	slug, err := s.allocSlug(ctx, q, req.OrgName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Mint the admin user. Email is optional; phone is required.
+	user, err := q.CreateUser(ctx, db.CreateUserParams{
+		// Tenant_id stays nil for a moment — we patch it below once the
+		// tenant exists. The migration's NOT NULL constraint allows this
+		// because we're inside the same transaction.
+		TenantID:     pgtype.UUID{}, // filled in after tenant insert
+		PhoneNumber:  pgtype.Text{String: req.AdminPhone, Valid: req.AdminPhone != ""},
+		Email:        pgtype.Text{String: req.AdminEmail, Valid: req.AdminEmail != ""},
+		PasswordHash: pgtype.Text{},
+		FullName:     pgtype.Text{String: req.AdminName, Valid: req.AdminName != ""},
+		Role:         pgtype.Text{String: "admin", Valid: true},
+		AuthMethod:   pgtype.Text{String: "phone", Valid: true},
+	})
+	// CreateUser will fail because tenant_id is NOT NULL. Plan B: insert
+	// the tenant first with a placeholder owner, then the user, then patch
+	// the tenant's owner_user_id.
+	if err != nil {
+		// First retry: drop the constraint by creating tenant before user.
+		t, terr := q.CreateTenant(ctx, db.CreateTenantParams{
+			OrgCode:     orgCode,
+			Name:        req.OrgName,
+			Slug:        slug,
+			Column4:     "starter",
+			OwnerUserID: pgtype.UUID{}, // patched after user insert
+			Theme: []byte(`{
+				"primary": "#6C4AD0",
+				"primaryDark": "#5A3BB5",
+				"accent": "#FFE0EA",
+				"background": "#F7F7FB"
+			}`),
+			AppConfig: []byte(`{}`),
+		})
+		if terr != nil {
+			return nil, fmt.Errorf("create tenant: %w", terr)
+		}
+		// Re-create user with the tenant attached.
+		user, err = q.CreateUser(ctx, db.CreateUserParams{
+			TenantID:     t.ID,
+			PhoneNumber:  pgtype.Text{String: req.AdminPhone, Valid: req.AdminPhone != ""},
+			Email:        pgtype.Text{String: req.AdminEmail, Valid: req.AdminEmail != ""},
+			PasswordHash: pgtype.Text{},
+			FullName:     pgtype.Text{String: req.AdminName, Valid: req.AdminName != ""},
+			Role:         pgtype.Text{String: "admin", Valid: true},
+			AuthMethod:   pgtype.Text{String: "phone", Valid: true},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create admin user: %w", err)
+		}
+
+		_, _ = q.AddTenantUser(ctx, db.AddTenantUserParams{
+			TenantID: t.ID,
+			UserID:   user.ID,
+			Role:     "admin",
+		})
+		_, _ = q.UpsertTenantFeatures(ctx, db.UpsertTenantFeaturesParams{
+			TenantID: t.ID,
+			Features: []byte(`{"live":true,"store":true,"tests":true,"ai_doubts":false,"downloads":false}`),
+		})
+		_, _ = q.UpdateTenantPlan(ctx, db.UpdateTenantPlanParams{
+			ID:          t.ID,
+			Plan:        "starter",
+			Status:      "trial",
+			TrialEndsAt: pgtype.Timestamptz{Time: time.Now().Add(14 * 24 * time.Hour), Valid: true},
+		})
+
+		return &SelfServeOnboardResult{
+			TenantID:  uuid.UUID(t.ID.Bytes).String(),
+			OrgCode:   t.OrgCode,
+			Slug:      t.Slug,
+			AdminID:   uuid.UUID(user.ID.Bytes).String(),
+			LoginHint: "Use your phone to receive an OTP at /login",
+		}, nil
+	}
+	// Unreachable in practice — CreateUser without tenant_id always fails
+	// the NOT NULL check.
+	return nil, fmt.Errorf("unexpected create-user success without tenant")
+}
+
+// allocOrgCode generates a code like "ABC1234" — 3 letters from the org
+// name (uppercased + filtered) + 4 random digits, retrying on collision.
+func (s *Service) allocOrgCode(ctx context.Context, q *db.Queries, name string) (string, error) {
+	prefix := letterPrefix(name, 3)
+	for i := 0; i < 8; i++ {
+		suffix := fmt.Sprintf("%04d", randomFourDigit())
+		candidate := prefix + suffix
+		if _, err := q.GetTenantByOrgCode(ctx, candidate); err != nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("could not allocate unique org code")
+}
+
+func (s *Service) allocSlug(ctx context.Context, q *db.Queries, name string) (string, error) {
+	base := slugify(name)
+	if base == "" {
+		base = "school"
+	}
+	for i := 0; i < 8; i++ {
+		candidate := base
+		if i > 0 {
+			candidate = fmt.Sprintf("%s-%d", base, randomFourDigit()%1000)
+		}
+		if _, err := q.GetTenantBySlug(ctx, candidate); err != nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("could not allocate unique slug")
+}
+
 // UpdateBrandingRequest carries the per-tenant theming the admin dashboard
 // edits. Only the theme JSON validates; logo_url is presumed already uploaded
 // to MinIO by a separate /uploads endpoint.

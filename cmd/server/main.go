@@ -20,6 +20,7 @@ import (
 	"live-platform/internal/banners"
 	"live-platform/internal/batches"
 	"live-platform/internal/bookmarks"
+	"live-platform/internal/bulkimport"
 	"live-platform/internal/cache"
 	"live-platform/internal/chat"
 	"live-platform/internal/chapters"
@@ -31,6 +32,7 @@ import (
 	"live-platform/internal/devices"
 	"live-platform/internal/doubts"
 	"live-platform/internal/downloads"
+	"live-platform/internal/email"
 	"live-platform/internal/enrollments"
 	"live-platform/internal/events"
 	"live-platform/internal/exams"
@@ -47,6 +49,8 @@ import (
 	"live-platform/internal/push"
 	"live-platform/internal/recording"
 	"live-platform/internal/referrals"
+	"live-platform/internal/refunds"
+	"live-platform/internal/schedule"
 	"live-platform/internal/search"
 	"live-platform/internal/share"
 	"live-platform/internal/storage"
@@ -176,6 +180,9 @@ func main() {
 	// SMS provider — nil if SMS_PROVIDER is unset, in which case the OTP
 	// flow runs in dev mode (logs the code, no real SMS).
 	smsClient := sms.New(cfg.SMS, log)
+	// Email is optional — disabled if SMTP_HOST is unset. The refunds +
+	// onboarding services degrade gracefully when nil.
+	emailClient := email.New(cfg.Email, log)
 	// Referral service is consumed by auth via the Referrer interface so
 	// OTP verify can attach a referral code at signup. Re-instantiated
 	// later for the /referrals/me handler — both share the same db.
@@ -322,6 +329,10 @@ func main() {
 		middleware.PublicLookupContext(pgPool),
 		tenantHandler.LookupByOrgCode,
 	)
+	// Self-serve tenant signup. Public, rate-limited globally. Creates a
+	// 14-day trial tenant + first admin in one shot — converts the
+	// marketing demo form into a working portal without manual setup.
+	publicGroup.Post("/tenants/onboard", tenantHandler.SelfServeOnboard)
 
 	// Public marketing lead capture. Anyone can POST.
 	leadHandler := leads.NewHandler(leads.NewService(pgPool))
@@ -394,6 +405,44 @@ func main() {
 	adminCouponsGroup.Get("/", couponHandler.AdminList)
 	adminCouponsGroup.Patch("/:id/active", couponHandler.AdminSetActive)
 	adminCouponsGroup.Delete("/:id", couponHandler.AdminDelete)
+
+	// Bulk roster import — tenant admin uploads a CSV of phone+name+role
+	// rows. The biggest blocker for a tenant flipping over from another
+	// platform is moving 500 students by hand; this turns it into 30s.
+	bulkImportHandler := bulkimport.NewHandler(bulkimport.NewService(pgPool, log))
+	api.Post("/admin/users/bulk-import",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+		middleware.AdminOnly(),
+		bulkImportHandler.Import,
+	)
+
+	// Refunds — tenant admin issues a refund. Hits Razorpay's refund API
+	// with the internal payment UUID as the idempotency key, patches the
+	// payment row to status=refunded, emails the student a receipt.
+	refundHandler := refunds.NewHandler(
+		refunds.NewService(pgPool, razorpay).WithEmail(emailClient),
+	)
+	api.Post("/admin/refunds",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+		middleware.AdminOnly(),
+		refundHandler.Issue,
+	)
+
+	// Recurring class schedules. Admin creates a weekly rule; a daily
+	// worker (out of scope here) materialises concrete `streams` rows
+	// for the next 14 days from each active schedule.
+	scheduleHandler := schedule.NewHandler(schedule.NewService(pgPool))
+	scheduleGroup := api.Group("/admin/class-schedules",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+		middleware.AdminOnly(),
+	)
+	scheduleGroup.Post("/", scheduleHandler.Create)
+	scheduleGroup.Get("/", scheduleHandler.List)
+	scheduleGroup.Patch("/:id/active", scheduleHandler.SetActive)
+	scheduleGroup.Delete("/:id", scheduleHandler.Delete)
 
 	// Razorpay webhook — public endpoint, signature-protected. Backstop for
 	// the client-side /payments/verify path when the user closes the app

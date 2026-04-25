@@ -200,6 +200,65 @@ func (r *Razorpay) VerifyPaymentSignature(orderID, paymentID, signature string) 
 	return hmac.Equal([]byte(expected), []byte(signature))
 }
 
+// Refund mirrors the fields we care about from the Razorpay refund API.
+type Refund struct {
+	ID        string `json:"id"`
+	PaymentID string `json:"payment_id"`
+	Amount    int64  `json:"amount"`
+	Currency  string `json:"currency"`
+	Status    string `json:"status"`
+}
+
+type refundReq struct {
+	Amount int64             `json:"amount,omitempty"` // omit for full refund
+	Speed  string            `json:"speed"`            // "normal" | "optimum"
+	Notes  map[string]string `json:"notes,omitempty"`
+}
+
+// CreateRefund issues a refund on a captured payment. Pass amountPaise=0
+// for a full refund. Speed="normal" goes through the slower-but-cheaper
+// settlement path; "optimum" tries instant where possible at a higher fee.
+//
+// Idempotency: Razorpay supports an `Idempotency-Key` header — caller
+// passes a stable string (we use the internal payment row UUID) so a
+// double-submit from the admin UI doesn't double-refund.
+func (r *Razorpay) CreateRefund(ctx context.Context, paymentID string, amountPaise int64, speed string, idempotencyKey string, notes map[string]string) (*Refund, error) {
+	if r.keyID == "" || r.keySecret == "" {
+		return nil, fmt.Errorf("razorpay keys not configured")
+	}
+	if speed == "" {
+		speed = "normal"
+	}
+	body := refundReq{Amount: amountPaise, Speed: speed, Notes: notes}
+	buf, _ := json.Marshal(body)
+
+	url := r.endpoint + "/payments/" + paymentID + "/refund"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(r.keyID, r.keySecret)
+	req.Header.Set("Content-Type", "application/json")
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+
+	resp, err := r.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("razorpay refund %d: %s", resp.StatusCode, string(raw))
+	}
+	var out Refund
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // VerifyWebhookSignature verifies X-Razorpay-Signature for webhook payloads.
 func (r *Razorpay) VerifyWebhookSignature(body []byte, signature string) bool {
 	if r.webhookSecret == "" {

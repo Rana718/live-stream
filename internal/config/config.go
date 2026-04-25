@@ -25,6 +25,7 @@ type Config struct {
 	Push         PushConfig
 	Codemagic    CodemagicConfig
 	WhatsApp     WhatsAppConfig
+	Email        EmailConfig
 	App          AppConfig
 }
 
@@ -160,6 +161,21 @@ type WhatsAppConfig struct {
 	TimeoutSec int
 }
 
+// EmailConfig configures SMTP for transactional email (purchase receipts,
+// onboarding confirmations). Leave Host empty to disable — the service
+// logs the would-be send and short-circuits without breaking callers.
+//
+// Plain SMTP is the lowest common denominator and every managed provider
+// (SES, Mailgun, Postmark) speaks it, so swapping is an env-var change.
+type EmailConfig struct {
+	Host       string
+	Port       int
+	Username   string
+	Password   string
+	FromAddr   string // e.g. "School <noreply@example.com>"
+	TimeoutSec int
+}
+
 type AppConfig struct {
 	BaseURL       string
 	HLSBaseURL    string
@@ -268,6 +284,14 @@ func Load() (*Config, error) {
 			AppName:    getEnv("WHATSAPP_APP_NAME", ""),
 			BaseURL:    getEnv("WHATSAPP_BASE_URL", "https://api.gupshup.io/sm/api/v1"),
 			TimeoutSec: getEnvInt("WHATSAPP_TIMEOUT", 8),
+		},
+		Email: EmailConfig{
+			Host:       getEnv("SMTP_HOST", ""),
+			Port:       getEnvInt("SMTP_PORT", 587),
+			Username:   getEnv("SMTP_USER", ""),
+			Password:   getEnv("SMTP_PASS", ""),
+			FromAddr:   getEnv("SMTP_FROM", "School <noreply@example.com>"),
+			TimeoutSec: getEnvInt("SMTP_TIMEOUT", 8),
 		},
 		Razorpay: RazorpayConfig{
 			KeyID:         getEnv("RAZORPAY_KEY_ID", ""),

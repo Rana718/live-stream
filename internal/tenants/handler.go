@@ -89,6 +89,35 @@ func (h *Handler) UpdateBranding(c fiber.Ctx) error {
 	return c.JSON(t)
 }
 
+// SelfServeOnboard handles POST /api/v1/public/tenants/onboard.
+//
+// Public — no auth. Rate-limited at the global middleware layer to deter
+// abuse. Creates a tenant in `trial` status with a 14-day clock; sales
+// follows up to convert. Idempotency is by-design loose: the same human
+// can run multiple coaching brands, so we don't dedupe by phone or name.
+//
+//	@Summary	Self-serve tenant onboarding
+//	@Tags		tenants
+//	@Param		body	body	SelfServeOnboardRequest	true	"Org + first admin"
+//	@Success	201		{object}	SelfServeOnboardResult
+//	@Router		/public/tenants/onboard [post]
+func (h *Handler) SelfServeOnboard(c fiber.Ctx) error {
+	var req SelfServeOnboardRequest
+	if err := c.Bind().Body(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
+	}
+	if req.OrgName == "" || req.AdminName == "" || req.AdminPhone == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "org_name, admin_name, admin_phone are required",
+		})
+	}
+	res, err := h.svc.SelfServeOnboard(c.Context(), req)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.Status(fiber.StatusCreated).JSON(res)
+}
+
 // CreateTenant handles POST /api/v1/admin/tenants  (super_admin only).
 //
 //	@Summary	Provision a new tenant
