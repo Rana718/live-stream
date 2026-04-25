@@ -19,6 +19,7 @@ import (
 	"strconv"
 
 	"live-platform/internal/database/db"
+	"live-platform/internal/events"
 	"live-platform/internal/payments"
 
 	"github.com/google/uuid"
@@ -27,13 +28,18 @@ import (
 )
 
 type Service struct {
-	q  *db.Queries
-	rp *payments.Razorpay
+	q        *db.Queries
+	rp       *payments.Razorpay
+	producer *events.Producer
 }
 
 func NewService(pool *pgxpool.Pool, rp *payments.Razorpay) *Service {
 	return &Service{q: db.New(pool), rp: rp}
 }
+
+// WithProducer wires the Kafka producer so successful purchases emit
+// payment.succeeded + course.purchased events. Optional.
+func (s *Service) WithProducer(p *events.Producer) *Service { s.producer = p; return s }
 
 // CreateOrderResult is what the buy endpoint hands back to the client.
 // Mirrors what razorpay_flutter / Razorpay JS expects on its checkout call.
@@ -144,6 +150,21 @@ func (s *Service) Verify(ctx context.Context, req VerifyRequest, userID uuid.UUI
 		UserID:   row.UserID,
 		CourseID: row.CourseID,
 		TenantID: row.TenantID,
+	})
+
+	// Fire-and-forget event publication. Downstream consumers (push
+	// notifications, analytics roll-ups, audit) react to these without
+	// adding latency to the verify response.
+	tenantID := uuid.UUID(row.TenantID.Bytes)
+	courseID := uuid.UUID(row.CourseID.Bytes)
+	s.producer.Emit(ctx, events.TypePaymentSucceeded, tenantID, userID, map[string]any{
+		"order_id":    req.RazorpayOrderID,
+		"payment_id":  req.RazorpayPaymentID,
+		"course_id":   courseID,
+		"amount_paid": row.Amount,
+	})
+	s.producer.Emit(ctx, events.TypeCoursePurchased, tenantID, userID, map[string]any{
+		"course_id": courseID,
 	})
 
 	return &updated, nil

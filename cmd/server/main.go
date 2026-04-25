@@ -23,8 +23,10 @@ import (
 	"live-platform/internal/chapters"
 	"live-platform/internal/config"
 	"live-platform/internal/courseorders"
+	"live-platform/internal/coupons"
 	"live-platform/internal/courses"
 	"live-platform/internal/database"
+	"live-platform/internal/devices"
 	"live-platform/internal/doubts"
 	"live-platform/internal/downloads"
 	"live-platform/internal/enrollments"
@@ -39,6 +41,7 @@ import (
 	"live-platform/internal/middleware"
 	"live-platform/internal/notifications"
 	"live-platform/internal/payments"
+	"live-platform/internal/push"
 	"live-platform/internal/recording"
 	"live-platform/internal/search"
 	"live-platform/internal/storage"
@@ -50,6 +53,7 @@ import (
 	"live-platform/internal/tests"
 	"live-platform/internal/topics"
 	"live-platform/internal/users"
+	"live-platform/internal/webhooks"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/cors"
@@ -109,31 +113,59 @@ func main() {
 	kafkaConsumer := events.NewConsumer(&cfg.Kafka, "stream-processor")
 	defer kafkaConsumer.Close()
 
-	// Background Kafka consumer
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				msg, err := kafkaConsumer.ReadMessage(ctx)
-				if err != nil {
-					if ctx.Err() != nil {
-						return
-					}
-					log.Warn("kafka read error", "err", err)
-					continue
-				}
-				log.Info("kafka event", "value", string(msg.Value))
-			}
-		}
-	}()
+
+	// Kafka dispatcher — handlers are registered below once their downstream
+	// services exist. Run the consumer goroutine after registration so we
+	// don't drop early messages on the floor.
+	dispatcher := events.NewDispatcher(log)
 
 	// --- Services ---
 	claude := aiclient.NewClaude(cfg.Claude.APIKey, cfg.Claude.Model, cfg.Claude.MaxTokens)
 	razorpay := payments.NewRazorpay(cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret, cfg.Razorpay.WebhookSecret)
+	pushClient := push.New(cfg.Push, log)
+	deviceSvc := devices.NewService(pgPool)
+
+	// Wire Kafka handlers. Each one is idempotent — Kafka redelivers on
+	// rebalance and we don't want side effects firing twice.
+	dispatcher.On(events.TypeNotificationCreated, func(ctx context.Context, ev events.Event) error {
+		// Push notification fan-out: pull the user's device tokens and
+		// dispatch via FCM. The notification row is already persisted by
+		// whichever service emitted the event; this just delivers to phones.
+		if pushClient == nil || ev.UserID == uuid.Nil {
+			return nil
+		}
+		tokens, err := deviceSvc.TokensForUser(ctx, ev.TenantID, ev.UserID)
+		if err != nil || len(tokens) == 0 {
+			return err
+		}
+		title, _ := ev.Payload["title"].(string)
+		body, _ := ev.Payload["body"].(string)
+		data := map[string]string{}
+		if route, ok := ev.Payload["route"].(string); ok {
+			data["route"] = route
+		}
+		return pushClient.Send(ctx, tokens, push.Notification{Title: title, Body: body, Data: data})
+	})
+	dispatcher.On(events.TypeUserSignedUp, func(_ context.Context, ev events.Event) error {
+		log.Info("welcome event", "user_id", ev.UserID, "tenant_id", ev.TenantID)
+		return nil
+	})
+	dispatcher.On(events.TypeCoursePurchased, func(_ context.Context, ev events.Event) error {
+		log.Info("course purchased", "user_id", ev.UserID, "course_id", ev.Payload["course_id"])
+		return nil
+	})
+	dispatcher.On(events.TypeLiveEnded, func(_ context.Context, ev events.Event) error {
+		log.Info("live ended", "stream_id", ev.Payload["stream_id"])
+		return nil
+	})
+	dispatcher.On(events.TypePaymentSucceeded, func(_ context.Context, ev events.Event) error {
+		log.Info("payment succeeded", "order_id", ev.Payload["order_id"])
+		return nil
+	})
+
+	go dispatcher.RunConsumer(ctx, kafkaConsumer)
 
 	// SMS provider — nil if SMS_PROVIDER is unset, in which case the OTP
 	// flow runs in dev mode (logs the code, no real SMS).
@@ -267,7 +299,7 @@ func main() {
 	// Direct course purchase (Phase 3). Authenticated student initiates a
 	// Razorpay order, then verifies the signature on success.
 	courseOrderHandler := courseorders.NewHandler(
-		courseorders.NewService(pgPool, razorpay),
+		courseorders.NewService(pgPool, razorpay).WithProducer(kafkaProducer),
 		cfg.Razorpay.KeyID,
 	)
 	api.Post("/courses/:id/buy",
@@ -288,6 +320,40 @@ func main() {
 		middleware.SuperAdminContext(pgPool),
 		leadHandler.List,
 	)
+
+	// Devices — FCM token registration. Mobile clients hit /devices/register
+	// on every cold start so we re-key tokens that have rotated.
+	deviceHandler := devices.NewHandler(deviceSvc)
+	devicesGroup := api.Group("/devices",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+	)
+	devicesGroup.Post("/register", deviceHandler.Register)
+	devicesGroup.Delete("/:token", deviceHandler.Unregister)
+
+	// Coupons — student "apply" + admin CRUD.
+	couponHandler := coupons.NewHandler(coupons.NewService(pgPool))
+	couponsGroup := api.Group("/coupons",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+	)
+	couponsGroup.Post("/apply", couponHandler.Apply)
+
+	adminCouponsGroup := api.Group("/admin/coupons",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+		middleware.AdminOnly(),
+	)
+	adminCouponsGroup.Post("/", couponHandler.AdminCreate)
+	adminCouponsGroup.Get("/", couponHandler.AdminList)
+	adminCouponsGroup.Patch("/:id/active", couponHandler.AdminSetActive)
+	adminCouponsGroup.Delete("/:id", couponHandler.AdminDelete)
+
+	// Razorpay webhook — public endpoint, signature-protected. Backstop for
+	// the client-side /payments/verify path when the user closes the app
+	// before the verify call lands.
+	webhookHandler := webhooks.NewHandler(pgPool, razorpay, log)
+	api.Post("/webhooks/razorpay", webhookHandler.Razorpay)
 
 	// Authenticated tenant endpoints. TenantContext sets the RLS session var
 	// on every request so the handler reads/writes only its tenant's rows.

@@ -22,6 +22,7 @@ type Config struct {
 	Claude       ClaudeConfig
 	Razorpay     RazorpayConfig
 	SMS          SMSConfig
+	Push         PushConfig
 	App          AppConfig
 }
 
@@ -122,6 +123,16 @@ type SMSConfig struct {
 	TimeoutSec   int
 }
 
+// PushConfig configures FCM for mobile + web push notifications. Leave
+// ServerKey empty to disable push; the notifications service then only
+// records in-app rows.
+type PushConfig struct {
+	Provider   string // "fcm" | ""
+	ServerKey  string // FCM legacy server key
+	BaseURL    string // default https://fcm.googleapis.com/fcm/send
+	TimeoutSec int
+}
+
 type AppConfig struct {
 	BaseURL       string
 	HLSBaseURL    string
@@ -208,6 +219,12 @@ func Load() (*Config, error) {
 			OTPTemplate: getEnv("SMS_OTP_TEMPLATE", ""),
 			BaseURL:     getEnv("SMS_BASE_URL", "https://control.msg91.com/api/v5"),
 			TimeoutSec:  getEnvInt("SMS_TIMEOUT", 8),
+		},
+		Push: PushConfig{
+			Provider:   getEnv("PUSH_PROVIDER", ""),
+			ServerKey:  getEnv("FCM_SERVER_KEY", ""),
+			BaseURL:    getEnv("FCM_BASE_URL", "https://fcm.googleapis.com/fcm/send"),
+			TimeoutSec: getEnvInt("FCM_TIMEOUT", 6),
 		},
 		Razorpay: RazorpayConfig{
 			KeyID:         getEnv("RAZORPAY_KEY_ID", ""),
