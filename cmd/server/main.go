@@ -22,6 +22,7 @@ import (
 	"live-platform/internal/chat"
 	"live-platform/internal/chapters"
 	"live-platform/internal/config"
+	"live-platform/internal/courseorders"
 	"live-platform/internal/courses"
 	"live-platform/internal/database"
 	"live-platform/internal/doubts"
@@ -30,6 +31,7 @@ import (
 	"live-platform/internal/events"
 	"live-platform/internal/exams"
 	"live-platform/internal/fees"
+	"live-platform/internal/leads"
 	"live-platform/internal/lectures"
 	"live-platform/internal/logger"
 	"live-platform/internal/materials"
@@ -41,6 +43,7 @@ import (
 	"live-platform/internal/search"
 	"live-platform/internal/storage"
 	"live-platform/internal/stream"
+	"live-platform/internal/sms"
 	"live-platform/internal/subjects"
 	"live-platform/internal/subscriptions"
 	"live-platform/internal/tenants"
@@ -132,7 +135,10 @@ func main() {
 	claude := aiclient.NewClaude(cfg.Claude.APIKey, cfg.Claude.Model, cfg.Claude.MaxTokens)
 	razorpay := payments.NewRazorpay(cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret, cfg.Razorpay.WebhookSecret)
 
-	authService := auth.NewService(pgPool, redisClient, cfg)
+	// SMS provider — nil if SMS_PROVIDER is unset, in which case the OTP
+	// flow runs in dev mode (logs the code, no real SMS).
+	smsClient := sms.New(cfg.SMS, log)
+	authService := auth.NewService(pgPool, redisClient, cfg).WithSMS(smsClient)
 	authHandler := auth.NewHandler(authService)
 
 	userService := users.NewService(pgPool)
@@ -252,6 +258,35 @@ func main() {
 	publicGroup.Get("/tenants/by-code/:code",
 		middleware.PublicLookupContext(pgPool),
 		tenantHandler.LookupByOrgCode,
+	)
+
+	// Public marketing lead capture. Anyone can POST.
+	leadHandler := leads.NewHandler(leads.NewService(pgPool))
+	publicGroup.Post("/leads", leadHandler.Create)
+
+	// Direct course purchase (Phase 3). Authenticated student initiates a
+	// Razorpay order, then verifies the signature on success.
+	courseOrderHandler := courseorders.NewHandler(
+		courseorders.NewService(pgPool, razorpay),
+		cfg.Razorpay.KeyID,
+	)
+	api.Post("/courses/:id/buy",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+		middleware.StudentOrAbove(),
+		courseOrderHandler.Buy,
+	)
+	api.Post("/payments/verify",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+		courseOrderHandler.Verify,
+	)
+
+	// Super-admin lead triage.
+	api.Get("/admin/leads",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.SuperAdminContext(pgPool),
+		leadHandler.List,
 	)
 
 	// Authenticated tenant endpoints. TenantContext sets the RLS session var

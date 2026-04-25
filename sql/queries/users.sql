@@ -1,16 +1,21 @@
 -- name: CreateUser :one
-INSERT INTO users (email, username, password_hash, full_name, role)
-VALUES ($1, $2, $3, $4, $5)
+-- Phone-primary user creation. Email + password are optional now: a Google
+-- signup will pass google_sub instead, an OTP-only signup leaves both null.
+INSERT INTO users (tenant_id, phone_number, email, password_hash, full_name, role, auth_method)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING *;
 
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = $1 LIMIT 1;
 
 -- name: GetUserByEmail :one
-SELECT * FROM users WHERE email = $1 LIMIT 1;
+SELECT * FROM users WHERE tenant_id = $1 AND lower(email) = lower($2) LIMIT 1;
 
--- name: GetUserByUsername :one
-SELECT * FROM users WHERE username = $1 LIMIT 1;
+-- name: GetUserByPhone :one
+SELECT * FROM users WHERE tenant_id = $1 AND phone_number = $2 LIMIT 1;
+
+-- name: GetUserByGoogleSub :one
+SELECT * FROM users WHERE tenant_id = $1 AND google_sub = $2 LIMIT 1;
 
 -- name: UpdateUser :one
 UPDATE users
@@ -51,7 +56,10 @@ RETURNING *;
 
 -- name: AdminUpdateUser :one
 UPDATE users
-SET full_name = $2, email = $3, username = $4, updated_at = CURRENT_TIMESTAMP
+SET full_name = $2,
+    email = $3,
+    phone_number = $4,
+    updated_at = CURRENT_TIMESTAMP
 WHERE id = $1
 RETURNING *;
 
@@ -64,22 +72,18 @@ RETURNING *;
 -- name: GetUserByPhone :one
 SELECT * FROM users WHERE phone_number = $1 LIMIT 1;
 
--- name: GetUserByGoogleSub :one
-SELECT * FROM users WHERE google_sub = $1 LIMIT 1;
-
 -- name: CreateUserWithPhone :one
--- Used by the OTP login path for first-time sign-ins. Email gets a synthetic
--- placeholder (phone@mobile.local) since the email column is NOT NULL; the
--- user can replace it by linking a real email later via /auth/link.
-INSERT INTO users (email, username, password_hash, phone_number, phone_verified, auth_method, role)
-VALUES ($1, $2, '', $3, TRUE, 'phone', 'student')
+-- Used by the OTP login path for first-time sign-ins. No username, no email,
+-- no password — phone is the only identity. The user can attach an email or
+-- a Google account later via the linking endpoints.
+INSERT INTO users (tenant_id, phone_number, phone_verified, auth_method, role)
+VALUES ($1, $2, TRUE, 'phone', 'student')
 RETURNING *;
 
 -- name: CreateUserWithGoogle :one
--- Used by the Google sign-in path for first-time sign-ins. password_hash is
--- empty — password login is impossible until the user sets one via settings.
-INSERT INTO users (email, username, password_hash, full_name, google_sub, auth_method, role, email_verified)
-VALUES ($1, $2, '', $3, $4, 'google', 'student', TRUE)
+-- Used by the Google sign-in path for first-time sign-ins.
+INSERT INTO users (tenant_id, email, full_name, google_sub, auth_method, role, email_verified)
+VALUES ($1, $2, $3, $4, 'google', 'student', TRUE)
 RETURNING *;
 
 -- name: LinkPhoneToUser :one

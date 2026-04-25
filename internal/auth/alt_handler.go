@@ -5,16 +5,17 @@ import (
 	"github.com/google/uuid"
 )
 
-// SendOtp dispatches a new OTP to a phone number. Returns the OTP inline when
-// the server runs in dev-mode (see alt_login.go) so QA can skip the SMS leg.
+// SendOtp dispatches a new OTP for a phone+org_code pair. Returns the OTP
+// inline when devModeOTP is on so QA can skip the SMS leg.
 func (h *Handler) SendOtp(c fiber.Ctx) error {
 	var req struct {
-		Phone string `json:"phone"`
+		Phone   string `json:"phone"`
+		OrgCode string `json:"org_code"`
 	}
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
-	phone, devCode, err := h.service.SendOTP(c.Context(), req.Phone)
+	phone, devCode, err := h.service.SendOTP(c.Context(), req.Phone, req.OrgCode)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -26,17 +27,18 @@ func (h *Handler) SendOtp(c fiber.Ctx) error {
 }
 
 // VerifyOtp consumes a code and returns a full token bundle (access +
-// refresh + user). First-time phones auto-create an account that will be
-// funneled through the onboarding flow on the very next navigation.
+// refresh + user) scoped to the supplied tenant. First-time phones auto-
+// create an account, with onboarding triggered on the next request.
 func (h *Handler) VerifyOtp(c fiber.Ctx) error {
 	var req struct {
-		Phone string `json:"phone"`
-		Code  string `json:"code"`
+		Phone   string `json:"phone"`
+		Code    string `json:"code"`
+		OrgCode string `json:"org_code"`
 	}
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
-	tokens, err := h.service.LoginWithOTP(c.Context(), req.Phone, req.Code)
+	tokens, err := h.service.LoginWithOTP(c.Context(), req.Phone, req.Code, req.OrgCode)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -44,14 +46,18 @@ func (h *Handler) VerifyOtp(c fiber.Ctx) error {
 }
 
 // GoogleSignIn takes the identity pulled from Google's SDK on the client and
-// mints our tokens. Current build trusts the client — phase 2b will verify
-// the ID token server-side via the Firebase Admin SDK before trusting sub.
+// mints our tokens, scoped to the tenant resolved from the org_code field.
+// Current build trusts the client — phase 2b will verify the ID token via
+// the Firebase Admin SDK before trusting sub.
 func (h *Handler) GoogleSignIn(c fiber.Ctx) error {
-	var req GoogleIdentity
+	var req struct {
+		GoogleIdentity
+		OrgCode string `json:"org_code"`
+	}
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
-	tokens, err := h.service.LoginWithGoogle(c.Context(), req)
+	tokens, err := h.service.LoginWithGoogle(c.Context(), req.GoogleIdentity, req.OrgCode)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -59,32 +65,34 @@ func (h *Handler) GoogleSignIn(c fiber.Ctx) error {
 }
 
 // LinkPhone lets an already-authenticated account claim a phone number after
-// OTP verification. Useful for users who signed up via email/Google and
-// later want mobile OTP as a secondary login method.
+// OTP verification. Useful for users who signed up via Google and later want
+// mobile OTP as a secondary login method.
 func (h *Handler) LinkPhone(c fiber.Ctx) error {
 	userID := c.Locals("userID").(uuid.UUID)
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	var req struct {
-		Phone string `json:"phone"`
-		Code  string `json:"code"`
+		Phone   string `json:"phone"`
+		Code    string `json:"code"`
+		OrgCode string `json:"org_code"`
 	}
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
-	if _, err := h.service.LinkPhone(c.Context(), userID, req.Phone, req.Code); err != nil {
+	if _, err := h.service.LinkPhone(c.Context(), userID, tenantID, req.Phone, req.Code, req.OrgCode); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"linked": true})
 }
 
-// LinkGoogle attaches a Google identity to the current account. Mirrors
-// LinkPhone semantics for users who started with email/OTP.
+// LinkGoogle attaches a Google identity to the current account.
 func (h *Handler) LinkGoogle(c fiber.Ctx) error {
 	userID := c.Locals("userID").(uuid.UUID)
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	var req GoogleIdentity
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
-	if _, err := h.service.LinkGoogle(c.Context(), userID, req); err != nil {
+	if _, err := h.service.LinkGoogle(c.Context(), userID, tenantID, req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"linked": true})

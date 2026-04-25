@@ -53,13 +53,20 @@ func random6DigitCode() (string, error) {
 	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
-// SendOTP issues a fresh code for `phone`, invalidates any earlier pending
-// codes for the same number, and returns the dev code when devModeOTP is on
-// (so the app can show it in a debug banner during QA). In production this
-// would dispatch via MSG91/Twilio and return only an opaque request ID.
-func (s *Service) SendOTP(ctx context.Context, phoneInput string) (phone, devCode string, err error) {
+// SendOTP issues a fresh code for `phone`. The Org Code is captured here too
+// so the eventual VerifyOTP knows which tenant to scope the new user under.
+// Returning the dev code is a debug affordance — flip devModeOTP off and wire
+// MSG91 in production.
+func (s *Service) SendOTP(ctx context.Context, phoneInput, orgCode string) (phone, devCode string, err error) {
 	phone, err = normalizePhone(phoneInput)
 	if err != nil {
+		return "", "", err
+	}
+
+	// We don't strictly *need* the tenant at this point (the SMS code is
+	// keyed on phone + a hash) but resolving it now gives us a fast,
+	// pre-send "is this org real" check so a typo doesn't burn an SMS.
+	if _, err := s.resolveTenant(ctx, orgCode); err != nil {
 		return "", "", err
 	}
 
@@ -84,64 +91,83 @@ func (s *Service) SendOTP(ctx context.Context, phoneInput string) (phone, devCod
 		return "", "", err
 	}
 
+	// Dispatch via SMS provider (MSG91). In dev we short-circuit and return
+	// the code so the QA flow can skip the SMS leg.
+	if !devModeOTP && s.sms != nil {
+		if e := s.sms.SendOTP(ctx, phone, code); e != nil {
+			return "", "", fmt.Errorf("sms send failed: %w", e)
+		}
+	}
 	if devModeOTP {
-		// Return the code to the caller so dev clients can skip the SMS leg.
 		return phone, code, nil
 	}
 	return phone, "", nil
 }
 
 // VerifyOTP consumes a pending code, returning the matching user (creating one
-// if the phone is new). Used for both initial login and linking a phone to an
-// already-authenticated account — callers decide how to use the resulting user.
-func (s *Service) VerifyOTP(ctx context.Context, phoneInput, code string) (*db.User, error) {
+// if the phone is new). Tenant-scoped: the user is looked up / created within
+// the tenant resolved from orgCode.
+func (s *Service) VerifyOTP(ctx context.Context, phoneInput, code, orgCode string) (*db.User, uuid.UUID, error) {
 	phone, err := normalizePhone(phoneInput)
 	if err != nil {
-		return nil, err
+		return nil, uuid.Nil, err
+	}
+
+	tenantID, err := s.resolveTenant(ctx, orgCode)
+	if err != nil {
+		return nil, uuid.Nil, err
 	}
 
 	row, err := s.queries.GetLatestSmsCode(ctx, phone)
 	if err != nil {
-		return nil, fmt.Errorf("no active code for this number")
+		return nil, uuid.Nil, fmt.Errorf("no active code for this number")
 	}
 	if row.Attempts.Int32 >= 5 {
-		return nil, fmt.Errorf("too many attempts — request a new code")
+		return nil, uuid.Nil, fmt.Errorf("too many attempts — request a new code")
 	}
 	if row.CodeHash != hashCode(code) {
 		_ = s.queries.IncrementSmsCodeAttempts(ctx, row.ID)
-		return nil, fmt.Errorf("invalid code")
+		return nil, uuid.Nil, fmt.Errorf("invalid code")
 	}
 	if err := s.queries.ConsumeSmsCode(ctx, row.ID); err != nil {
-		return nil, err
+		return nil, uuid.Nil, err
 	}
 
-	// Happy path: existing user on this phone?
-	if user, err := s.queries.GetUserByPhone(ctx, pgtype.Text{String: phone, Valid: true}); err == nil {
-		return &user, nil
+	// Existing user on this phone in this tenant?
+	if user, err := s.queries.GetUserByPhone(ctx, db.GetUserByPhoneParams{
+		TenantID:    pgtype.UUID{Bytes: tenantID, Valid: true},
+		PhoneNumber: pgtype.Text{String: phone, Valid: true},
+	}); err == nil {
+		return &user, tenantID, nil
 	}
 
-	// First time we see this phone — mint a minimal account. The learner
-	// will finish their profile via the onboarding flow (class / board / goal).
-	email := fmt.Sprintf("%s@mobile.local", strings.TrimPrefix(phone, "+"))
-	username := "u" + strings.TrimPrefix(phone, "+")
+	// First time we see this phone in this tenant — auto-provision a student
+	// account. No username, no email, no password — phone is the identity.
 	user, err := s.queries.CreateUserWithPhone(ctx, db.CreateUserWithPhoneParams{
-		Email:       email,
-		Username:    username,
+		TenantID:    pgtype.UUID{Bytes: tenantID, Valid: true},
 		PhoneNumber: pgtype.Text{String: phone, Valid: true},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("couldn't create account: %w", err)
+		return nil, uuid.Nil, fmt.Errorf("couldn't create account: %w", err)
 	}
-	return &user, nil
+
+	// Ensure tenant_users membership exists for the freshly created student.
+	_, _ = s.queries.AddTenantUser(ctx, db.AddTenantUserParams{
+		TenantID: pgtype.UUID{Bytes: tenantID, Valid: true},
+		UserID:   user.ID,
+		Role:     "student",
+	})
+	return &user, tenantID, nil
 }
 
-// LoginWithOTP is the handler-facing path: verify + issue tokens.
-func (s *Service) LoginWithOTP(ctx context.Context, phone, code string) (*TokenResponse, error) {
-	user, err := s.VerifyOTP(ctx, phone, code)
+// LoginWithOTP is the handler-facing path: verify + issue tokens scoped to
+// the resolved tenant.
+func (s *Service) LoginWithOTP(ctx context.Context, phone, code, orgCode string) (*TokenResponse, error) {
+	user, tenantID, err := s.VerifyOTP(ctx, phone, code, orgCode)
 	if err != nil {
 		return nil, err
 	}
-	return s.issueTokensForUser(ctx, user, uuid.Nil)
+	return s.issueTokensForUser(ctx, user, tenantID)
 }
 
 // GoogleIdentity is the minimum data we accept from the client after a Google
@@ -154,20 +180,32 @@ type GoogleIdentity struct {
 }
 
 // LoginWithGoogle creates-or-fetches a user keyed by the Google subject claim
-// and issues tokens. Dev-mode caveat: we trust whatever sub/email the client
-// sends. Do not ship to production without adding ID-token verification.
-func (s *Service) LoginWithGoogle(ctx context.Context, id GoogleIdentity) (*TokenResponse, error) {
+// inside the resolved tenant, then issues tokens. The tenant is required so
+// the same Google account can belong to different orgs as separate user rows.
+func (s *Service) LoginWithGoogle(ctx context.Context, id GoogleIdentity, orgCode string) (*TokenResponse, error) {
 	if id.Sub == "" || id.Email == "" {
 		return nil, fmt.Errorf("missing google identity")
 	}
 
-	// Prefer google_sub so email rotations don't lose the link.
-	if user, err := s.queries.GetUserByGoogleSub(ctx, pgtype.Text{String: id.Sub, Valid: true}); err == nil {
-		return s.issueTokensForUser(ctx, &user, uuid.Nil)
+	tenantID, err := s.resolveTenant(ctx, orgCode)
+	if err != nil {
+		return nil, err
+	}
+	tID := pgtype.UUID{Bytes: tenantID, Valid: true}
+
+	// Prefer google_sub within tenant so email rotations don't lose the link.
+	if user, err := s.queries.GetUserByGoogleSub(ctx, db.GetUserByGoogleSubParams{
+		TenantID:  tID,
+		GoogleSub: pgtype.Text{String: id.Sub, Valid: true},
+	}); err == nil {
+		return s.issueTokensForUser(ctx, &user, tenantID)
 	}
 
-	// Existing account on the same email? Attach google_sub to it.
-	if user, err := s.queries.GetUserByEmail(ctx, id.Email); err == nil {
+	// Existing account on the same email in this tenant? Attach google_sub.
+	if user, err := s.queries.GetUserByEmail(ctx, db.GetUserByEmailParams{
+		TenantID: tID,
+		Lower:    id.Email,
+	}); err == nil {
 		linked, err := s.queries.LinkGoogleToUser(ctx, db.LinkGoogleToUserParams{
 			ID:        user.ID,
 			GoogleSub: pgtype.Text{String: id.Sub, Valid: true},
@@ -175,39 +213,45 @@ func (s *Service) LoginWithGoogle(ctx context.Context, id GoogleIdentity) (*Toke
 		if err != nil {
 			return nil, err
 		}
-		return s.issueTokensForUser(ctx, &linked, uuid.Nil)
+		return s.issueTokensForUser(ctx, &linked, tenantID)
 	}
 
-	// Brand-new account from Google.
-	username := "g" + strings.Split(id.Sub, "")[0] + fmt.Sprintf("%d", time.Now().Unix())
+	// Brand-new account from Google. No username — phone-or-email-only.
 	user, err := s.queries.CreateUserWithGoogle(ctx, db.CreateUserWithGoogleParams{
-		Email:     id.Email,
-		Username:  username,
+		TenantID:  tID,
+		Email:     pgtype.Text{String: id.Email, Valid: true},
 		FullName:  pgtype.Text{String: id.FullName, Valid: id.FullName != ""},
 		GoogleSub: pgtype.Text{String: id.Sub, Valid: true},
 	})
 	if err != nil {
 		return nil, err
 	}
-	return s.issueTokensForUser(ctx, &user, uuid.Nil)
+	_, _ = s.queries.AddTenantUser(ctx, db.AddTenantUserParams{
+		TenantID: tID,
+		UserID:   user.ID,
+		Role:     "student",
+	})
+	return s.issueTokensForUser(ctx, &user, tenantID)
 }
 
 // LinkPhone attaches a verified phone number to an existing authenticated
-// account. Separate from LoginWithOTP so the caller can gate it behind an
-// access token: only logged-in users can link extra identities.
-func (s *Service) LinkPhone(ctx context.Context, userID uuid.UUID, phoneInput, code string) (*db.User, error) {
+// account. Tenant-scoped: links happen within the user's current tenant only.
+func (s *Service) LinkPhone(ctx context.Context, userID uuid.UUID, tenantID uuid.UUID, phoneInput, code, orgCode string) (*db.User, error) {
 	phone, err := normalizePhone(phoneInput)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.VerifyOTP(ctx, phone, code); err != nil {
+	if _, _, err := s.VerifyOTP(ctx, phone, code, orgCode); err != nil {
 		return nil, err
 	}
 
+	tID := pgtype.UUID{Bytes: tenantID, Valid: true}
 	// Phone might already belong to a different user if the learner used OTP
-	// login at some point in the past. Refuse rather than silently merge —
-	// merging accounts needs explicit UX we haven't built yet.
-	if other, err := s.queries.GetUserByPhone(ctx, pgtype.Text{String: phone, Valid: true}); err == nil {
+	// login at some point in the past. Refuse rather than silently merge.
+	if other, err := s.queries.GetUserByPhone(ctx, db.GetUserByPhoneParams{
+		TenantID:    tID,
+		PhoneNumber: pgtype.Text{String: phone, Valid: true},
+	}); err == nil {
 		if uuid.UUID(other.ID.Bytes) != userID {
 			return nil, fmt.Errorf("phone already belongs to another account")
 		}
@@ -226,11 +270,15 @@ func (s *Service) LinkPhone(ctx context.Context, userID uuid.UUID, phoneInput, c
 
 // LinkGoogle attaches a Google identity to an existing authenticated account.
 // Mirrors LinkPhone's conflict handling.
-func (s *Service) LinkGoogle(ctx context.Context, userID uuid.UUID, id GoogleIdentity) (*db.User, error) {
+func (s *Service) LinkGoogle(ctx context.Context, userID, tenantID uuid.UUID, id GoogleIdentity) (*db.User, error) {
 	if id.Sub == "" {
 		return nil, fmt.Errorf("missing google sub")
 	}
-	if other, err := s.queries.GetUserByGoogleSub(ctx, pgtype.Text{String: id.Sub, Valid: true}); err == nil {
+	tID := pgtype.UUID{Bytes: tenantID, Valid: true}
+	if other, err := s.queries.GetUserByGoogleSub(ctx, db.GetUserByGoogleSubParams{
+		TenantID:  tID,
+		GoogleSub: pgtype.Text{String: id.Sub, Valid: true},
+	}); err == nil {
 		if uuid.UUID(other.ID.Bytes) != userID {
 			return nil, fmt.Errorf("google account already linked elsewhere")
 		}

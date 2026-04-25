@@ -13,72 +13,41 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-// RegisterStudent godoc
-// @Summary Register a new student
-// @Description Register a new student account
-// @Tags auth
-// @Accept json
-// @Produce json
-// @Param request body RegisterRequest true "Student registration details"
-// @Success 201 {object} map[string]interface{} "Student registered successfully"
-// @Failure 400 {object} map[string]interface{} "Invalid request"
-// @Router /auth/register/student [post]
+// RegisterStudent and RegisterInstructor were the legacy email/password paths.
+// They now return 410 Gone — both flows happen automatically via the OTP
+// verify endpoint, which auto-creates a user the first time a phone is seen.
+//
+// @Summary [deprecated] Self-serve student/instructor registration
+// @Tags    auth
+// @Failure 410 {object} map[string]interface{}
+// @Router  /auth/register/student [post]
 func (h *Handler) RegisterStudent(c fiber.Ctx) error {
-	var req RegisterRequest
-	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
-	}
-
-	user, err := h.service.RegisterStudent(c.Context(), req)
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"message": "student registered successfully",
-		"user":    user,
+	return c.Status(fiber.StatusGone).JSON(fiber.Map{
+		"error": "self-serve email registration removed",
+		"hint":  "POST /auth/otp/send to start phone-OTP signup",
 	})
 }
 
-// RegisterInstructor godoc
-// @Summary Register a new instructor
-// @Description Register a new instructor account (requires admin approval in production)
-// @Tags auth
-// @Accept json
-// @Produce json
-// @Param request body RegisterRequest true "Instructor registration details"
-// @Success 201 {object} map[string]interface{} "Instructor registered successfully"
-// @Failure 400 {object} map[string]interface{} "Invalid request"
-// @Router /auth/register/instructor [post]
+// @Summary [deprecated] Self-serve instructor registration
+// @Tags    auth
+// @Router  /auth/register/instructor [post]
 func (h *Handler) RegisterInstructor(c fiber.Ctx) error {
-	var req RegisterRequest
-	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
-	}
-
-	user, err := h.service.RegisterInstructor(c.Context(), req)
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"message": "instructor registered successfully",
-		"user":    user,
+	return c.Status(fiber.StatusGone).JSON(fiber.Map{
+		"error": "self-serve email registration removed",
+		"hint":  "instructors are invited by tenant admins via POST /admin/users",
 	})
 }
 
-// RegisterAdmin godoc
-// @Summary Register a new admin
-// @Description Register a new admin account (protected - requires existing admin)
-// @Tags auth
-// @Accept json
-// @Produce json
+// RegisterAdmin pre-creates a user record by phone for an admin role.
+// Bulk-onboarding tools call this to seed the user table before the human
+// completes auth via OTP. No password is set.
+//
+// @Summary  Pre-create an admin user record (phone-only)
+// @Tags     auth
 // @Security BearerAuth
-// @Param request body RegisterRequest true "Admin registration details"
-// @Success 201 {object} map[string]interface{} "Admin registered successfully"
-// @Failure 400 {object} map[string]interface{} "Invalid request"
-// @Failure 403 {object} map[string]interface{} "Forbidden"
-// @Router /auth/register/admin [post]
+// @Param    request body RegisterRequest true "Admin shell — full_name + phone + org_code"
+// @Success  201 {object} map[string]interface{}
+// @Router   /auth/register/admin [post]
 func (h *Handler) RegisterAdmin(c fiber.Ctx) error {
 	var req RegisterRequest
 	if err := c.Bind().JSON(&req); err != nil {
@@ -91,34 +60,26 @@ func (h *Handler) RegisterAdmin(c fiber.Ctx) error {
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"message": "admin registered successfully",
+		"message": "admin user shell created — they sign in via /auth/otp/verify",
 		"user":    user,
 	})
 }
 
 // Login godoc
-// @Summary User login
-// @Description Login with email and password. Sets JWT tokens in HTTP-only cookies.
-// @Tags auth
-// @Accept json
-// @Produce json
-// @Param request body LoginRequest true "Login credentials"
-// @Success 200 {object} TokenResponse "Login successful"
-// @Failure 400 {object} map[string]interface{} "Invalid request"
-// @Failure 401 {object} map[string]interface{} "Invalid credentials"
-// @Router /auth/login [post]
+// Login (deprecated): email/password login was removed. Phone OTP and Google
+// sign-in are the only supported flows. Old clients hit this and get a 410
+// with a hint pointing them at /auth/otp/send.
+//
+// @Summary  [deprecated] Email login
+// @Tags     auth
+// @Failure  410 {object} map[string]interface{}
+// @Router   /auth/login [post]
 func (h *Handler) Login(c fiber.Ctx) error {
-	var req LoginRequest
-	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
-	}
-
-	tokens, err := h.service.Login(c.Context(), req)
-	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	return c.JSON(tokens)
+	return c.Status(fiber.StatusGone).JSON(fiber.Map{
+		"error":  "email login removed",
+		"hint":   "use POST /auth/otp/send and POST /auth/otp/verify",
+		"google": "POST /auth/google",
+	})
 }
 
 // Logout godoc

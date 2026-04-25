@@ -21,6 +21,7 @@ type Config struct {
 	Logging      LoggingConfig
 	Claude       ClaudeConfig
 	Razorpay     RazorpayConfig
+	SMS          SMSConfig
 	App          AppConfig
 }
 
@@ -109,6 +110,18 @@ type RazorpayConfig struct {
 	WebhookSecret string
 }
 
+// SMSConfig configures the SMS provider used for OTP delivery. We support
+// MSG91 (Indian DLT-compliant) out of the box. Leave AuthKey empty to
+// disable SMS dispatch — the dev OTP flow short-circuits in that case.
+type SMSConfig struct {
+	Provider     string // "msg91" | "" (none)
+	AuthKey      string
+	SenderID     string // 6-letter DLT sender ID
+	OTPTemplate  string // MSG91 OTP template ID
+	BaseURL      string // override for tests
+	TimeoutSec   int
+}
+
 type AppConfig struct {
 	BaseURL       string
 	HLSBaseURL    string
@@ -187,6 +200,14 @@ func Load() (*Config, error) {
 			APIKey:    getEnv("CLAUDE_API_KEY", ""),
 			Model:     getEnv("CLAUDE_MODEL", "claude-sonnet-4-6"),
 			MaxTokens: getEnvInt("CLAUDE_MAX_TOKENS", 2048),
+		},
+		SMS: SMSConfig{
+			Provider:    getEnv("SMS_PROVIDER", ""),
+			AuthKey:     getEnv("SMS_AUTH_KEY", ""),
+			SenderID:    getEnv("SMS_SENDER_ID", ""),
+			OTPTemplate: getEnv("SMS_OTP_TEMPLATE", ""),
+			BaseURL:     getEnv("SMS_BASE_URL", "https://control.msg91.com/api/v5"),
+			TimeoutSec:  getEnvInt("SMS_TIMEOUT", 8),
 		},
 		Razorpay: RazorpayConfig{
 			KeyID:         getEnv("RAZORPAY_KEY_ID", ""),

@@ -114,15 +114,15 @@ func (s *Service) ListPendingApproval(ctx context.Context, limit, offset int32) 
 type AdminUpdateUserRequest struct {
 	FullName string `json:"full_name"`
 	Email    string `json:"email"`
-	Username string `json:"username"`
+	Phone    string `json:"phone"`
 }
 
 func (s *Service) UpdateUser(ctx context.Context, id uuid.UUID, req AdminUpdateUserRequest) (*db.User, error) {
 	u, err := s.q.AdminUpdateUser(ctx, db.AdminUpdateUserParams{
-		ID:       utils.UUIDToPg(id),
-		FullName: utils.TextToPg(req.FullName),
-		Email:    req.Email,
-		Username: req.Username,
+		ID:          utils.UUIDToPg(id),
+		FullName:    utils.TextToPg(req.FullName),
+		Email:       utils.TextToPg(req.Email),
+		PhoneNumber: utils.TextToPg(req.Phone),
 	})
 	if err != nil {
 		return nil, err

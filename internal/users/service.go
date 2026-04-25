@@ -45,17 +45,26 @@ func (s *Service) GetUserProfile(ctx context.Context, userID uuid.UUID) (*UserPr
 		fullName = user.FullName.String
 	}
 
+	email := ""
+	if user.Email.Valid {
+		email = user.Email.String
+	}
+	phone := ""
+	if user.PhoneNumber.Valid {
+		phone = user.PhoneNumber.String
+	}
+
 	return &UserProfile{
-		ID:                   uuid.UUID(user.ID.Bytes),
-		Email:                user.Email,
-		Username:             user.Username,
-		FullName:             fullName,
-		Role:                 role,
-		IsActive:             user.IsActive.Bool,
-		ClassLevel:           textPtr(user.ClassLevel),
-		Board:                textPtr(user.Board),
-		ExamGoal:             textPtr(user.ExamGoal),
-		OnboardingCompleted:  user.OnboardingCompleted.Bool,
+		ID:                  uuid.UUID(user.ID.Bytes),
+		Email:               email,
+		Phone:               phone,
+		FullName:            fullName,
+		Role:                role,
+		IsActive:            user.IsActive.Bool,
+		ClassLevel:          textPtr(user.ClassLevel),
+		Board:               textPtr(user.Board),
+		ExamGoal:            textPtr(user.ExamGoal),
+		OnboardingCompleted: user.OnboardingCompleted.Bool,
 	}, nil
 }
 
@@ -124,8 +133,8 @@ func (s *Service) ListUsers(ctx context.Context, limit, offset int32) ([]db.User
 
 type UserProfile struct {
 	ID                  uuid.UUID `json:"id"`
-	Email               string    `json:"email"`
-	Username            string    `json:"username"`
+	Phone               string    `json:"phone"`
+	Email               string    `json:"email,omitempty"`
 	FullName            string    `json:"full_name"`
 	Role                string    `json:"role"`
 	IsActive            bool      `json:"is_active"`

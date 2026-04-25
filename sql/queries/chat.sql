@@ -4,7 +4,7 @@ VALUES ($1, $2, $3)
 RETURNING *;
 
 -- name: GetChatMessagesByStreamID :many
-SELECT cm.*, u.username, u.full_name
+SELECT cm.*, u.full_name, u.phone_number
 FROM chat_messages cm
 JOIN users u ON cm.user_id = u.id
 WHERE cm.stream_id = $1

@@ -14,10 +14,18 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// SMSClient is the minimal contract auth needs for OTP delivery. The default
+// wiring is the MSG91 implementation under internal/sms; in dev we leave it
+// nil and devModeOTP short-circuits the send.
+type SMSClient interface {
+	SendOTP(ctx context.Context, phone, code string) error
+}
+
 type Service struct {
 	queries *db.Queries
 	redis   *redis.Client
 	cfg     *config.Config
+	sms     SMSClient
 }
 
 func NewService(pool *pgxpool.Pool, redis *redis.Client, cfg *config.Config) *Service {
@@ -28,18 +36,19 @@ func NewService(pool *pgxpool.Pool, redis *redis.Client, cfg *config.Config) *Se
 	}
 }
 
-type RegisterRequest struct {
-	Email    string `json:"email"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-	FullName string `json:"full_name"`
-	Role     string `json:"role"`
-	OrgCode  string `json:"org_code"`
-}
+// WithSMS wires an SMS client. Optional — production sets it via main.go,
+// tests can leave it nil.
+func (s *Service) WithSMS(c SMSClient) *Service { s.sms = c; return s }
 
-type LoginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+// Email + password registration was removed in favor of phone-OTP and
+// Google sign-in only. The RegisterRequest type is kept here as a thin
+// adapter for the legacy /auth/register/* endpoints during the deprecation
+// window — those endpoints now refuse to issue tokens and only create a
+// shell user record (used by automated tests that don't go through OTP).
+type RegisterRequest struct {
+	FullName string `json:"full_name"`
+	Phone    string `json:"phone"`
+	Role     string `json:"role"`
 	OrgCode  string `json:"org_code"`
 }
 
@@ -51,8 +60,8 @@ type TokenResponse struct {
 
 type UserInfo struct {
 	ID       uuid.UUID `json:"id"`
-	Email    string    `json:"email"`
-	Username string    `json:"username"`
+	Phone    string    `json:"phone"`
+	Email    string    `json:"email,omitempty"`
 	FullName string    `json:"full_name"`
 	Role     string    `json:"role"`
 	TenantID uuid.UUID `json:"tenant_id"`
@@ -92,6 +101,11 @@ func (s *Service) RegisterAdmin(ctx context.Context, req RegisterRequest) (*db.U
 	return s.register(ctx, req)
 }
 
+// register creates a shell user record in a tenant — no password, no email,
+// just phone + name. It is invoked from the legacy /auth/register/* admin
+// endpoints (admins occasionally bulk-create student accounts before the
+// student has logged in via OTP). The student then completes auth via
+// /auth/otp/verify which finds this row by phone.
 func (s *Service) register(ctx context.Context, req RegisterRequest) (*db.User, error) {
 	if req.Role == "" {
 		req.Role = "student"
@@ -102,27 +116,19 @@ func (s *Service) register(ctx context.Context, req RegisterRequest) (*db.User, 
 		return nil, err
 	}
 
-	hash, err := utils.HashPassword(req.Password)
-	if err != nil {
-		return nil, err
-	}
-
-	// CreateUser is sqlc-generated. After sqlc regenerates against the new
-	// migration, CreateUserParams will gain a TenantID field.
 	user, err := s.queries.CreateUser(ctx, db.CreateUserParams{
-		Email:        req.Email,
-		Username:     req.Username,
-		PasswordHash: hash,
-		FullName:     pgtype.Text{String: req.FullName, Valid: true},
-		Role:         pgtype.Text{String: req.Role, Valid: true},
 		TenantID:     pgtype.UUID{Bytes: tenantID, Valid: true},
+		PhoneNumber:  pgtype.Text{String: req.Phone, Valid: req.Phone != ""},
+		Email:        pgtype.Text{}, // email is now optional
+		PasswordHash: pgtype.Text{}, // no password — phone OTP / Google only
+		FullName:     pgtype.Text{String: req.FullName, Valid: req.FullName != ""},
+		Role:         pgtype.Text{String: req.Role, Valid: true},
+		AuthMethod:   pgtype.Text{String: "phone", Valid: true},
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	// Mirror the membership row so the user can resolve back to this tenant
-	// at next login (and so multi-tenant users see the org in their list).
 	_, _ = s.queries.AddTenantUser(ctx, db.AddTenantUserParams{
 		TenantID: pgtype.UUID{Bytes: tenantID, Valid: true},
 		UserID:   user.ID,
@@ -130,40 +136,6 @@ func (s *Service) register(ctx context.Context, req RegisterRequest) (*db.User, 
 	})
 
 	return &user, nil
-}
-
-func (s *Service) Login(ctx context.Context, req LoginRequest) (*TokenResponse, error) {
-	tenantID, err := s.resolveTenant(ctx, req.OrgCode)
-	if err != nil {
-		return nil, err
-	}
-
-	user, err := s.queries.GetUserByEmail(ctx, req.Email)
-	if err != nil {
-		return nil, fmt.Errorf("invalid credentials")
-	}
-
-	if !user.IsActive.Bool {
-		return nil, fmt.Errorf("account is inactive")
-	}
-
-	if !utils.CheckPassword(req.Password, user.PasswordHash) {
-		return nil, fmt.Errorf("invalid credentials")
-	}
-
-	// Reject if the user doesn't belong to this Org Code. Stops a Tenant A
-	// student from logging into Tenant B with stolen creds.
-	if uuid.UUID(user.TenantID.Bytes) != tenantID {
-		_, mErr := s.queries.GetTenantUser(ctx, db.GetTenantUserParams{
-			TenantID: pgtype.UUID{Bytes: tenantID, Valid: true},
-			UserID:   user.ID,
-		})
-		if mErr != nil {
-			return nil, fmt.Errorf("invalid credentials")
-		}
-	}
-
-	return s.issueTokensForUser(ctx, &user, tenantID)
 }
 
 // issueTokensForUser mints fresh access + refresh tokens for an authenticated
@@ -191,7 +163,17 @@ func (s *Service) issueTokensForUser(ctx context.Context, user *db.User, tenantI
 		}
 	}
 
-	accessToken, err := utils.GenerateAccessToken(userID, user.Email, role, tenantID, s.cfg.JWT.AccessSecret, accessExpiry)
+	// Email is now nullable; use it for the JWT only when present.
+	emailClaim := ""
+	if user.Email.Valid {
+		emailClaim = user.Email.String
+	}
+	phone := ""
+	if user.PhoneNumber.Valid {
+		phone = user.PhoneNumber.String
+	}
+
+	accessToken, err := utils.GenerateAccessToken(userID, emailClaim, role, tenantID, s.cfg.JWT.AccessSecret, accessExpiry)
 	if err != nil {
 		return nil, err
 	}
@@ -215,8 +197,8 @@ func (s *Service) issueTokensForUser(ctx context.Context, user *db.User, tenantI
 		RefreshToken: refreshToken,
 		User: UserInfo{
 			ID:       userID,
-			Email:    user.Email,
-			Username: user.Username,
+			Email:    emailClaim,
+			Phone:    phone,
 			FullName: fullName,
 			Role:     role,
 			TenantID: tenantID,
@@ -233,8 +215,8 @@ func (s *Service) Logout(ctx context.Context, userID uuid.UUID) error {
 // the onboarding flow.
 type MeResponse struct {
 	ID                  uuid.UUID `json:"id"`
-	Email               string    `json:"email"`
-	Username            string    `json:"username"`
+	Phone               string    `json:"phone"`
+	Email               string    `json:"email,omitempty"`
 	FullName            string    `json:"full_name"`
 	Role                string    `json:"role"`
 	ClassLevel          *string   `json:"class_level"`
@@ -252,10 +234,14 @@ func (s *Service) GetMe(ctx context.Context, userID uuid.UUID) (*MeResponse, err
 
 	me := &MeResponse{
 		ID:                  uuid.UUID(user.ID.Bytes),
-		Email:               user.Email,
-		Username:            user.Username,
 		Role:                "student",
 		OnboardingCompleted: user.OnboardingCompleted.Bool,
+	}
+	if user.Email.Valid {
+		me.Email = user.Email.String
+	}
+	if user.PhoneNumber.Valid {
+		me.Phone = user.PhoneNumber.String
 	}
 	if user.FullName.Valid {
 		me.FullName = user.FullName.String
@@ -313,7 +299,16 @@ func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (*Token
 		tenantID = DefaultTenantID
 	}
 
-	newAccessToken, err := utils.GenerateAccessToken(userID, user.Email, role, tenantID, s.cfg.JWT.AccessSecret, accessExpiry)
+	emailClaim := ""
+	if user.Email.Valid {
+		emailClaim = user.Email.String
+	}
+	phone := ""
+	if user.PhoneNumber.Valid {
+		phone = user.PhoneNumber.String
+	}
+
+	newAccessToken, err := utils.GenerateAccessToken(userID, emailClaim, role, tenantID, s.cfg.JWT.AccessSecret, accessExpiry)
 	if err != nil {
 		return nil, err
 	}
@@ -338,8 +333,8 @@ func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (*Token
 		RefreshToken: newRefreshToken,
 		User: UserInfo{
 			ID:       userID,
-			Email:    user.Email,
-			Username: user.Username,
+			Email:    emailClaim,
+			Phone:    phone,
 			FullName: fullName,
 			Role:     role,
 			TenantID: tenantID,

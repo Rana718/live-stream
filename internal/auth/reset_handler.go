@@ -1,82 +1,52 @@
 package auth
 
-import (
-	"live-platform/internal/middleware"
+import "github.com/gofiber/fiber/v3"
 
-	"github.com/gofiber/fiber/v3"
-	"github.com/google/uuid"
-)
+// All four endpoints below were part of the email/password flow that has
+// been retired. They stay registered (so old clients hit a deterministic
+// 410 with a hint) but no longer touch the database.
+//
+// New flows: phone OTP for everyday auth, Google sign-in for one-tap.
+// Both are in alt_handler.go / alt_login.go.
 
-// ForgotPassword godoc
-// @Summary Start a password reset — returns opaque reset token (email integration pending)
-// @Tags auth
-// @Router /auth/forgot-password [post]
+// ForgotPassword: deprecated.
+// @Summary  [deprecated] Email password reset
+// @Tags     auth
+// @Failure  410 {object} map[string]interface{}
+// @Router   /auth/forgot-password [post]
 func (h *Handler) ForgotPassword(c fiber.Ctx) error {
-	var req struct {
-		Email string `json:"email" validate:"required,email"`
-	}
-	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
-	}
-	if err := middleware.ValidateStruct(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-	}
-	token, err := h.service.StartPasswordReset(c.Context(), req.Email)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-	}
-	// In prod, email `token` instead of returning it. We return it so the flow is testable.
-	return c.JSON(fiber.Map{"message": "reset token issued", "token": token})
+	return c.Status(fiber.StatusGone).JSON(fiber.Map{
+		"error": "password-based auth removed",
+		"hint":  "use POST /auth/otp/send for phone OTP",
+	})
 }
 
-// ResetPassword godoc
-// @Summary Complete password reset using the token
-// @Tags auth
-// @Router /auth/reset-password [post]
+// ResetPassword: deprecated.
+// @Summary  [deprecated] Email password reset confirmation
+// @Tags     auth
+// @Router   /auth/reset-password [post]
 func (h *Handler) ResetPassword(c fiber.Ctx) error {
-	var req CompletePasswordResetRequest
-	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
-	}
-	if err := middleware.ValidateStruct(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-	}
-	if err := h.service.CompletePasswordReset(c.Context(), req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-	}
-	return c.JSON(fiber.Map{"message": "password reset successful"})
+	return c.Status(fiber.StatusGone).JSON(fiber.Map{
+		"error": "password-based auth removed",
+	})
 }
 
-// SendEmailVerification godoc
-// @Summary Request a new email verification token (auth required)
-// @Tags auth
-// @Security BearerAuth
-// @Router /auth/verify-email/start [post]
+// SendEmailVerification: deprecated. We don't ask for email at signup
+// anymore. Email is optional metadata the user can attach later via the
+// linking flow.
+// @Summary  [deprecated] Email verification start
+// @Router   /auth/verify-email/start [post]
 func (h *Handler) SendEmailVerification(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
-	token, err := h.service.StartEmailVerification(c.Context(), userID)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-	}
-	return c.JSON(fiber.Map{"message": "verification token issued", "token": token})
+	return c.Status(fiber.StatusGone).JSON(fiber.Map{
+		"error": "email verification removed — phone is the primary identity",
+	})
 }
 
-// ConfirmEmailVerification godoc
-// @Summary Confirm email using the verification token
-// @Tags auth
-// @Router /auth/verify-email [post]
+// ConfirmEmailVerification: deprecated.
+// @Summary  [deprecated] Email verification completion
+// @Router   /auth/verify-email [post]
 func (h *Handler) ConfirmEmailVerification(c fiber.Ctx) error {
-	var req struct {
-		Token string `json:"token" validate:"required,min=16"`
-	}
-	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
-	}
-	if err := middleware.ValidateStruct(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-	}
-	if err := h.service.CompleteEmailVerification(c.Context(), req.Token); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-	}
-	return c.JSON(fiber.Map{"message": "email verified"})
+	return c.Status(fiber.StatusGone).JSON(fiber.Map{
+		"error": "email verification removed — phone is the primary identity",
+	})
 }
