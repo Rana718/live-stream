@@ -11,7 +11,8 @@ const testSecret = "test-secret-longer-than-default"
 
 func TestGenerateAndValidateAccessToken(t *testing.T) {
 	uid := uuid.New()
-	tok, err := GenerateAccessToken(uid, "u@test.local", "student", testSecret, 5*time.Minute)
+	tid := uuid.New()
+	tok, err := GenerateAccessToken(uid, "u@test.local", "student", tid, testSecret, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("generate failed: %v", err)
 	}
@@ -28,17 +29,20 @@ func TestGenerateAndValidateAccessToken(t *testing.T) {
 	if claims.Role != "student" {
 		t.Errorf("got role %q, want student", claims.Role)
 	}
+	if claims.TenantID != tid {
+		t.Errorf("got tenantID %s, want %s", claims.TenantID, tid)
+	}
 }
 
 func TestValidateTokenRejectsWrongSecret(t *testing.T) {
-	tok, _ := GenerateAccessToken(uuid.New(), "x@x", "student", testSecret, time.Minute)
+	tok, _ := GenerateAccessToken(uuid.New(), "x@x", "student", uuid.New(), testSecret, time.Minute)
 	if _, err := ValidateToken(tok, "different-secret"); err == nil {
 		t.Fatal("wrong secret must fail validation")
 	}
 }
 
 func TestValidateTokenRejectsExpired(t *testing.T) {
-	tok, _ := GenerateAccessToken(uuid.New(), "x@x", "student", testSecret, -time.Second)
+	tok, _ := GenerateAccessToken(uuid.New(), "x@x", "student", uuid.New(), testSecret, -time.Second)
 	if _, err := ValidateToken(tok, testSecret); err == nil {
 		t.Fatal("expired token must fail validation")
 	}

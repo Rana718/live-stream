@@ -40,6 +40,7 @@ func AuthMiddleware(cfg *config.JWTConfig) fiber.Handler {
 		c.Locals("email", claims.Email)
 		c.Locals("role", claims.Role)
 		c.Locals("username", claims.Email)
+		c.Locals("tenantID", claims.TenantID)
 
 		return c.Next()
 	}
@@ -75,6 +76,7 @@ func OptionalAuthMiddleware(cfg *config.JWTConfig) fiber.Handler {
 		c.Locals("email", claims.Email)
 		c.Locals("role", claims.Role)
 		c.Locals("username", claims.Email)
+		c.Locals("tenantID", claims.TenantID)
 
 		return c.Next()
 	}

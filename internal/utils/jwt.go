@@ -9,17 +9,22 @@ import (
 )
 
 type Claims struct {
-	UserID uuid.UUID `json:"user_id"`
-	Email  string    `json:"email"`
-	Role   string    `json:"role"`
+	UserID   uuid.UUID `json:"user_id"`
+	Email    string    `json:"email"`
+	Role     string    `json:"role"`
+	TenantID uuid.UUID `json:"tenant_id"`
 	jwt.RegisteredClaims
 }
 
-func GenerateAccessToken(userID uuid.UUID, email, role, secret string, expiry time.Duration) (string, error) {
+// GenerateAccessToken issues a tenant-scoped access token. The tenantID claim
+// is required for every request post-Phase-1: it drives the RLS session var
+// that filters every query the user issues.
+func GenerateAccessToken(userID uuid.UUID, email, role string, tenantID uuid.UUID, secret string, expiry time.Duration) (string, error) {
 	claims := Claims{
-		UserID: userID,
-		Email:  email,
-		Role:   role,
+		UserID:   userID,
+		Email:    email,
+		Role:     role,
+		TenantID: tenantID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiry)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

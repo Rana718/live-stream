@@ -43,6 +43,7 @@ import (
 	"live-platform/internal/stream"
 	"live-platform/internal/subjects"
 	"live-platform/internal/subscriptions"
+	"live-platform/internal/tenants"
 	"live-platform/internal/tests"
 	"live-platform/internal/topics"
 	"live-platform/internal/users"
@@ -240,6 +241,35 @@ func main() {
 
 	// --- API v1 routes ---
 	api := app.Group("/api/v1")
+
+	// --- Tenants (multi-tenant control plane) ---
+	tenantSvc := tenants.NewService(pgPool)
+	tenantHandler := tenants.NewHandler(tenantSvc)
+
+	// Public Org Code lookup. No auth required — login/marketing screens
+	// hit this to fetch logo + theme before issuing any JWT.
+	publicGroup := api.Group("/public")
+	publicGroup.Get("/tenants/by-code/:code",
+		middleware.PublicLookupContext(pgPool),
+		tenantHandler.LookupByOrgCode,
+	)
+
+	// Authenticated tenant endpoints. TenantContext sets the RLS session var
+	// on every request so the handler reads/writes only its tenant's rows.
+	tenantsGroup := api.Group("/tenants",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+	)
+	tenantsGroup.Get("/me", tenantHandler.MyTenant)
+	tenantsGroup.Get("/me/features", tenantHandler.Features)
+	tenantsGroup.Put("/me/branding", middleware.AdminOnly(), tenantHandler.UpdateBranding)
+
+	// Super-admin tenant provisioning (creates new tenants).
+	api.Post("/admin/tenants",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.SuperAdminContext(pgPool),
+		tenantHandler.CreateTenant,
+	)
 
 	// Auth
 	authRoutes := api.Group("/auth")

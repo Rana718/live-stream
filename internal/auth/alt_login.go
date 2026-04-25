@@ -141,7 +141,7 @@ func (s *Service) LoginWithOTP(ctx context.Context, phone, code string) (*TokenR
 	if err != nil {
 		return nil, err
 	}
-	return s.issueTokensForUser(ctx, user)
+	return s.issueTokensForUser(ctx, user, uuid.Nil)
 }
 
 // GoogleIdentity is the minimum data we accept from the client after a Google
@@ -163,7 +163,7 @@ func (s *Service) LoginWithGoogle(ctx context.Context, id GoogleIdentity) (*Toke
 
 	// Prefer google_sub so email rotations don't lose the link.
 	if user, err := s.queries.GetUserByGoogleSub(ctx, pgtype.Text{String: id.Sub, Valid: true}); err == nil {
-		return s.issueTokensForUser(ctx, &user)
+		return s.issueTokensForUser(ctx, &user, uuid.Nil)
 	}
 
 	// Existing account on the same email? Attach google_sub to it.
@@ -175,7 +175,7 @@ func (s *Service) LoginWithGoogle(ctx context.Context, id GoogleIdentity) (*Toke
 		if err != nil {
 			return nil, err
 		}
-		return s.issueTokensForUser(ctx, &linked)
+		return s.issueTokensForUser(ctx, &linked, uuid.Nil)
 	}
 
 	// Brand-new account from Google.
@@ -189,7 +189,7 @@ func (s *Service) LoginWithGoogle(ctx context.Context, id GoogleIdentity) (*Toke
 	if err != nil {
 		return nil, err
 	}
-	return s.issueTokensForUser(ctx, &user)
+	return s.issueTokensForUser(ctx, &user, uuid.Nil)
 }
 
 // LinkPhone attaches a verified phone number to an existing authenticated

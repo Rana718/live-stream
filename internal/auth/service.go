@@ -34,11 +34,13 @@ type RegisterRequest struct {
 	Password string `json:"password"`
 	FullName string `json:"full_name"`
 	Role     string `json:"role"`
+	OrgCode  string `json:"org_code"`
 }
 
 type LoginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+	OrgCode  string `json:"org_code"`
 }
 
 type TokenResponse struct {
@@ -53,6 +55,26 @@ type UserInfo struct {
 	Username string    `json:"username"`
 	FullName string    `json:"full_name"`
 	Role     string    `json:"role"`
+	TenantID uuid.UUID `json:"tenant_id"`
+}
+
+// DefaultTenantID is the seed tenant used pre-migration and during dev when
+// no Org Code is provided. Production deployments should require Org Code.
+var DefaultTenantID = uuid.MustParse("00000000-0000-0000-0000-000000000001")
+
+// resolveTenant turns an Org Code (case-insensitive) into a tenant UUID. If
+// the Org Code is blank we fall back to the default tenant — useful during
+// the migration window before every client passes Org Code, but lock this
+// down once all clients are updated.
+func (s *Service) resolveTenant(ctx context.Context, orgCode string) (uuid.UUID, error) {
+	if orgCode == "" {
+		return DefaultTenantID, nil
+	}
+	t, err := s.queries.GetTenantByOrgCode(ctx, orgCode)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("invalid org code")
+	}
+	return uuid.UUID(t.ID.Bytes), nil
 }
 
 func (s *Service) RegisterStudent(ctx context.Context, req RegisterRequest) (*db.User, error) {
@@ -75,26 +97,47 @@ func (s *Service) register(ctx context.Context, req RegisterRequest) (*db.User, 
 		req.Role = "student"
 	}
 
+	tenantID, err := s.resolveTenant(ctx, req.OrgCode)
+	if err != nil {
+		return nil, err
+	}
+
 	hash, err := utils.HashPassword(req.Password)
 	if err != nil {
 		return nil, err
 	}
 
+	// CreateUser is sqlc-generated. After sqlc regenerates against the new
+	// migration, CreateUserParams will gain a TenantID field.
 	user, err := s.queries.CreateUser(ctx, db.CreateUserParams{
 		Email:        req.Email,
 		Username:     req.Username,
 		PasswordHash: hash,
 		FullName:     pgtype.Text{String: req.FullName, Valid: true},
 		Role:         pgtype.Text{String: req.Role, Valid: true},
+		TenantID:     pgtype.UUID{Bytes: tenantID, Valid: true},
 	})
 	if err != nil {
 		return nil, err
 	}
 
+	// Mirror the membership row so the user can resolve back to this tenant
+	// at next login (and so multi-tenant users see the org in their list).
+	_, _ = s.queries.AddTenantUser(ctx, db.AddTenantUserParams{
+		TenantID: pgtype.UUID{Bytes: tenantID, Valid: true},
+		UserID:   user.ID,
+		Role:     req.Role,
+	})
+
 	return &user, nil
 }
 
 func (s *Service) Login(ctx context.Context, req LoginRequest) (*TokenResponse, error) {
+	tenantID, err := s.resolveTenant(ctx, req.OrgCode)
+	if err != nil {
+		return nil, err
+	}
+
 	user, err := s.queries.GetUserByEmail(ctx, req.Email)
 	if err != nil {
 		return nil, fmt.Errorf("invalid credentials")
@@ -108,7 +151,19 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*TokenResponse, 
 		return nil, fmt.Errorf("invalid credentials")
 	}
 
-	return s.issueTokensForUser(ctx, &user)
+	// Reject if the user doesn't belong to this Org Code. Stops a Tenant A
+	// student from logging into Tenant B with stolen creds.
+	if uuid.UUID(user.TenantID.Bytes) != tenantID {
+		_, mErr := s.queries.GetTenantUser(ctx, db.GetTenantUserParams{
+			TenantID: pgtype.UUID{Bytes: tenantID, Valid: true},
+			UserID:   user.ID,
+		})
+		if mErr != nil {
+			return nil, fmt.Errorf("invalid credentials")
+		}
+	}
+
+	return s.issueTokensForUser(ctx, &user, tenantID)
 }
 
 // issueTokensForUser mints fresh access + refresh tokens for an authenticated
@@ -116,7 +171,10 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (*TokenResponse, 
 // the email/password Login path. All alternative login methods (OTP, Google,
 // account linking) go through this helper so refresh-token rotation stays
 // consistent across login surfaces.
-func (s *Service) issueTokensForUser(ctx context.Context, user *db.User) (*TokenResponse, error) {
+//
+// tenantID is the resolved Org Code → tenant mapping used to scope the JWT.
+// Pass uuid.Nil to use the user's primary tenant on the row.
+func (s *Service) issueTokensForUser(ctx context.Context, user *db.User, tenantID uuid.UUID) (*TokenResponse, error) {
 	accessExpiry, _ := time.ParseDuration(s.cfg.JWT.AccessExpiry)
 	refreshExpiry, _ := time.ParseDuration(s.cfg.JWT.RefreshExpiry)
 
@@ -126,7 +184,14 @@ func (s *Service) issueTokensForUser(ctx context.Context, user *db.User) (*Token
 	}
 
 	userID := uuid.UUID(user.ID.Bytes)
-	accessToken, err := utils.GenerateAccessToken(userID, user.Email, role, s.cfg.JWT.AccessSecret, accessExpiry)
+	if tenantID == uuid.Nil {
+		tenantID = uuid.UUID(user.TenantID.Bytes)
+		if tenantID == uuid.Nil {
+			tenantID = DefaultTenantID
+		}
+	}
+
+	accessToken, err := utils.GenerateAccessToken(userID, user.Email, role, tenantID, s.cfg.JWT.AccessSecret, accessExpiry)
 	if err != nil {
 		return nil, err
 	}
@@ -154,6 +219,7 @@ func (s *Service) issueTokensForUser(ctx context.Context, user *db.User) (*Token
 			Username: user.Username,
 			FullName: fullName,
 			Role:     role,
+			TenantID: tenantID,
 		},
 	}, nil
 }
@@ -242,7 +308,12 @@ func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (*Token
 		role = user.Role.String
 	}
 
-	newAccessToken, err := utils.GenerateAccessToken(userID, user.Email, role, s.cfg.JWT.AccessSecret, accessExpiry)
+	tenantID := uuid.UUID(user.TenantID.Bytes)
+	if tenantID == uuid.Nil {
+		tenantID = DefaultTenantID
+	}
+
+	newAccessToken, err := utils.GenerateAccessToken(userID, user.Email, role, tenantID, s.cfg.JWT.AccessSecret, accessExpiry)
 	if err != nil {
 		return nil, err
 	}
@@ -271,6 +342,7 @@ func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (*Token
 			Username: user.Username,
 			FullName: fullName,
 			Role:     role,
+			TenantID: tenantID,
 		},
 	}, nil
 }
