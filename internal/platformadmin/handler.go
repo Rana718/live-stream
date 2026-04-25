@@ -9,10 +9,14 @@ import (
 )
 
 type Handler struct {
-	svc *Service
+	svc       *Service
+	jwtSecret string
 }
 
-func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
+// NewHandler — jwtSecret is required for impersonation. Pass cfg.JWT.AccessSecret.
+func NewHandler(svc *Service, jwtSecret string) *Handler {
+	return &Handler{svc: svc, jwtSecret: jwtSecret}
+}
 
 func parsePagination(c fiber.Ctx) (int32, int32) {
 	limit, err := strconv.Atoi(c.Query("limit", "50"))
@@ -113,6 +117,84 @@ func (h *Handler) AuditLogs(c fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(rows)
+}
+
+// GetFeatures — GET /api/v1/admin/platform/tenants/:id/features
+func (h *Handler) GetFeatures(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	raw, err := h.svc.GetFeatures(c.Context(), id)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	c.Set("Content-Type", "application/json")
+	return c.Send(raw)
+}
+
+// SetFeatures — PUT /api/v1/admin/platform/tenants/:id/features
+//
+// Body is the full feature-flag JSON object. Replace-all semantics — the
+// caller GETs, mutates, then PUTs back.
+func (h *Handler) SetFeatures(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	body := c.Body()
+	if len(body) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "empty body"})
+	}
+	out, err := h.svc.SetFeatures(c.Context(), id, body)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	c.Set("Content-Type", "application/json")
+	return c.Send(out)
+}
+
+// SetRazorpayAccount — PUT /api/v1/admin/platform/tenants/:id/razorpay
+//
+// Body: { "account_id": "acc_XXXXXXXXXXXX" }  (empty string to detach)
+func (h *Handler) SetRazorpayAccount(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	var body struct {
+		AccountID string `json:"account_id"`
+	}
+	if err := c.Bind().Body(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
+	}
+	t, err := h.svc.SetRazorpayAccount(c.Context(), id, body.AccountID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(t)
+}
+
+// Impersonate — POST /api/v1/admin/platform/tenants/:id/impersonate
+//
+// Mints a 15-minute access token for the tenant's owner so support can
+// drop into the tenant's admin portal without their password. Audit logs
+// pick this up automatically as a mutating super_admin action.
+//
+//	@Summary  Super-admin: impersonate a tenant_admin for support
+//	@Tags     platformadmin
+//	@Security BearerAuth
+//	@Router   /admin/platform/tenants/{id}/impersonate [post]
+func (h *Handler) Impersonate(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	res, err := h.svc.Impersonate(c.Context(), id, h.jwtSecret)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(res)
 }
 
 // UpdateLeadStatus — PATCH /api/v1/admin/leads/:id

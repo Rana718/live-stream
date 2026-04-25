@@ -42,18 +42,55 @@ type Order struct {
 }
 
 type createOrderReq struct {
-	Amount   int64             `json:"amount"`
-	Currency string            `json:"currency"`
-	Receipt  string            `json:"receipt,omitempty"`
+	Amount    int64             `json:"amount"`
+	Currency  string            `json:"currency"`
+	Receipt   string            `json:"receipt,omitempty"`
+	Notes     map[string]string `json:"notes,omitempty"`
+	Transfers []Transfer        `json:"transfers,omitempty"`
+}
+
+// Transfer is a Razorpay-Route split: a portion of the order amount that
+// flows to a Linked Account. The platform's commission is whatever's left
+// after summing all transfers.
+//
+// Docs: https://razorpay.com/docs/payments/payments/route/
+type Transfer struct {
+	Account  string            `json:"account"`            // tenant Linked Account ID (acc_XXX)
+	Amount   int64             `json:"amount"`             // paise to forward
+	Currency string            `json:"currency"`           // typically "INR"
 	Notes    map[string]string `json:"notes,omitempty"`
+	OnHold   bool              `json:"on_hold,omitempty"`  // hold settlement
 }
 
 // CreateOrder creates a Razorpay order. Amount must be in the smallest unit (paise for INR).
 func (r *Razorpay) CreateOrder(ctx context.Context, amountPaise int64, currency, receipt string, notes map[string]string) (*Order, error) {
+	return r.CreateOrderWithTransfers(ctx, amountPaise, currency, receipt, notes, nil)
+}
+
+// CreateOrderWithTransfers is the Razorpay-Route path. Pass a non-nil
+// `transfers` slice to have Razorpay auto-split settlement to tenant
+// Linked Accounts on capture. The sum of transfer amounts must be < the
+// order amount; the remainder is the platform's commission.
+//
+// If `transfers` is nil the call falls through to a plain order — no Route
+// account required, useful while a tenant is still onboarding KYC.
+func (r *Razorpay) CreateOrderWithTransfers(
+	ctx context.Context,
+	amountPaise int64,
+	currency, receipt string,
+	notes map[string]string,
+	transfers []Transfer,
+) (*Order, error) {
 	if r.keyID == "" || r.keySecret == "" {
 		return nil, fmt.Errorf("razorpay keys not configured")
 	}
-	body := createOrderReq{Amount: amountPaise, Currency: currency, Receipt: receipt, Notes: notes}
+	body := createOrderReq{
+		Amount:    amountPaise,
+		Currency:  currency,
+		Receipt:   receipt,
+		Notes:     notes,
+		Transfers: transfers,
+	}
 	buf, _ := json.Marshal(body)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.endpoint+"/orders", bytes.NewReader(buf))

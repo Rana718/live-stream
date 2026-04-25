@@ -43,6 +43,16 @@ SET custom_domain = NULLIF($2::text, ''),
 WHERE id = $1
 RETURNING *;
 
+-- name: SetTenantRazorpayAccount :one
+-- Used after the tenant completes Linked-Account KYC. Once set, course-buy
+-- + subscription-checkout pass a `transfers` block on the Razorpay order so
+-- payouts auto-split.
+UPDATE tenants
+SET razorpay_account_id = NULLIF($2::text, ''),
+    updated_at = now()
+WHERE id = $1
+RETURNING *;
+
 -- name: SuspendTenant :exec
 UPDATE tenants SET status = 'suspended', updated_at = now() WHERE id = $1;
 

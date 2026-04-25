@@ -10,6 +10,7 @@ package platformadmin
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"live-platform/internal/database/db"
@@ -135,6 +136,108 @@ func (s *Service) UpsertPlatformSubscription(ctx context.Context, in UpsertPlatf
 
 func (s *Service) ListPlatformSubscriptions(ctx context.Context, limit, offset int32) ([]db.ListPlatformSubscriptionsRow, error) {
 	return s.q.ListPlatformSubscriptions(ctx, db.ListPlatformSubscriptionsParams{Limit: limit, Offset: offset})
+}
+
+// GetFeatures returns a tenant's feature-flag JSON. Empty `{}` if no row.
+func (s *Service) GetFeatures(ctx context.Context, tenantID uuid.UUID) ([]byte, error) {
+	raw, err := s.q.GetTenantFeatures(ctx, utils.UUIDToPg(tenantID))
+	if err != nil {
+		return []byte("{}"), nil
+	}
+	return raw, nil
+}
+
+// SetFeatures replaces the feature-flag JSON for a tenant. The /super UI
+// uses this to flip live/store/tests/ai_doubts/downloads on or off per
+// tenant without code changes.
+func (s *Service) SetFeatures(ctx context.Context, tenantID uuid.UUID, features []byte) ([]byte, error) {
+	if len(features) == 0 {
+		features = []byte("{}")
+	}
+	row, err := s.q.UpsertTenantFeatures(ctx, db.UpsertTenantFeaturesParams{
+		TenantID: utils.UUIDToPg(tenantID),
+		Features: features,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return row.Features, nil
+}
+
+// SetRazorpayAccount stores a tenant's Linked-Account ID so future course
+// purchases auto-split via Razorpay Route. Pass an empty string to detach
+// (rare — usually only when KYC has been revoked).
+func (s *Service) SetRazorpayAccount(ctx context.Context, id uuid.UUID, accountID string) (*db.Tenant, error) {
+	t, err := s.q.SetTenantRazorpayAccount(ctx, db.SetTenantRazorpayAccountParams{
+		ID:      utils.UUIDToPg(id),
+		Column2: accountID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// ImpersonationResult is what the support tool gets back: a short-lived
+// access token signed for the tenant_admin user inside the target tenant,
+// plus enough metadata to render the "you are impersonating" banner.
+type ImpersonationResult struct {
+	AccessToken string    `json:"access_token"`
+	TenantID    uuid.UUID `json:"tenant_id"`
+	TenantName  string    `json:"tenant_name"`
+	OrgCode     string    `json:"org_code"`
+	UserID      uuid.UUID `json:"user_id"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+// Impersonate mints an access token for the tenant's owner (or first admin)
+// so platform support can drop into the tenant's portal without their
+// password. The token is signed with the same JWT secret as regular auth,
+// but is short-lived (15m) and labelled with role=admin tied to the target
+// tenant — students/instructors never get this kind of token.
+//
+// Caller is responsible for guarding this endpoint behind super_admin role
+// + audit log; the audit row gets written by the middleware automatically
+// thanks to the standard mutating-route capture.
+func (s *Service) Impersonate(ctx context.Context, tenantID uuid.UUID, jwtSecret string) (*ImpersonationResult, error) {
+	t, err := s.q.GetTenantByID(ctx, utils.UUIDToPg(tenantID))
+	if err != nil {
+		return nil, err
+	}
+
+	// Pick a target user: tenant.owner_user_id if set, otherwise the first
+	// active admin in tenant_users. Falls back to error if neither exists —
+	// support can ask the tenant to create an admin first instead of us
+	// minting a token bound to a nonexistent user.
+	var ownerID uuid.UUID
+	if t.OwnerUserID.Valid {
+		ownerID = uuid.UUID(t.OwnerUserID.Bytes)
+	} else {
+		users, e := s.q.ListUsersForTenant(ctx, db.ListUsersForTenantParams{
+			TenantID: utils.UUIDToPg(tenantID),
+			Limit:    1,
+			Offset:   0,
+		})
+		if e != nil || len(users) == 0 {
+			return nil, fmt.Errorf("no admin user in tenant %s", tenantID)
+		}
+		ownerID = uuid.UUID(users[0].ID.Bytes)
+	}
+
+	expiresAt := time.Now().Add(15 * time.Minute)
+	tok, err := utils.GenerateAccessToken(ownerID, t.Name+"@impersonated", "admin",
+		tenantID, jwtSecret, time.Until(expiresAt))
+	if err != nil {
+		return nil, err
+	}
+	return &ImpersonationResult{
+		AccessToken: tok,
+		TenantID:    tenantID,
+		TenantName:  t.Name,
+		OrgCode:     t.OrgCode,
+		UserID:      ownerID,
+		ExpiresAt:   expiresAt,
+	}, nil
 }
 
 // UpdateLeadStatus is called from the leads triage view as the prospect

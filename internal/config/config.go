@@ -24,6 +24,7 @@ type Config struct {
 	SMS          SMSConfig
 	Push         PushConfig
 	Codemagic    CodemagicConfig
+	WhatsApp     WhatsAppConfig
 	App          AppConfig
 }
 
@@ -138,10 +139,24 @@ type PushConfig struct {
 // Leave WorkflowID empty to short-circuit dispatch — the build trigger
 // endpoint then just queues a row for a human operator to pick up.
 type CodemagicConfig struct {
-	APIToken   string
-	WorkflowID string
-	AppID      string
-	BaseURL    string // default https://api.codemagic.io
+	APIToken      string
+	WorkflowID    string
+	AppID         string
+	BaseURL       string // default https://api.codemagic.io
+	TimeoutSec    int
+	WebhookSecret string // shared secret for the inbound /webhooks/codemagic
+}
+
+// WhatsAppConfig configures broadcast/transactional WhatsApp delivery.
+// Gupshup-first because it handles Indian DLT compliance and the sandbox
+// is easy. Leave APIKey empty to disable — the broadcast endpoint then
+// returns a clear error rather than silently dropping messages.
+type WhatsAppConfig struct {
+	Provider   string // "gupshup" | ""
+	APIKey     string
+	Source     string // sender phone (E.164)
+	AppName    string // Gupshup app name
+	BaseURL    string // default https://api.gupshup.io/sm/api/v1
 	TimeoutSec int
 }
 
@@ -239,11 +254,20 @@ func Load() (*Config, error) {
 			TimeoutSec: getEnvInt("FCM_TIMEOUT", 6),
 		},
 		Codemagic: CodemagicConfig{
-			APIToken:   getEnv("CODEMAGIC_API_TOKEN", ""),
-			WorkflowID: getEnv("CODEMAGIC_WORKFLOW_ID", ""),
-			AppID:      getEnv("CODEMAGIC_APP_ID", ""),
-			BaseURL:    getEnv("CODEMAGIC_BASE_URL", "https://api.codemagic.io"),
-			TimeoutSec: getEnvInt("CODEMAGIC_TIMEOUT", 10),
+			APIToken:      getEnv("CODEMAGIC_API_TOKEN", ""),
+			WorkflowID:    getEnv("CODEMAGIC_WORKFLOW_ID", ""),
+			AppID:         getEnv("CODEMAGIC_APP_ID", ""),
+			BaseURL:       getEnv("CODEMAGIC_BASE_URL", "https://api.codemagic.io"),
+			TimeoutSec:    getEnvInt("CODEMAGIC_TIMEOUT", 10),
+			WebhookSecret: getEnv("CODEMAGIC_WEBHOOK_SECRET", ""),
+		},
+		WhatsApp: WhatsAppConfig{
+			Provider:   getEnv("WHATSAPP_PROVIDER", ""),
+			APIKey:     getEnv("WHATSAPP_API_KEY", ""),
+			Source:     getEnv("WHATSAPP_SOURCE", ""),
+			AppName:    getEnv("WHATSAPP_APP_NAME", ""),
+			BaseURL:    getEnv("WHATSAPP_BASE_URL", "https://api.gupshup.io/sm/api/v1"),
+			TimeoutSec: getEnvInt("WHATSAPP_TIMEOUT", 8),
 		},
 		Razorpay: RazorpayConfig{
 			KeyID:         getEnv("RAZORPAY_KEY_ID", ""),

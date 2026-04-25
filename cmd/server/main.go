@@ -56,6 +56,7 @@ import (
 	"live-platform/internal/topics"
 	"live-platform/internal/users"
 	"live-platform/internal/webhooks"
+	"live-platform/internal/whatsapp"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/cors"
@@ -379,7 +380,7 @@ func main() {
 	// middleware bypasses RLS — only mount it on routes that genuinely
 	// need platform-wide visibility.
 	platformSvc := platformadmin.NewService(pgPool)
-	platformHandler := platformadmin.NewHandler(platformSvc)
+	platformHandler := platformadmin.NewHandler(platformSvc, cfg.JWT.AccessSecret)
 	buildSvc := appbuilds.NewService(pgPool, cfg.Codemagic, log)
 	buildHandler := appbuilds.NewHandler(buildSvc)
 
@@ -394,10 +395,26 @@ func main() {
 	platformGroup.Post("/tenants/:id/suspend", platformHandler.Suspend)
 	platformGroup.Post("/tenants/:id/reactivate", platformHandler.Reactivate)
 	platformGroup.Put("/tenants/:id/plan", platformHandler.UpdatePlan)
+	platformGroup.Post("/tenants/:id/impersonate", platformHandler.Impersonate)
+	platformGroup.Get("/tenants/:id/features", platformHandler.GetFeatures)
+	platformGroup.Put("/tenants/:id/features", platformHandler.SetFeatures)
+	platformGroup.Put("/tenants/:id/razorpay", platformHandler.SetRazorpayAccount)
 
 	platformGroup.Post("/tenants/:id/build", buildHandler.Trigger)
 	platformGroup.Get("/builds", buildHandler.List)
 	platformGroup.Patch("/builds/:id", buildHandler.PatchStatus)
+
+	// WhatsApp broadcast (Gupshup). Disabled if WHATSAPP_PROVIDER is unset —
+	// the handler returns a clear 503 explaining what's missing.
+	whatsappClient := whatsapp.New(cfg.WhatsApp, log)
+	whatsappHandler := whatsapp.NewHandler(whatsappClient)
+	platformGroup.Post("/whatsapp/broadcast", whatsappHandler.Broadcast)
+
+	// Codemagic webhook — public endpoint, signature-protected. Patches the
+	// app_builds row when the per-tenant build finishes so the support UI
+	// shows it published without a manual click.
+	codemagicWebhook := webhooks.NewCodemagicHandler(buildSvc, cfg.Codemagic, log)
+	api.Post("/webhooks/codemagic", codemagicWebhook.Receive)
 
 	// Super-admin lead triage (PATCH lives here too — POST list is below).
 	api.Patch("/admin/leads/:id",

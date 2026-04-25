@@ -74,11 +74,31 @@ func (s *Service) Buy(ctx context.Context, tenantID, userID, courseID uuid.UUID,
 	}
 
 	receipt := fmt.Sprintf("course-%s-%d", courseID.String()[:8], userID.ID())
-	order, err := s.rp.CreateOrder(ctx, amountPaise, "INR", receipt, map[string]string{
+	notes := map[string]string{
 		"tenant_id": tenantID.String(),
 		"user_id":   userID.String(),
 		"course_id": courseID.String(),
-	})
+	}
+
+	// Razorpay Route split. We only attempt the transfer if the tenant has
+	// finished Linked-Account KYC AND is on a paid plan. Free tier (starter)
+	// keeps everything on the platform account; tenant payouts there happen
+	// out-of-band via manual settlement.
+	tenant, tErr := s.q.GetTenantByID(ctx, pgtype.UUID{Bytes: tenantID, Valid: true})
+	var transfers []payments.Transfer
+	if tErr == nil && tenant.RazorpayAccountID.Valid && tenant.RazorpayAccountID.String != "" {
+		_, tenantShare := payments.SplitForTenant(amountPaise, tenant.Plan)
+		if tenantShare > 0 {
+			transfers = []payments.Transfer{{
+				Account:  tenant.RazorpayAccountID.String,
+				Amount:   tenantShare,
+				Currency: "INR",
+				Notes:    notes,
+			}}
+		}
+	}
+
+	order, err := s.rp.CreateOrderWithTransfers(ctx, amountPaise, "INR", receipt, notes, transfers)
 	if err != nil {
 		return nil, err
 	}
