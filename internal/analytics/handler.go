@@ -57,6 +57,30 @@ func (h *Handler) GetDifficultyBreakdown(c fiber.Ctx) error {
 	return c.JSON(rows)
 }
 
+// TenantDashboard — GET /api/v1/analytics/tenant/dashboard
+//
+// Tenant_admin-only. Returns the headline stats card payload + a 30-day
+// revenue series + top courses by enrollment, all RLS-scoped to the
+// caller's tenant.
+//
+//	@Summary  Tenant admin dashboard stats
+//	@Tags     analytics
+//	@Security BearerAuth
+//	@Router   /analytics/tenant/dashboard [get]
+func (h *Handler) TenantDashboard(c fiber.Ctx) error {
+	stats, err := h.service.TenantDashboard(c.Context())
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	revenue, _ := h.service.TenantRevenueDaily(c.Context())
+	top, _ := h.service.TenantTopCourses(c.Context(), 5)
+	return c.JSON(fiber.Map{
+		"stats":         stats,
+		"revenue_daily": revenue,
+		"top_courses":   top,
+	})
+}
+
 // GetRecentAttempts godoc
 // @Summary List recent test attempts with scores
 // @Tags analytics

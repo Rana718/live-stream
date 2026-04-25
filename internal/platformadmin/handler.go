@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"time"
 
+	"live-platform/internal/payments"
+
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
@@ -152,6 +154,47 @@ func (h *Handler) SetFeatures(c fiber.Ctx) error {
 	}
 	c.Set("Content-Type", "application/json")
 	return c.Send(out)
+}
+
+// CreateRazorpayAccount — POST /api/v1/admin/platform/tenants/:id/razorpay/create
+//
+// Body: payments.CreateLinkedAccountInput. On success the tenant's
+// `razorpay_account_id` is updated automatically — no follow-up PUT needed.
+func (h *Handler) CreateRazorpayAccount(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	var in payments.CreateLinkedAccountInput
+	if err := c.Bind().Body(&in); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
+	}
+	acc, err := h.svc.CreateLinkedAccount(c.Context(), id, in)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(acc)
+}
+
+// SetCustomDomain — PUT /api/v1/admin/platform/tenants/:id/domain
+//
+// Body: { "domain": "learn.rajan.com" }  (empty string to detach)
+func (h *Handler) SetCustomDomain(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	var body struct {
+		Domain string `json:"domain"`
+	}
+	if err := c.Bind().Body(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
+	}
+	t, err := h.svc.SetCustomDomain(c.Context(), id, body.Domain)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(t)
 }
 
 // SetRazorpayAccount — PUT /api/v1/admin/platform/tenants/:id/razorpay

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"live-platform/internal/database/db"
+	"live-platform/internal/payments"
 	"live-platform/internal/utils"
 
 	"github.com/google/uuid"
@@ -21,11 +22,41 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// RazorpayLinker is the slice of the Razorpay client we depend on. Tiny
+// interface so tests can pass a fake and we sidestep an import cycle.
+type RazorpayLinker interface {
+	CreateLinkedAccount(ctx context.Context, in payments.CreateLinkedAccountInput) (*payments.LinkedAccount, error)
+}
+
 type Service struct {
-	q *db.Queries
+	q  *db.Queries
+	rp RazorpayLinker
 }
 
 func NewService(pool *pgxpool.Pool) *Service { return &Service{q: db.New(pool)} }
+
+// WithRazorpay enables the Razorpay-Account auto-create flow. Optional —
+// the manual paste-an-account-ID path keeps working without it.
+func (s *Service) WithRazorpay(rp RazorpayLinker) *Service { s.rp = rp; return s }
+
+// CreateLinkedAccount provisions a Razorpay Route Linked Account for a tenant
+// and stores the resulting account ID on the tenant row.
+func (s *Service) CreateLinkedAccount(ctx context.Context, tenantID uuid.UUID, in payments.CreateLinkedAccountInput) (*payments.LinkedAccount, error) {
+	if s.rp == nil {
+		return nil, fmt.Errorf("razorpay client not wired")
+	}
+	if in.ReferenceID == "" {
+		in.ReferenceID = tenantID.String()
+	}
+	acc, err := s.rp.CreateLinkedAccount(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.SetRazorpayAccount(ctx, tenantID, acc.ID); err != nil {
+		return nil, err
+	}
+	return acc, nil
+}
 
 // ListTenants returns the platform-wide tenant table joined with their
 // active platform subscription (if any) and member count. Optional `status`
@@ -162,6 +193,22 @@ func (s *Service) SetFeatures(ctx context.Context, tenantID uuid.UUID, features 
 		return nil, err
 	}
 	return row.Features, nil
+}
+
+// SetCustomDomain stores a tenant's custom domain (e.g. learn.rajan.com).
+// The CustomDomain middleware reads this on every request so a tenant on
+// the Premium tier can serve their portal on their own subdomain.
+//
+// Pass an empty string to detach.
+func (s *Service) SetCustomDomain(ctx context.Context, id uuid.UUID, domain string) (*db.Tenant, error) {
+	t, err := s.q.SetTenantCustomDomain(ctx, db.SetTenantCustomDomainParams{
+		ID:      utils.UUIDToPg(id),
+		Column2: domain,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
 // SetRazorpayAccount stores a tenant's Linked-Account ID so future course

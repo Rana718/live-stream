@@ -109,6 +109,25 @@ type RecentAttempt struct {
 	TimeTakenSeconds  int32   `json:"time_taken_seconds"`
 }
 
+// TenantDashboard returns the headline numbers shown on the tenant_admin
+// dashboard. Tenant scoping comes from RLS — the call must run inside
+// TenantContext middleware which has set app.tenant_id.
+func (s *Service) TenantDashboard(ctx context.Context) (*db.TenantDashboardStatsRow, error) {
+	row, err := s.q.TenantDashboardStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+func (s *Service) TenantRevenueDaily(ctx context.Context) ([]db.TenantRevenueDailyRow, error) {
+	return s.q.TenantRevenueDaily(ctx)
+}
+
+func (s *Service) TenantTopCourses(ctx context.Context, limit int32) ([]db.TenantTopCoursesRow, error) {
+	return s.q.TenantTopCourses(ctx, limit)
+}
+
 func (s *Service) GetRecentAttempts(ctx context.Context, userID uuid.UUID, limit int32) ([]RecentAttempt, error) {
 	rows, err := s.q.UserRecentAttempts(ctx, db.UserRecentAttemptsParams{
 		UserID: utils.UUIDToPg(userID),

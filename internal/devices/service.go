@@ -24,7 +24,32 @@ type RegisterInput struct {
 	Platform string `json:"platform" validate:"required,oneof=android ios web"`
 }
 
+// MaxActiveDevices caps how many concurrent devices a single account can
+// have registered. Mirrors what PW / Classplus / Unacademy do to prevent
+// a single subscription being shared across a coaching centre's worth of
+// kids. The cap lives here (not in the DB) so adjusting per-plan is a
+// one-line code change.
+const MaxActiveDevices = 2
+
 func (s *Service) Register(ctx context.Context, tenantID, userID uuid.UUID, in RegisterInput) error {
+	// Evict oldest until we're under the cap. The new token will also count,
+	// so the post-condition is `count <= MaxActiveDevices`. We loop instead
+	// of computing N-to-evict in one go to be resilient to races.
+	for {
+		n, err := s.q.CountActiveDevicesForUser(ctx, db.CountActiveDevicesForUserParams{
+			TenantID: pgtype.UUID{Bytes: tenantID, Valid: true},
+			UserID:   pgtype.UUID{Bytes: userID, Valid: true},
+		})
+		if err != nil || n < int64(MaxActiveDevices) {
+			break
+		}
+		if err := s.q.EvictOldestDeviceForUser(ctx, db.EvictOldestDeviceForUserParams{
+			TenantID: pgtype.UUID{Bytes: tenantID, Valid: true},
+			UserID:   pgtype.UUID{Bytes: userID, Valid: true},
+		}); err != nil {
+			break
+		}
+	}
 	_, err := s.q.UpsertDeviceToken(ctx, db.UpsertDeviceTokenParams{
 		TenantID: pgtype.UUID{Bytes: tenantID, Valid: true},
 		UserID:   pgtype.UUID{Bytes: userID, Valid: true},

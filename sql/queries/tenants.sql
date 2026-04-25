@@ -43,6 +43,22 @@ SET custom_domain = NULLIF($2::text, ''),
 WHERE id = $1
 RETURNING *;
 
+-- name: SetTenantParent :one
+-- Attach a tenant to a parent (Enterprise multi-branch). Empty string in
+-- $2 detaches and turns the tenant back into a top-level row.
+UPDATE tenants
+SET parent_tenant_id = NULLIF($2::text, '')::uuid,
+    updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: ListBranchTenants :many
+-- Sub-tenants of a parent (one level — flat tree). Used by the Enterprise
+-- admin's "branches" view to roll up cross-branch metrics.
+SELECT * FROM tenants
+WHERE parent_tenant_id = $1
+ORDER BY name ASC;
+
 -- name: SetTenantRazorpayAccount :one
 -- Used after the tenant completes Linked-Account KYC. Once set, course-buy
 -- + subscription-checkout pass a `transfers` block on the Razorpay order so

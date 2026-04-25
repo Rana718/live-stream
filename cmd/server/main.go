@@ -233,6 +233,11 @@ func main() {
 	app.Use(metrics.Middleware())
 	app.Use(middleware.RequestLogger(log))
 	app.Use(middleware.LocaleMiddleware(cfg.App.DefaultLocale))
+	// CustomDomain runs BEFORE Auth/TenantContext so unauthenticated requests
+	// on a tenant's `learn.theirinstitute.com` get the implied tenant
+	// stashed in c.Locals("hostTenant"). Public landing pages can read it
+	// without forcing the user to type an Org Code.
+	app.Use(middleware.CustomDomain(pgPool))
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: []string{"*"},
 		AllowHeaders: []string{"Origin", "Content-Type", "Accept", "Authorization", "Accept-Language", "X-Request-ID"},
@@ -379,7 +384,7 @@ func main() {
 	// Every endpoint below operates cross-tenant. The SuperAdminContext
 	// middleware bypasses RLS — only mount it on routes that genuinely
 	// need platform-wide visibility.
-	platformSvc := platformadmin.NewService(pgPool)
+	platformSvc := platformadmin.NewService(pgPool).WithRazorpay(razorpay)
 	platformHandler := platformadmin.NewHandler(platformSvc, cfg.JWT.AccessSecret)
 	buildSvc := appbuilds.NewService(pgPool, cfg.Codemagic, log)
 	buildHandler := appbuilds.NewHandler(buildSvc)
@@ -399,6 +404,8 @@ func main() {
 	platformGroup.Get("/tenants/:id/features", platformHandler.GetFeatures)
 	platformGroup.Put("/tenants/:id/features", platformHandler.SetFeatures)
 	platformGroup.Put("/tenants/:id/razorpay", platformHandler.SetRazorpayAccount)
+	platformGroup.Post("/tenants/:id/razorpay/create", platformHandler.CreateRazorpayAccount)
+	platformGroup.Put("/tenants/:id/domain", platformHandler.SetCustomDomain)
 
 	platformGroup.Post("/tenants/:id/build", buildHandler.Trigger)
 	platformGroup.Get("/builds", buildHandler.List)
@@ -589,6 +596,14 @@ func main() {
 	ag.Get("/weak-topics", analyticsHandler.GetWeakTopics)
 	ag.Get("/difficulty", analyticsHandler.GetDifficultyBreakdown)
 	ag.Get("/recent-attempts", analyticsHandler.GetRecentAttempts)
+
+	// Tenant_admin dashboard. TenantContext sets RLS so the queries scope
+	// to the caller's tenant automatically.
+	ag.Get("/tenant/dashboard",
+		middleware.TenantContext(pgPool),
+		middleware.AdminOnly(),
+		analyticsHandler.TenantDashboard,
+	)
 
 	// Search
 	api.Get("/search", searchHandler.Search)

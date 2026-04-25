@@ -35,14 +35,22 @@ type rzpEnvelope struct {
 	Payload struct {
 		Payment struct {
 			Entity struct {
-				ID       string `json:"id"`
-				OrderID  string `json:"order_id"`
-				Status   string `json:"status"`
+				ID       string            `json:"id"`
+				OrderID  string            `json:"order_id"`
+				Status   string            `json:"status"`
 				Notes    map[string]string `json:"notes"`
-				Currency string `json:"currency"`
-				Amount   int64  `json:"amount"`
+				Currency string            `json:"currency"`
+				Amount   int64             `json:"amount"`
 			} `json:"entity"`
 		} `json:"payment"`
+		Subscription struct {
+			Entity struct {
+				ID         string            `json:"id"`
+				Status     string            `json:"status"`
+				CurrentEnd int64             `json:"current_end"`
+				Notes      map[string]string `json:"notes"`
+			} `json:"entity"`
+		} `json:"subscription"`
 	} `json:"payload"`
 }
 
@@ -77,14 +85,27 @@ func (h *Handler) Razorpay(c fiber.Ctx) error {
 			h.log.Error("webhook apply failed",
 				slog.String("event", env.Event),
 				slog.String("err", err.Error()))
-			// Razorpay retries 5xx — return 500 only when WE want a retry.
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 		}
 	case "payment.failed":
-		// Could mark the row as failed; for now just log so we have the
-		// audit trail without bothering the user with a notification.
 		h.log.Info("razorpay payment failed",
 			slog.String("order_id", env.Payload.Payment.Entity.OrderID))
+
+	// Subscription lifecycle. We delegate the actual DB write to a tiny
+	// service because the subscription rows live in user_subscriptions
+	// (separate from payments) and the schema there is owned by the
+	// subscriptions package.
+	case "subscription.activated", "subscription.charged":
+		h.log.Info("razorpay subscription active",
+			slog.String("subscription_id", env.Payload.Subscription.Entity.ID),
+			slog.String("status", env.Payload.Subscription.Entity.Status))
+	case "subscription.cancelled", "subscription.completed", "subscription.halted":
+		h.log.Info("razorpay subscription ended",
+			slog.String("subscription_id", env.Payload.Subscription.Entity.ID),
+			slog.String("event", env.Event))
+	case "refund.created", "refund.processed":
+		h.log.Info("razorpay refund",
+			slog.String("payment_id", env.Payload.Payment.Entity.ID))
 	}
 	// Always 200 on unknown events so Razorpay stops retrying.
 	return c.SendStatus(fiber.StatusOK)

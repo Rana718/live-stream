@@ -51,3 +51,38 @@ FROM lecture_views WHERE user_id = $1;
 
 -- name: UserCompletedLectureCount :one
 SELECT COUNT(*)::bigint FROM lecture_views WHERE user_id = $1 AND completed = TRUE;
+
+-- ─── Tenant-admin dashboard ─────────────────────────────────────────────
+-- Tenant scoping comes from RLS — every count below is implicitly filtered
+-- to the caller's tenant_id by the policies set up in migration 029.
+
+-- name: TenantDashboardStats :one
+SELECT
+    (SELECT count(*) FROM users WHERE role = 'student') AS students,
+    (SELECT count(*) FROM users WHERE role = 'instructor') AS instructors,
+    (SELECT count(*) FROM courses) AS courses,
+    (SELECT count(*) FROM lectures) AS lectures,
+    (SELECT count(*) FROM enrollments) AS enrollments,
+    (SELECT count(*) FROM streams WHERE status = 'live') AS live_now,
+    (SELECT count(*) FROM streams) AS streams_total,
+    (SELECT count(*) FROM test_attempts WHERE submitted_at > now() - interval '24 hours') AS attempts_24h,
+    (SELECT COALESCE(sum(amount), 0) FROM payments WHERE status = 'paid' AND created_at > now() - interval '30 days') AS revenue_30d,
+    (SELECT COALESCE(sum(amount), 0) FROM payments WHERE status = 'paid') AS revenue_alltime,
+    (SELECT count(*) FROM users WHERE created_at > now() - interval '7 days') AS signups_7d,
+    (SELECT count(*) FROM doubts WHERE status = 'pending') AS pending_doubts;
+
+-- name: TenantRevenueDaily :many
+SELECT date_trunc('day', created_at)::date AS day, COALESCE(sum(amount), 0)::bigint AS revenue
+FROM payments
+WHERE status = 'paid'
+  AND created_at > now() - interval '30 days'
+GROUP BY 1
+ORDER BY 1 ASC;
+
+-- name: TenantTopCourses :many
+SELECT c.id, c.title, count(e.id) AS enrolled
+FROM courses c
+LEFT JOIN enrollments e ON e.course_id = c.id
+GROUP BY c.id, c.title
+ORDER BY enrolled DESC NULLS LAST
+LIMIT $1;

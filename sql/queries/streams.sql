@@ -22,8 +22,14 @@ WHERE id = $1
 RETURNING *;
 
 -- name: EndStream :one
+-- Ending a stream rotates the stream_key to a new random value so the OBS
+-- profile that just finished broadcasting can't be replayed. The next
+-- session for the same instructor gets a fresh key issued by CreateStream.
 UPDATE streams
-SET status = 'ended', ended_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+SET status = 'ended',
+    ended_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP,
+    stream_key = encode(gen_random_bytes(16), 'hex')
 WHERE id = $1
 RETURNING *;
 
