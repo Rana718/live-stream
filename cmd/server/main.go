@@ -25,6 +25,8 @@ import (
 	"live-platform/internal/chat"
 	"live-platform/internal/chapters"
 	"live-platform/internal/config"
+	"live-platform/internal/cms"
+	"live-platform/internal/coursebundles"
 	"live-platform/internal/courseorders"
 	"live-platform/internal/coupons"
 	"live-platform/internal/courses"
@@ -337,6 +339,16 @@ func main() {
 	// Public marketing lead capture. Anyone can POST.
 	leadHandler := leads.NewHandler(leads.NewService(pgPool))
 	publicGroup.Post("/leads", leadHandler.Create)
+	publicGroup.Post("/leads/:id/booking-intent", leadHandler.BookingIntent)
+
+	// Public CMS read — marketing site (vidyawarrior.com) hits these.
+	// Reads bypass tenant RLS because content is platform-wide; writes
+	// are gated below under super_admin.
+	cmsHandler := cms.NewHandler(cms.NewService(pgPool))
+	publicGroup.Get("/posts", cmsHandler.ListPosts)
+	publicGroup.Get("/posts/:slug", cmsHandler.GetPost)
+	publicGroup.Get("/faqs", cmsHandler.ListFaqs)
+	publicGroup.Get("/pages/:slug", cmsHandler.GetCmsPage)
 
 	// Course share-card poster — used by Open Graph / Twitter / WhatsApp
 	// link previews. Public, heavily CDN-cached.
@@ -369,6 +381,30 @@ func main() {
 		middleware.AuthMiddleware(&cfg.JWT),
 		middleware.TenantContext(pgPool),
 		courseOrderHandler.Verify,
+	)
+
+	// Course bundles (combos). The buy/verify pair runs through the same
+	// Razorpay flow as single courses but enrols into every member course
+	// on success. List is read-only, buy is gated to authed students.
+	bundleHandler := coursebundles.NewHandler(
+		coursebundles.NewService(pgPool, razorpay).WithProducer(kafkaProducer),
+		cfg.Razorpay.KeyID,
+	)
+	api.Get("/bundles",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+		bundleHandler.List,
+	)
+	api.Post("/bundles/:id/buy",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+		middleware.StudentOrAbove(),
+		bundleHandler.Buy,
+	)
+	api.Post("/bundles/verify",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+		bundleHandler.Verify,
 	)
 
 	// Super-admin lead triage.
@@ -517,6 +553,25 @@ func main() {
 		middleware.SuperAdminContext(pgPool),
 		platformHandler.UpdateLeadStatus,
 	)
+
+	// Super-admin CMS — blog posts, FAQs, free-form pages. Cross-tenant
+	// content; SuperAdminContext is the right gate. The marketing
+	// site reads via the public endpoints registered earlier.
+	cmsAdmin := api.Group("/admin/cms",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.SuperAdminContext(pgPool),
+	)
+	cmsAdmin.Get("/posts", cmsHandler.AdminListPosts)
+	cmsAdmin.Post("/posts", cmsHandler.CreatePost)
+	cmsAdmin.Patch("/posts/:id", cmsHandler.UpdatePost)
+	cmsAdmin.Delete("/posts/:id", cmsHandler.DeletePost)
+	cmsAdmin.Get("/faqs", cmsHandler.AdminListFaqs)
+	cmsAdmin.Post("/faqs", cmsHandler.CreateFaq)
+	cmsAdmin.Patch("/faqs/:id", cmsHandler.UpdateFaq)
+	cmsAdmin.Delete("/faqs/:id", cmsHandler.DeleteFaq)
+	cmsAdmin.Get("/pages", cmsHandler.AdminListCmsPages)
+	cmsAdmin.Get("/pages/:slug", cmsHandler.AdminGetCmsPage)
+	cmsAdmin.Put("/pages/:slug", cmsHandler.UpsertCmsPage)
 
 	// Auth
 	authRoutes := api.Group("/auth")

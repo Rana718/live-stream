@@ -6,6 +6,17 @@ INSERT INTO payments (
           'razorpay', $6, 'created', $7)
 RETURNING *;
 
+-- name: CreateBundleOrder :one
+-- Same as CreateCourseOrder but with course_id NULL — bundles fan out
+-- to multiple courses on verify, so the link from the payment row to
+-- the bundle lives in metadata.bundle_id rather than a single FK.
+INSERT INTO payments (
+    tenant_id, user_id, course_id, amount, currency,
+    provider, provider_order_id, status, metadata
+) VALUES ($1, $2, NULL, $3, COALESCE(NULLIF($4::text, ''), 'INR'),
+          'razorpay', $5, 'created', $6)
+RETURNING *;
+
 -- name: GetCourseOrderByProviderOrderID :one
 SELECT * FROM payments WHERE provider_order_id = $1 LIMIT 1;
 

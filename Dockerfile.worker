@@ -1,0 +1,38 @@
+################################################################################
+# Worker image — parameterised by `BIN` so we share one Dockerfile for both
+# scheduleworker (no extra runtime deps) and watermarker (needs ffmpeg).
+#
+# Build:
+#   docker build -f Dockerfile.worker --build-arg BIN=scheduleworker -t school/scheduleworker .
+#   docker build -f Dockerfile.worker --build-arg BIN=watermarker    -t school/watermarker    .
+#
+# We always install ffmpeg into the runtime layer because the marginal
+# cost is small (~80MB) and it lets us keep one image template. If that
+# becomes a problem, split into two runtime stages.
+################################################################################
+FROM golang:1.26-alpine AS builder
+
+ARG BIN=scheduleworker
+
+WORKDIR /app
+RUN apk add --no-cache git
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+      -trimpath \
+      -ldflags="-s -w" \
+      -o /out/worker ./cmd/${BIN}
+
+
+FROM alpine:3.20 AS runtime
+
+RUN apk add --no-cache ca-certificates tzdata ffmpeg && \
+    addgroup -S app && adduser -S app -G app -h /app
+
+WORKDIR /app
+COPY --from=builder /out/worker /app/worker
+
+USER app
+ENTRYPOINT ["/app/worker"]

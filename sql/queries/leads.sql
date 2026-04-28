@@ -18,3 +18,17 @@ SET status = $2,
     assigned_to = COALESCE($4, assigned_to)
 WHERE id = $1
 RETURNING *;
+
+-- name: MarkLeadBookingIntent :one
+-- Called from the public marketing page after the prospect picks a Cal.com
+-- slot type but before they actually book. We bump status to 'demo' and
+-- prepend the slot choice to the notes — the actual booking confirmation
+-- comes later via Cal.com webhook (out of scope here).
+UPDATE leads
+SET status = 'demo',
+    notes = CASE
+              WHEN notes IS NULL OR notes = '' THEN $2
+              ELSE $2 || E'\n---\n' || notes
+            END
+WHERE id = $1
+RETURNING *;

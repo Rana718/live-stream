@@ -1,6 +1,10 @@
 package leads
 
-import "github.com/gofiber/fiber/v3"
+import (
+	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+)
 
 type Handler struct {
 	svc *Service
@@ -31,6 +35,37 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		"message": "thanks — our team will reach out soon",
 		"lead":    row,
 	})
+}
+
+// BookingIntent handles POST /api/v1/public/leads/:id/booking-intent
+//
+// Called from the marketing demo page after the user picks a Cal.com slot
+// type ("quick" or "deep"). Bumps the lead status to 'demo' so sales can
+// triage. We don't validate the slot enum strictly — the only consumer is
+// our own marketing site and the worst case is a janky note string.
+//
+//	@Summary	Record marketing demo slot intent
+//	@Tags		leads
+//	@Param		id	path	string	true	"Lead UUID"
+//	@Router		/public/leads/{id}/booking-intent [post]
+func (h *Handler) BookingIntent(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	var body struct {
+		Slot string `json:"slot"`
+	}
+	_ = c.Bind().Body(&body)
+	if body.Slot == "" {
+		body.Slot = "unspecified"
+	}
+	lead, err := h.svc.MarkBookingIntent(c.Context(),
+		pgtype.UUID{Bytes: id, Valid: true}, body.Slot)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"lead": lead})
 }
 
 // List handles GET /api/v1/admin/leads (super_admin only).

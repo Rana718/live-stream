@@ -85,6 +85,75 @@ services:
     networks:
       - live-platform
 
+  scheduleworker:
+    # Daily cron that materialises recurring class schedules into concrete
+    # streams rows. We run it on a 12h loop in compose so local dev sees
+    # rows appear without waiting a full day; production should drive this
+    # from Kubernetes CronJob / GitHub Actions cron / cron.d instead, with
+    # the binary exiting after one tick.
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+      args:
+        BIN: scheduleworker
+    container_name: live-platform-scheduleworker
+    environment: &worker_env
+      ENV: development
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: live_platform
+      DB_SSLMODE: disable
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ""
+      KAFKA_BROKER: kafka:9092
+      KAFKA_TOPIC: stream-events
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: recordings
+      JWT_ACCESS_SECRET: your-access-secret-key-change-in-production
+      JWT_REFRESH_SECRET: your-refresh-secret-key-change-in-production
+      JWT_ACCESS_EXPIRY: 15m
+      JWT_REFRESH_EXPIRY: 7d
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - live-platform
+    # Loop the cron locally — exit-on-tick is the production model, but
+    # for compose convenience we re-run every 12h so devs see schedules
+    # materialise without `docker compose run` gymnastics.
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["while true; do /app/worker; sleep 43200; done"]
+    restart: unless-stopped
+
+  watermarker:
+    # Long-lived consumer of WatermarkSpec messages off Kafka. Runs ffmpeg
+    # to overlay a per-student identifier on the master recording, uploads
+    # the variant to MinIO. Scale horizontally by setting `deploy.replicas`
+    # — Kafka consumer-group rebalances handle partition assignment.
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+      args:
+        BIN: watermarker
+    container_name: live-platform-watermarker
+    environment:
+      <<: *worker_env
+    depends_on:
+      kafka:
+        condition: service_started
+      minio:
+        condition: service_healthy
+    networks:
+      - live-platform
+    restart: unless-stopped
+
   app:
     build:
       context: .

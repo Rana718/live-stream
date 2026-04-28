@@ -50,3 +50,15 @@ SELECT EXISTS (
     SELECT 1 FROM streams
     WHERE schedule_id = $1 AND scheduled_at = $2
 );
+
+-- name: CreateScheduledStream :one
+-- Used by the materialiser to drop a `streams` row for one occurrence
+-- of a schedule. The stream_key is freshly random; status starts as
+-- 'scheduled' and only flips to 'live' when nginx-rtmp's auth callback
+-- fires StartStreamByKey.
+INSERT INTO streams (
+    tenant_id, instructor_id, title, description, stream_key,
+    status, scheduled_at, schedule_id
+) VALUES ($1, $2, $3, $4, encode(gen_random_bytes(16), 'hex'),
+          'scheduled', $5, $6)
+RETURNING *;

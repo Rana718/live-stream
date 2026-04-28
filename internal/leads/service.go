@@ -53,3 +53,18 @@ func (s *Service) List(ctx context.Context, status string, limit, offset int32) 
 		Offset:  offset,
 	})
 }
+
+// MarkBookingIntent records that a prospect clicked a Cal.com slot from
+// the marketing site. The actual confirmed booking arrives later via a
+// Cal.com webhook (not wired here — sales triages from `status='demo'`).
+func (s *Service) MarkBookingIntent(ctx context.Context, leadID pgtype.UUID, slot string) (*db.Lead, error) {
+	note := "Booking intent: " + slot + " slot picked from website"
+	row, err := s.q.MarkLeadBookingIntent(ctx, db.MarkLeadBookingIntentParams{
+		ID:    leadID,
+		Notes: pgtype.Text{String: note, Valid: true},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
