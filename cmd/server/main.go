@@ -465,6 +465,42 @@ func main() {
 		middleware.AdminOnly(),
 		refundHandler.Issue,
 	)
+	// Admin payments list — feeds the refunds UI's refundable + history tabs.
+	api.Get("/admin/payments",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+		middleware.AdminOnly(),
+		refundHandler.AdminListPayments,
+	)
+
+	// Admin bundle CRUD. The student-facing /bundles, /bundles/:id/buy and
+	// /bundles/verify endpoints are registered separately near coursebundles.
+	adminBundles := api.Group("/admin/bundles",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+		middleware.AdminOnly(),
+	)
+	adminBundles.Get("/",          bundleHandler.AdminList)
+	adminBundles.Post("/",         bundleHandler.AdminCreate)
+	adminBundles.Patch("/:id/active", bundleHandler.AdminSetActive)
+	adminBundles.Delete("/:id",    bundleHandler.AdminDelete)
+
+	// Admin notifications broadcast — single endpoint that handles all
+	// three audience modes (all / by course / single user).
+	api.Post("/admin/notifications",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+		middleware.AdminOnly(),
+		notifHandler.AdminBroadcast,
+	)
+
+	// Admin/instructor publish toggle for individual tests.
+	api.Patch("/tests/:id/publish",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+		middleware.InstructorOrAdmin(),
+		testHandler.AdminSetPublished,
+	)
 
 	// Recurring class schedules. Admin creates a weekly rule; a daily
 	// worker (out of scope here) materialises concrete `streams` rows
@@ -654,6 +690,20 @@ func main() {
 	eg.Post("/", enrollHandler.Enroll)
 	eg.Get("/my", enrollHandler.ListMine)
 	eg.Delete("/:course_id", enrollHandler.Cancel)
+	// Roster view — admin/instructor see who's enrolled in a course.
+	api.Get("/courses/:course_id/enrollments",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+		middleware.InstructorOrAdmin(),
+		enrollHandler.ListByCourse,
+	)
+	// Manual enrollment by an admin (e.g. paid offline, gift access).
+	api.Post("/admin/enrollments",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(pgPool),
+		middleware.AdminOnly(),
+		enrollHandler.AdminEnroll,
+	)
 
 	// Subjects / Chapters / Topics
 	subj := api.Group("/subjects")
