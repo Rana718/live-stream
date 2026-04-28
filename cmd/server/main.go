@@ -63,6 +63,7 @@ import (
 	"live-platform/internal/tenants"
 	"live-platform/internal/tests"
 	"live-platform/internal/topics"
+	"live-platform/internal/uploads"
 	"live-platform/internal/users"
 	"live-platform/internal/webhooks"
 	"live-platform/internal/whatsapp"
@@ -234,6 +235,7 @@ func main() {
 	auditService := audit.NewService(pgPool)
 	auditHandler := audit.NewHandler(auditService)
 	bannerHandler := banners.NewHandler(banners.NewService(pgPool))
+	uploadHandler := uploads.NewHandler(minioClient.Raw(), &cfg.MinIO, os.Getenv("MEDIA_PUBLIC_BASE"))
 
 	// --- Fiber app ---
 	app := fiber.New(fiber.Config{
@@ -736,6 +738,11 @@ func main() {
 	lg.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), lectureHandler.Delete)
 	lg.Post("/watch", middleware.AuthMiddleware(&cfg.JWT), lectureHandler.RecordWatch)
 	lg.Get("/history/my", middleware.AuthMiddleware(&cfg.JWT), lectureHandler.History)
+
+	// Generic file uploads (logos, thumbnails, banner images, lecture
+	// videos, post hero images). Returns a public URL the caller stores
+	// on its own row — see internal/uploads/handler.go.
+	api.Post("/uploads", middleware.AuthMiddleware(&cfg.JWT), middleware.InstructorOrAdmin(), uploadHandler.Upload)
 
 	// Study materials
 	mg := api.Group("/materials")
