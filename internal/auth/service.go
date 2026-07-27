@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"live-platform/internal/config"
+	"live-platform/internal/database"
 	"live-platform/internal/database/db"
 	"live-platform/internal/utils"
 	"time"
@@ -128,6 +129,7 @@ func (s *Service) register(ctx context.Context, req RegisterRequest) (*db.User, 
 	if err != nil {
 		return nil, err
 	}
+	ctx = database.WithTenant(ctx, tenantID.String(), "")
 
 	user, err := s.queries.CreateUser(ctx, db.CreateUserParams{
 		TenantID:     pgtype.UUID{Bytes: tenantID, Valid: true},
@@ -293,8 +295,13 @@ func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (*Token
 		return nil, fmt.Errorf("invalid refresh token")
 	}
 
+	// The tenant isn't known yet at this point — that's what this lookup is
+	// for — so there's no app.tenant_id to scope it by. The signature check
+	// plus the redis round-trip above already prove this is a legitimate,
+	// previously-issued session, so a superuser bypass here is scoped to a
+	// single row by primary key, not an attacker-controlled cross-tenant read.
 	pgUUID := pgtype.UUID{Bytes: userID, Valid: true}
-	user, err := s.queries.GetUserByID(ctx, pgUUID)
+	user, err := s.queries.GetUserByID(database.WithSuperAdmin(ctx), pgUUID)
 	if err != nil {
 		return nil, fmt.Errorf("user not found")
 	}

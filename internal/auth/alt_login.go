@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"live-platform/internal/database"
 	"live-platform/internal/database/db"
 
 	"github.com/google/uuid"
@@ -117,6 +118,10 @@ func (s *Service) VerifyOTP(ctx context.Context, phoneInput, code, orgCode strin
 	if err != nil {
 		return nil, uuid.Nil, err
 	}
+	// resolveTenant only proved the org code is real; every query below
+	// touches tenant-scoped tables (RLS-forced), so the connection needs
+	// app.tenant_id set to the tenant we just resolved.
+	ctx = database.WithTenant(ctx, tenantID.String(), "")
 
 	row, err := s.queries.GetLatestSmsCode(ctx, phone)
 	if err != nil {
@@ -174,7 +179,8 @@ func (s *Service) LoginWithOTP(ctx context.Context, phone, code, orgCode, referr
 		phoneNorm, _ := normalizePhone(phone)
 		tID, _ := s.resolveTenant(ctx, orgCode)
 		if tID != uuid.Nil {
-			_, err := s.queries.GetUserByPhone(ctx, db.GetUserByPhoneParams{
+			preCheckCtx := database.WithTenant(ctx, tID.String(), "")
+			_, err := s.queries.GetUserByPhone(preCheckCtx, db.GetUserByPhoneParams{
 				TenantID:    pgtype.UUID{Bytes: tID, Valid: true},
 				PhoneNumber: pgtype.Text{String: phoneNorm, Valid: phoneNorm != ""},
 			})
@@ -215,6 +221,7 @@ func (s *Service) LoginWithGoogle(ctx context.Context, id GoogleIdentity, orgCod
 	if err != nil {
 		return nil, err
 	}
+	ctx = database.WithTenant(ctx, tenantID.String(), "")
 	tID := pgtype.UUID{Bytes: tenantID, Valid: true}
 
 	// Prefer google_sub within tenant so email rotations don't lose the link.
