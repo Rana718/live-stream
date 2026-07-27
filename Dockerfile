@@ -61,7 +61,13 @@ USER app
 
 EXPOSE 3000
 
+# 127.0.0.1, not localhost: this container's /etc/hosts resolves
+# `localhost` to ::1 (IPv6) before 127.0.0.1, and busybox wget doesn't
+# fall back to IPv4 on a failed IPv6 connection — so `localhost` here
+# made every healthcheck fail with "Connection refused" regardless of
+# whether the app was actually up, permanently marking the container
+# unhealthy in Docker/any orchestrator reading this status.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://localhost:3000/health || exit 1
+  CMD wget -qO- http://127.0.0.1:3000/health || exit 1
 
 ENTRYPOINT ["/app/server"]

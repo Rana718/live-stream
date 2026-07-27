@@ -35,7 +35,7 @@ type UploadRequest struct {
 	IsFree       bool       `json:"is_free"`
 }
 
-func (s *Service) Upload(ctx context.Context, uploader uuid.UUID, req UploadRequest, filename string, size int64, reader io.Reader, contentType string) (*db.StudyMaterial, error) {
+func (s *Service) Upload(ctx context.Context, tenantID, uploader uuid.UUID, req UploadRequest, filename string, size int64, reader io.Reader, contentType string) (*db.StudyMaterial, error) {
 	if req.MaterialType == "" {
 		req.MaterialType = "pdf"
 	}
@@ -61,6 +61,7 @@ func (s *Service) Upload(ctx context.Context, uploader uuid.UUID, req UploadRequ
 		Language:     utils.TextToPg(req.Language),
 		IsFree:       utils.BoolToPg(req.IsFree),
 		UploadedBy:   utils.UUIDToPg(uploader),
+		TenantID:     utils.UUIDToPg(tenantID),
 	})
 	if err != nil {
 		return nil, err

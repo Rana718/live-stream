@@ -35,6 +35,17 @@ func NewService(pool *pgxpool.Pool) *Service {
 // caching it shaves DB load by ~95% in practice.
 func (s *Service) WithCache(c *cache.Cache) *Service { s.cache = c; return s }
 
+// DomainIsRegistered reports whether some active tenant has claimed the
+// given host as its custom_domain. This backs the Caddy on-demand-TLS
+// "ask" endpoint (see docker/Caddyfile) — Caddy calls it before requesting
+// a Let's Encrypt certificate for a hostname it hasn't seen before, so a
+// stranger pointing an arbitrary domain's DNS at our ingress can't make us
+// burn Let's Encrypt's rate limits attempting issuance for it.
+func (s *Service) DomainIsRegistered(ctx context.Context, domain string) bool {
+	_, err := s.queries.GetTenantByDomain(ctx, pgtype.Text{String: domain, Valid: true})
+	return err == nil
+}
+
 // PublicTenantInfo is the tenant payload returned by the public Org Code
 // lookup. We deliberately omit anything that would help an attacker enumerate
 // or impersonate the tenant (owner_user_id, razorpay_account_id, internal

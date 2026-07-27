@@ -1,6 +1,7 @@
 -- name: CreateBookmark :one
-INSERT INTO bookmarks (user_id, lecture_id, material_id, timestamp_seconds, note)
-VALUES ($1, $2, $3, $4, $5)
+-- tenant_id derived from the bookmarking user (NOT NULL FK).
+INSERT INTO bookmarks (user_id, lecture_id, material_id, timestamp_seconds, note, tenant_id)
+VALUES ($1, $2, $3, $4, $5, (SELECT tenant_id FROM users WHERE id = $1))
 RETURNING *;
 
 -- name: ListMyBookmarks :many

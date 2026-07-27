@@ -1,6 +1,8 @@
 -- name: CreateVideoVariant :one
-INSERT INTO video_variants (recording_id, lecture_id, quality, file_path, file_size, bitrate_kbps, width, height, codec)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+-- recording_id/lecture_id are both nullable — no guaranteed parent to
+-- derive from, passed explicitly.
+INSERT INTO video_variants (recording_id, lecture_id, quality, file_path, file_size, bitrate_kbps, width, height, codec, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 RETURNING *;
 
 -- name: GetVideoVariantByID :one
@@ -16,8 +18,9 @@ SELECT * FROM video_variants WHERE lecture_id = $1 ORDER BY bitrate_kbps DESC;
 DELETE FROM video_variants WHERE id = $1;
 
 -- name: CreateDownloadToken :one
-INSERT INTO download_tokens (user_id, resource_type, resource_id, token, expires_at)
-VALUES ($1, $2, $3, $4, $5)
+-- tenant_id derived from the requesting user (NOT NULL FK).
+INSERT INTO download_tokens (user_id, resource_type, resource_id, token, expires_at, tenant_id)
+VALUES ($1, $2, $3, $4, $5, (SELECT tenant_id FROM users WHERE id = $1))
 RETURNING *;
 
 -- name: GetDownloadTokenByToken :one

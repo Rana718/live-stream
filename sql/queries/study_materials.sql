@@ -1,7 +1,9 @@
 -- name: CreateStudyMaterial :one
+-- topic_id/chapter_id/subject_id/uploaded_by are all nullable — no
+-- guaranteed parent to derive from, passed explicitly.
 INSERT INTO study_materials (topic_id, chapter_id, subject_id, title, description, material_type,
-                             file_path, file_size, language, is_free, uploaded_by)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                             file_path, file_size, language, is_free, uploaded_by, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 RETURNING *;
 
 -- name: GetStudyMaterialByID :one

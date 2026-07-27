@@ -1,6 +1,6 @@
 -- name: CreateStream :one
-INSERT INTO streams (title, description, instructor_id, stream_key, scheduled_at)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO streams (title, description, instructor_id, stream_key, scheduled_at, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
 -- name: GetStreamByID :one

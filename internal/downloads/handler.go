@@ -34,6 +34,7 @@ func variantToMap(v *db.VideoVariant) fiber.Map {
 // @Security BearerAuth
 // @Router /downloads/variants [post]
 func (h *Handler) CreateVariant(c fiber.Ctx) error {
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	var req CreateVariantRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -41,7 +42,7 @@ func (h *Handler) CreateVariant(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	v, err := h.service.CreateVariant(c.Context(), req)
+	v, err := h.service.CreateVariant(c.Context(), tenantID, req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}

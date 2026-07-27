@@ -1,0 +1,78 @@
+groups:
+  - name: live-platform
+    rules:
+      # See docs/runbooks/oncall-payments-pending.md — this is exactly the
+      # symptom that runbook exists for: webhooks arriving but failing to
+      # apply, orders stuck in created/awaiting state.
+      - alert: PaymentWebhookApplyFailures
+        expr: increase(payment_webhook_events_total{outcome="error"}[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Razorpay webhook events are failing to apply"
+          description: >
+            {{ $value }} payment.captured/authorized webhooks failed to
+            apply in the last 10m. Orders may be stuck unpaid despite a
+            successful charge. See docs/runbooks/oncall-payments-pending.md.
+
+      - alert: PaymentWebhookSignatureRejections
+        expr: increase(payment_webhook_events_total{outcome="rejected"}[10m]) > 3
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Multiple Razorpay webhook signature rejections"
+          description: >
+            {{ $value }} webhook signature verifications failed in 10m.
+            Could be a stale RAZORPAY_WEBHOOK_SECRET after rotation
+            (see docs/runbooks/rotate-secrets.md) or Razorpay dashboard
+            misconfiguration — or a real attack. Rejections are not
+            necessarily malicious in isolation, but a burst is unusual.
+
+      - alert: AppUnreachable
+        expr: up{job="live-platform-app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "live-platform-app is not responding to Prometheus scrapes"
+          description: >
+            /metrics hasn't responded for 1m — the app is likely down or
+            deadlocked. Check docs/runbooks/oncall-live-down.md and
+            `docker logs live-platform-app`.
+
+      - alert: HighServerErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          / sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "5xx error rate above 5% over 5m"
+          description: "{{ $value | humanizePercentage }} of requests are 5xx."
+
+      - alert: DBConnectionPoolSaturated
+        expr: |
+          db_pool_connections{state="acquired"}
+          / db_pool_connections{state="max"} > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Postgres connection pool is >90% saturated"
+          description: >
+            The app's connection pool is nearly exhausted — new requests
+            will start queuing on Acquire(). Consider raising
+            DB_MAX_CONNS or investigating a connection leak / slow query.
+
+      - alert: HighRequestLatencyP99
+        expr: |
+          histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, route)) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p99 request latency above 2s on {{ $labels.route }}"
+          description: "{{ $value }}s p99 latency over the last 5m window."

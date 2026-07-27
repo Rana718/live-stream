@@ -28,7 +28,7 @@ type CreateAssignmentRequest struct {
 	IsPublished   bool       `json:"is_published"`
 }
 
-func (s *Service) Create(ctx context.Context, creator uuid.UUID, req CreateAssignmentRequest) (*db.Assignment, error) {
+func (s *Service) Create(ctx context.Context, tenantID, creator uuid.UUID, req CreateAssignmentRequest) (*db.Assignment, error) {
 	if req.MaxMarks == 0 {
 		req.MaxMarks = 100
 	}
@@ -44,6 +44,7 @@ func (s *Service) Create(ctx context.Context, creator uuid.UUID, req CreateAssig
 		MaxMarks:      utils.NumericFromFloat(req.MaxMarks),
 		IsPublished:   utils.BoolToPg(req.IsPublished),
 		CreatedBy:     utils.UUIDToPg(creator),
+		TenantID:      utils.UUIDToPg(tenantID),
 	})
 	if err != nil {
 		return nil, err

@@ -1,6 +1,7 @@
 -- name: CreateDoubt :one
-INSERT INTO doubts (user_id, lecture_id, chapter_id, topic_id, question_text, input_type, voice_url, language)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+-- tenant_id derived from the asking user (NOT NULL FK).
+INSERT INTO doubts (user_id, lecture_id, chapter_id, topic_id, question_text, input_type, voice_url, language, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, (SELECT tenant_id FROM users WHERE id = $1))
 RETURNING *;
 
 -- name: GetDoubtByID :one
@@ -22,8 +23,9 @@ UPDATE doubts SET status = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1;
 DELETE FROM doubts WHERE id = $1;
 
 -- name: CreateDoubtAnswer :one
-INSERT INTO doubt_answers (doubt_id, answer_text, answer_type, answered_by, model_name)
-VALUES ($1, $2, $3, $4, $5)
+-- tenant_id derived from the parent doubt (NOT NULL FK).
+INSERT INTO doubt_answers (doubt_id, answer_text, answer_type, answered_by, model_name, tenant_id)
+VALUES ($1, $2, $3, $4, $5, (SELECT tenant_id FROM doubts WHERE id = $1))
 RETURNING *;
 
 -- name: ListAnswersByDoubt :many

@@ -1,6 +1,6 @@
 -- name: CreateSubscriptionPlan :one
-INSERT INTO subscription_plans (name, slug, description, price, currency, duration_days, features, display_order)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO subscription_plans (name, slug, description, price, currency, duration_days, features, display_order, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- name: GetPlanByID :one
@@ -23,8 +23,8 @@ RETURNING *;
 DELETE FROM subscription_plans WHERE id = $1;
 
 -- name: CreateUserSubscription :one
-INSERT INTO user_subscriptions (user_id, plan_id, status, starts_at, ends_at, auto_renew)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO user_subscriptions (user_id, plan_id, status, starts_at, ends_at, auto_renew, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING *;
 
 -- name: GetSubscriptionByID :one
@@ -79,8 +79,8 @@ WHERE razorpay_subscription_id = $1
 RETURNING *;
 
 -- name: CreatePayment :one
-INSERT INTO payments (user_id, subscription_id, amount, currency, provider, provider_order_id, status, metadata)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO payments (user_id, subscription_id, amount, currency, provider, provider_order_id, status, metadata, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- name: GetPaymentByID :one

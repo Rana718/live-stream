@@ -36,7 +36,7 @@ type CreateFeeStructureRequest struct {
 	InstallmentGapDays int32      `json:"installment_gap_days"`
 }
 
-func (s *Service) CreateStructure(ctx context.Context, req CreateFeeStructureRequest) (*db.FeeStructure, error) {
+func (s *Service) CreateStructure(ctx context.Context, tenantID uuid.UUID, req CreateFeeStructureRequest) (*db.FeeStructure, error) {
 	if req.Currency == "" {
 		req.Currency = "INR"
 	}
@@ -54,6 +54,7 @@ func (s *Service) CreateStructure(ctx context.Context, req CreateFeeStructureReq
 		Currency:           utils.TextToPg(req.Currency),
 		InstallmentsCount:  utils.Int4ToPg(req.InstallmentsCount),
 		InstallmentGapDays: utils.Int4ToPg(req.InstallmentGapDays),
+		TenantID:           utils.UUIDToPg(tenantID),
 	})
 	if err != nil {
 		return nil, err

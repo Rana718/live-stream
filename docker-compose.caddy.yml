@@ -1,0 +1,37 @@
+# Production ingress overlay — Caddy terminating TLS in front of `app`.
+# Not meant for local dev (the base docker-compose.yml already exposes
+# app:3000 directly); use this on a real deploy with a real domain
+# pointed at the host.
+#
+# Usage:
+#   API_DOMAIN=api.vidyawarrior.in ACME_EMAIL=ops@vidyawarrior.in \
+#     docker-compose -f docker-compose.yml -f docker-compose.caddy.yml up -d caddy
+#
+# Caddy needs 80 (ACME HTTP-01 challenge + redirect) and 443 (TLS) bound
+# on the host directly — DNS for API_DOMAIN and every tenant custom
+# domain must point at this host's public IP.
+services:
+  caddy:
+    image: caddy:2.9-alpine
+    container_name: live-platform-caddy
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN to your real API hostname}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL to a real contact address}
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - live-platform
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
+  caddy_logs:

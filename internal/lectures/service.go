@@ -34,7 +34,7 @@ type CreateLectureRequest struct {
 	DisplayOrder    int32      `json:"display_order"`
 }
 
-func (s *Service) Create(ctx context.Context, req CreateLectureRequest) (*db.Lecture, error) {
+func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, req CreateLectureRequest) (*db.Lecture, error) {
 	if req.Language == "" {
 		req.Language = "en"
 	}
@@ -55,6 +55,7 @@ func (s *Service) Create(ctx context.Context, req CreateLectureRequest) (*db.Lec
 		IsFree:          utils.BoolToPg(req.IsFree),
 		IsPublished:     utils.BoolToPg(req.IsPublished),
 		DisplayOrder:    utils.Int4ToPg(req.DisplayOrder),
+		TenantID:        utils.UUIDToPg(tenantID),
 	})
 	if err != nil {
 		return nil, err

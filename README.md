@@ -107,10 +107,14 @@ practice testing, AI doubt solving, subscriptions, and multi-language content
 
 ### Prerequisites
 
-- Go 1.22+
+- Go 1.25+
 - Docker & Docker Compose
 - SQLC CLI: `go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest`
-- Migrate CLI: `go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest`
+
+No separate migration CLI needed — `scripts/migrate.sh` applies every
+`migrations/*.sql` file directly via `psql` in lexical order (idempotent,
+safe to re-run). `sqlc` reads the same folder independently for codegen,
+so the two never need to agree on a migration-tool convention.
 
 ### Installation
 
@@ -407,6 +411,23 @@ make docker-logs
 
 # Rebuild containers
 make docker-build
+
+# Back up the DB to MinIO / restore a backup into a scratch DB
+make backup
+make restore
+```
+
+Optional overlays for things you don't need running by default in local
+dev:
+
+```bash
+# Prometheus + Grafana + Alertmanager
+docker-compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+
+# Caddy (TLS-terminating reverse proxy) — real deploys only, needs
+# API_DOMAIN/ACME_EMAIL and a real domain pointed at the host
+API_DOMAIN=api.example.com ACME_EMAIL=ops@example.com \
+  docker-compose -f docker-compose.yml -f docker-compose.caddy.yml up -d caddy
 ```
 
 ## Development
@@ -449,12 +470,16 @@ make run
 ### Database Migrations
 
 ```bash
-# Run migrations
+# Apply every migrations/*.sql in order (idempotent — safe to re-run)
 make migrate-up
-
-# Rollback migrations
-make migrate-down
 ```
+
+There's no rollback path — these are plain forward-only SQL files, not
+paired up/down migrations, and only one migration in the whole history
+ever had a real (fully-commented-out) down section. To undo a bad
+migration, restore from a pre-migration backup instead — see
+`docs/runbooks/backup-restore.md` (in the monorepo root) and
+`make backup`/`make restore`.
 
 ### Generate SQLC Code
 
@@ -544,16 +569,37 @@ curl http://localhost:3000/api/v1/streams/live
 
 ## Production Considerations
 
-- [ ] Use proper secrets management (AWS Secrets Manager, Vault)
-- [ ] Enable HTTPS/TLS
-- [ ] Add rate limiting
-- [ ] Implement proper logging (structured logs)
-- [ ] Add monitoring (Prometheus, Grafana)
-- [ ] Set up CI/CD pipeline
-- [ ] Configure database connection pooling
-- [ ] Add request validation middleware
-- [ ] Implement graceful shutdown
-- [ ] Add health checks for all services
+This list used to undersell the backend — most of it was already done and
+just never checked off. Kept current as of 2026-07-27; see
+`docs/production-checklist.md` (in the monorepo root, one level up) for
+the full audit trail and what's still genuinely open.
+
+- [x] Enable HTTPS/TLS — `docker/Caddyfile` (automatic Let's Encrypt for
+      the main domain + on-demand TLS for tenant custom domains, gated by
+      an ask endpoint); `TLS_CERT_FILE`/`TLS_KEY_FILE` remain as a
+      manual-cert fallback for non-Caddy deploys.
+- [x] Add rate limiting — per-IP (`middleware.RateLimit`) and per-tenant
+      (`middleware.RateLimitPerTenant`, so one tenant's traffic spike
+      can't throttle another tenant sharing an IP/NAT).
+- [x] Implement proper logging (structured logs) — `slog`, JSON output.
+- [x] Add monitoring (Prometheus, Grafana) — `/metrics` +
+      `docker/observability/` (dashboard + alert rules + optional
+      `docker-compose.observability.yml` overlay).
+- [x] Set up CI/CD pipeline — `.github/workflows/backend.yml` (lint,
+      sqlc-drift check, build + test on every push/PR).
+- [x] Configure database connection pooling — tuned pgx pool
+      (`DB_MAX_CONNS`/`DB_MIN_CONNS`/etc.), plus a `db_pool_connections`
+      Prometheus gauge so saturation shows up before it causes queuing.
+- [x] Add request validation middleware — `go-playground/validator`.
+- [x] Implement graceful shutdown — configurable timeout in `cmd/server`.
+- [x] Add health checks for all services — `/health` (liveness) and
+      `/health/deep` (pings Postgres, Redis, MinIO, Kafka).
+- [ ] Use proper secrets management (AWS Secrets Manager, Vault, or
+      similar) — still plain env vars today. `docs/runbooks/rotate-secrets.md`
+      documents a solid manual rotation process (dual-secret grace
+      window), but there's no automated secret store yet; fine for a
+      single operator, worth revisiting once more people touch prod env
+      vars.
 
 ## License
 

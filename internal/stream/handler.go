@@ -40,13 +40,14 @@ func uuidToString(id interface{}) string {
 // @Router /streams [post]
 func (h *Handler) CreateStream(c fiber.Ctx) error {
 	userID := c.Locals("userID").(uuid.UUID)
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 
 	var req CreateStreamRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
 
-	stream, err := h.service.CreateStream(c.Context(), userID, req)
+	stream, err := h.service.CreateStream(c.Context(), tenantID, userID, req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}

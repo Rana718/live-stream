@@ -80,9 +80,15 @@ func TestRLS_TenantIsolation(t *testing.T) {
 			t.Fatalf("insert tenant: %v", err)
 		}
 	}
-	t.Cleanup(func() {
+	// A plain defer (not t.Cleanup) so this runs — using the still-live
+	// `root` connection — before the defer root.Release()/pool.Close()
+	// above tear it down. t.Cleanup callbacks fire *after* the test
+	// function's own defers have already run, which would otherwise use
+	// an already-released connection on an already-closed pool the moment
+	// any assertion below calls Fatalf.
+	defer func() {
 		_, _ = root.Exec(ctx, "DELETE FROM tenants WHERE id IN ($1, $2)", tenantA, tenantB)
-	})
+	}()
 
 	// One course per tenant. tenant_id is required so RLS-bypass via
 	// super_admin is the only way to populate both.
@@ -94,9 +100,9 @@ func TestRLS_TenantIsolation(t *testing.T) {
 		title  string
 	}{{courseA, tenantA, "TENANT_A_COURSE"}, {courseB, tenantB, "TENANT_B_COURSE"}} {
 		if _, err := root.Exec(ctx, `
-			INSERT INTO courses (id, tenant_id, title)
-			VALUES ($1, $2, $3)
-		`, x.course, x.tenant, x.title); err != nil {
+			INSERT INTO courses (id, tenant_id, title, slug)
+			VALUES ($1, $2, $3, $4)
+		`, x.course, x.tenant, x.title, "slug-"+x.course.String()[:8]); err != nil {
 			t.Fatalf("insert course: %v", err)
 		}
 	}

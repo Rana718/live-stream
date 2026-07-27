@@ -30,6 +30,21 @@ func (h *Handler) LookupByOrgCode(c fiber.Ctx) error {
 	return c.JSON(info)
 }
 
+// CaddyAskDomain handles GET /internal/caddy/ask?domain=learn.theirdomain.com
+// — Caddy's on-demand TLS "ask" endpoint. Must only be reachable from
+// Caddy itself (same Docker network, never exposed publicly) since it's
+// meant to gate *outbound* Let's Encrypt requests, not serve as a public
+// API — see docker/Caddyfile's comment on tls.on_demand.ask.
+//
+// Caddy treats any non-2xx as "don't issue a cert for this hostname."
+func (h *Handler) CaddyAskDomain(c fiber.Ctx) error {
+	domain := c.Query("domain")
+	if domain == "" || !h.svc.DomainIsRegistered(c.Context(), domain) {
+		return c.SendStatus(fiber.StatusForbidden)
+	}
+	return c.SendStatus(fiber.StatusOK)
+}
+
 // MyTenant handles GET /api/v1/tenants/me
 // Returns the tenant record for the authenticated user. Used by web/mobile
 // to fetch full theming once logged in (LookupByOrgCode is for pre-login).

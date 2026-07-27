@@ -1,6 +1,7 @@
 -- name: CreateChapter :one
-INSERT INTO chapters (subject_id, name, description, display_order, is_free)
-VALUES ($1, $2, $3, $4, $5)
+-- tenant_id derived from the parent subject (NOT NULL FK).
+INSERT INTO chapters (subject_id, name, description, display_order, is_free, tenant_id)
+VALUES ($1, $2, $3, $4, $5, (SELECT tenant_id FROM subjects WHERE id = $1))
 RETURNING *;
 
 -- name: GetChapterByID :one

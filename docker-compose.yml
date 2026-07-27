@@ -101,8 +101,15 @@ services:
       ENV: development
       DB_HOST: postgres
       DB_PORT: 5432
-      DB_USER: postgres
-      DB_PASSWORD: postgres
+      # app_user is the restricted, non-superuser role created by
+      # migrations/043_restricted_app_role.sql — request-serving code must
+      # never connect as the `postgres` superuser, since Postgres
+      # superusers unconditionally bypass row-level security regardless of
+      # policy/FORCE ROW LEVEL SECURITY. Migrations, backups, and restores
+      # still use `postgres` (scripts/migrate.sh, backup-db.sh,
+      # restore-db.sh) since DDL/admin operations need elevated privilege.
+      DB_USER: app_user
+      DB_PASSWORD: app_user_dev_password
       DB_NAME: live_platform
       DB_SSLMODE: disable
       REDIS_HOST: redis
@@ -169,8 +176,10 @@ services:
       ENV: development
       DB_HOST: postgres
       DB_PORT: 5432
-      DB_USER: postgres
-      DB_PASSWORD: postgres
+      # See the matching comment on the scheduleworker block above —
+      # app_user (migrations/043_restricted_app_role.sql), never postgres.
+      DB_USER: app_user
+      DB_PASSWORD: app_user_dev_password
       DB_NAME: live_platform
       DB_SSLMODE: disable
       REDIS_HOST: redis

@@ -1,6 +1,7 @@
 -- name: CreateNotification :one
-INSERT INTO notifications (user_id, type, title, body, resource_type, resource_id)
-VALUES ($1, $2, $3, $4, $5, $6)
+-- tenant_id derived from the recipient user (NOT NULL FK).
+INSERT INTO notifications (user_id, type, title, body, resource_type, resource_id, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, (SELECT tenant_id FROM users WHERE id = $1))
 RETURNING *;
 
 -- name: ListMyNotifications :many
@@ -32,8 +33,10 @@ WHERE user_id = $1 AND is_read = FALSE;
 DELETE FROM notifications WHERE id = $1 AND user_id = $2;
 
 -- name: CreateAnnouncement :one
-INSERT INTO announcements (batch_id, course_id, created_by, title, body, priority, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+-- batch_id/course_id/created_by are all nullable (global announcements
+-- have neither batch nor course) — passed explicitly.
+INSERT INTO announcements (batch_id, course_id, created_by, title, body, priority, expires_at, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING *;
 
 -- name: GetAnnouncementByID :one
@@ -65,13 +68,16 @@ DELETE FROM announcements WHERE id = $1;
 
 -- name: FanOutToBatchEnrollees :exec
 -- Fanout: create a notification for every active enrollee of a batch.
-INSERT INTO notifications (user_id, type, title, body, resource_type, resource_id)
-SELECT e.user_id, $1, $2, $3, 'announcement', $4
+-- tenant_id derived from each enrollment row (NOT NULL) rather than the
+-- caller's own — matters if this is ever invoked cross-tenant by a
+-- super-admin context.
+INSERT INTO notifications (user_id, type, title, body, resource_type, resource_id, tenant_id)
+SELECT e.user_id, $1, $2, $3, 'announcement', $4, e.tenant_id
 FROM enrollments e
 WHERE e.batch_id = $5 AND e.status = 'active';
 
 -- name: FanOutToCourseEnrollees :exec
-INSERT INTO notifications (user_id, type, title, body, resource_type, resource_id)
-SELECT e.user_id, $1, $2, $3, 'announcement', $4
+INSERT INTO notifications (user_id, type, title, body, resource_type, resource_id, tenant_id)
+SELECT e.user_id, $1, $2, $3, 'announcement', $4, e.tenant_id
 FROM enrollments e
 WHERE e.course_id = $5 AND e.status = 'active';

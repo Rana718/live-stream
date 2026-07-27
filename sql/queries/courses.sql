@@ -1,6 +1,8 @@
 -- name: CreateCourse :one
-INSERT INTO courses (exam_category_id, title, slug, description, thumbnail_url, price, discounted_price, duration_months, language, level, is_free, is_published, created_by)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+-- Courses have no tenant-scoped parent row to derive tenant_id from —
+-- must be passed explicitly by the caller.
+INSERT INTO courses (exam_category_id, title, slug, description, thumbnail_url, price, discounted_price, duration_months, language, level, is_free, is_published, created_by, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 RETURNING *;
 
 -- name: GetCourseByID :one

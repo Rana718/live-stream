@@ -1,0 +1,54 @@
+# Optional observability stack — Prometheus + Grafana + Alertmanager,
+# wired to scrape the app's /metrics and evaluate docker/observability/alert-rules.yml.
+#
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+#
+# Grafana: http://localhost:3030 (admin/admin — change on first login)
+#   Add the "Prometheus" datasource pointing at http://prometheus:9090,
+#   then import docker/observability/grafana-dashboard.json.
+# Prometheus: http://localhost:9090
+# Alertmanager: http://localhost:9093 — configure a real receiver in
+#   docker/observability/alertmanager.yml before relying on this; it
+#   ships pointed at a localhost placeholder that intentionally fails.
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: live-platform-prometheus
+    volumes:
+      - ./docker/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/observability/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - live-platform
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: live-platform-alertmanager
+    volumes:
+      - ./docker/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
+    networks:
+      - live-platform
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: live-platform-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3030:3000"
+    networks:
+      - live-platform
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+  grafana_data:

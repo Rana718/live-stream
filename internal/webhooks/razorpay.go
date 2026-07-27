@@ -12,6 +12,7 @@ import (
 	"log/slog"
 
 	"live-platform/internal/database/db"
+	"live-platform/internal/metrics"
 	"live-platform/internal/payments"
 
 	"github.com/gofiber/fiber/v3"
@@ -71,11 +72,13 @@ func (h *Handler) Razorpay(c fiber.Ctx) error {
 	signature := c.Get("X-Razorpay-Signature")
 	if !h.rp.VerifyWebhookSignature(body, signature) {
 		h.log.Warn("razorpay webhook signature mismatch")
+		metrics.PaymentWebhookEvents.WithLabelValues("unknown", "rejected").Inc()
 		return c.SendStatus(fiber.StatusUnauthorized)
 	}
 
 	var env rzpEnvelope
 	if err := json.Unmarshal(body, &env); err != nil {
+		metrics.PaymentWebhookEvents.WithLabelValues("unknown", "rejected").Inc()
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
 	}
 
@@ -85,8 +88,10 @@ func (h *Handler) Razorpay(c fiber.Ctx) error {
 			h.log.Error("webhook apply failed",
 				slog.String("event", env.Event),
 				slog.String("err", err.Error()))
+			metrics.PaymentWebhookEvents.WithLabelValues(env.Event, "error").Inc()
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 		}
+		metrics.PaymentWebhookEvents.WithLabelValues(env.Event, "applied").Inc()
 	case "payment.failed":
 		h.log.Info("razorpay payment failed",
 			slog.String("order_id", env.Payload.Payment.Entity.OrderID))

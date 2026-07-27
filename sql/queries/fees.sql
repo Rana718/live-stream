@@ -1,7 +1,9 @@
 -- name: CreateFeeStructure :one
+-- course_id/batch_id are both nullable — no guaranteed parent to derive
+-- from, passed explicitly.
 INSERT INTO fee_structures (course_id, batch_id, name, total_amount, currency,
-                            installments_count, installment_gap_days)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+                            installments_count, installment_gap_days, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING *;
 
 -- name: GetFeeStructureByID :one
@@ -17,8 +19,9 @@ SELECT * FROM fee_structures WHERE batch_id = $1 AND is_active = TRUE ORDER BY c
 UPDATE fee_structures SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = $1;
 
 -- name: CreateStudentFee :one
-INSERT INTO student_fees (user_id, fee_structure_id, course_id, batch_id, total_amount, currency, due_date)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+-- tenant_id derived from the student (NOT NULL FK).
+INSERT INTO student_fees (user_id, fee_structure_id, course_id, batch_id, total_amount, currency, due_date, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, (SELECT tenant_id FROM users WHERE id = $1))
 RETURNING *;
 
 -- name: GetStudentFeeByID :one
@@ -59,8 +62,9 @@ WHERE status IN ('pending','partial')
   AND due_date < CURRENT_DATE;
 
 -- name: CreateFeeInstallment :one
-INSERT INTO fee_installments (student_fee_id, installment_number, amount, due_date)
-VALUES ($1, $2, $3, $4)
+-- tenant_id derived from the parent student fee (NOT NULL FK).
+INSERT INTO fee_installments (student_fee_id, installment_number, amount, due_date, tenant_id)
+VALUES ($1, $2, $3, $4, (SELECT tenant_id FROM student_fees WHERE id = $1))
 RETURNING *;
 
 -- name: GetInstallmentByID :one

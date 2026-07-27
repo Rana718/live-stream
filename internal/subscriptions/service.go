@@ -37,7 +37,7 @@ type UpsertPlanRequest struct {
 	DisplayOrder int32    `json:"display_order"`
 }
 
-func (s *Service) CreatePlan(ctx context.Context, req UpsertPlanRequest) (*db.SubscriptionPlan, error) {
+func (s *Service) CreatePlan(ctx context.Context, tenantID uuid.UUID, req UpsertPlanRequest) (*db.SubscriptionPlan, error) {
 	if req.Currency == "" {
 		req.Currency = "INR"
 	}
@@ -51,6 +51,7 @@ func (s *Service) CreatePlan(ctx context.Context, req UpsertPlanRequest) (*db.Su
 		DurationDays: req.DurationDays,
 		Features:     features,
 		DisplayOrder: utils.Int4ToPg(req.DisplayOrder),
+		TenantID:     utils.UUIDToPg(tenantID),
 	})
 	if err != nil {
 		return nil, err
@@ -86,7 +87,7 @@ type CheckoutResponse struct {
 }
 
 // StartCheckout creates a pending user_subscription + a payment row + a Razorpay order.
-func (s *Service) StartCheckout(ctx context.Context, userID uuid.UUID, req CheckoutRequest, publicKey string) (*CheckoutResponse, error) {
+func (s *Service) StartCheckout(ctx context.Context, tenantID, userID uuid.UUID, req CheckoutRequest, publicKey string) (*CheckoutResponse, error) {
 	plan, err := s.q.GetPlanByID(ctx, utils.UUIDToPg(req.PlanID))
 	if err != nil {
 		return nil, fmt.Errorf("plan not found: %w", err)
@@ -99,6 +100,7 @@ func (s *Service) StartCheckout(ctx context.Context, userID uuid.UUID, req Check
 		StartsAt:  utils.TimestampToPg(time.Time{}),
 		EndsAt:    utils.TimestampToPg(time.Time{}),
 		AutoRenew: utils.BoolToPg(false),
+		TenantID:  utils.UUIDToPg(tenantID),
 	})
 	if err != nil {
 		return nil, err
@@ -147,6 +149,7 @@ func (s *Service) StartCheckout(ctx context.Context, userID uuid.UUID, req Check
 		ProviderOrderID: utils.TextToPg(order.ID),
 		Status:          utils.TextToPg("created"),
 		Metadata:        meta,
+		TenantID:        utils.UUIDToPg(tenantID),
 	})
 	if err != nil {
 		return nil, err

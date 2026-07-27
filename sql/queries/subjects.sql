@@ -1,6 +1,7 @@
 -- name: CreateSubject :one
-INSERT INTO subjects (course_id, name, description, icon_url, display_order)
-VALUES ($1, $2, $3, $4, $5)
+-- tenant_id derived from the parent course (NOT NULL FK).
+INSERT INTO subjects (course_id, name, description, icon_url, display_order, tenant_id)
+VALUES ($1, $2, $3, $4, $5, (SELECT tenant_id FROM courses WHERE id = $1))
 RETURNING *;
 
 -- name: GetSubjectByID :one

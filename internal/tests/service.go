@@ -42,7 +42,7 @@ type CreateTestRequest struct {
 	ScheduledAt      *time.Time `json:"scheduled_at"`
 }
 
-func (s *Service) CreateTest(ctx context.Context, creator uuid.UUID, req CreateTestRequest) (*db.Test, error) {
+func (s *Service) CreateTest(ctx context.Context, tenantID, creator uuid.UUID, req CreateTestRequest) (*db.Test, error) {
 	if req.Language == "" {
 		req.Language = "en"
 	}
@@ -70,6 +70,7 @@ func (s *Service) CreateTest(ctx context.Context, creator uuid.UUID, req CreateT
 		IsPublished:      utils.BoolToPg(req.IsPublished),
 		ScheduledAt:      utils.TimestampPtrToPg(req.ScheduledAt),
 		CreatedBy:        utils.UUIDToPg(creator),
+		TenantID:         utils.UUIDToPg(tenantID),
 	})
 	if err != nil {
 		return nil, err

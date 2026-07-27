@@ -1,6 +1,7 @@
 -- name: CreateTestAttempt :one
-INSERT INTO test_attempts (user_id, test_id, total_questions, status)
-VALUES ($1, $2, $3, 'in_progress')
+-- tenant_id derived from the test being attempted (NOT NULL FK).
+INSERT INTO test_attempts (user_id, test_id, total_questions, status, tenant_id)
+VALUES ($1, $2, $3, 'in_progress', (SELECT tenant_id FROM tests WHERE id = $2))
 RETURNING *;
 
 -- name: GetTestAttemptByID :one
@@ -34,9 +35,10 @@ RETURNING *;
 UPDATE test_attempts SET status = 'abandoned' WHERE id = $1;
 
 -- name: UpsertTestAnswer :one
+-- tenant_id derived from the parent attempt (NOT NULL FK).
 INSERT INTO test_answers (attempt_id, question_id, selected_option_id, numerical_answer,
-                          subjective_answer, is_correct, marks_obtained, time_taken_seconds)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                          subjective_answer, is_correct, marks_obtained, time_taken_seconds, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, (SELECT tenant_id FROM test_attempts WHERE id = $1))
 ON CONFLICT (attempt_id, question_id) DO UPDATE
     SET selected_option_id = EXCLUDED.selected_option_id,
         numerical_answer = EXCLUDED.numerical_answer,

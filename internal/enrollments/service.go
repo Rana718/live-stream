@@ -61,8 +61,8 @@ func (s *Service) ListCourseEnrollments(ctx context.Context, courseID uuid.UUID,
 
 func (s *Service) UpdateProgress(ctx context.Context, id uuid.UUID, progressPercent float64) error {
 	return s.q.UpdateEnrollmentProgress(ctx, db.UpdateEnrollmentProgressParams{
-		ID:              utils.UUIDToPg(id),
-		ProgressPercent: utils.NumericFromFloat(progressPercent),
+		ID:      utils.UUIDToPg(id),
+		Column2: utils.NumericFromFloat(progressPercent),
 	})
 }
 

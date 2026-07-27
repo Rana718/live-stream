@@ -30,7 +30,7 @@ type CreateStreamRequest struct {
 	ScheduledAt time.Time `json:"scheduled_at"`
 }
 
-func (s *Service) CreateStream(ctx context.Context, instructorID uuid.UUID, req CreateStreamRequest) (*db.Stream, error) {
+func (s *Service) CreateStream(ctx context.Context, tenantID, instructorID uuid.UUID, req CreateStreamRequest) (*db.Stream, error) {
 	streamKey := uuid.New().String()
 
 	scheduledAt := pgtype.Timestamp{Time: req.ScheduledAt, Valid: true}
@@ -41,6 +41,7 @@ func (s *Service) CreateStream(ctx context.Context, instructorID uuid.UUID, req 
 		InstructorID: pgtype.UUID{Bytes: instructorID, Valid: true},
 		StreamKey:    streamKey,
 		ScheduledAt:  scheduledAt,
+		TenantID:     pgtype.UUID{Bytes: tenantID, Valid: true},
 	})
 	if err != nil {
 		return nil, err

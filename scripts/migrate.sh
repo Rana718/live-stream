@@ -1,73 +1,57 @@
 #!/bin/bash
+# Applies every migrations/*.sql file, in lexical filename order, straight
+# through psql — the same way sqlc.yaml already treats this folder for
+# codegen ("sqlc applies migration files in lexical order").
+#
+# This project's migrations/ was never actually compatible with
+# golang-migrate (which needs paired NNN_name.up.sql/.down.sql files —
+# these are single NNN_name.sql files) or with sql-migrate as a runtime
+# tool (no `github.com/rubenv/sql-migrate` in go.mod; the `-- +migrate Up`
+# markers in the earlier files are vestigial and inert as far as psql is
+# concerned — plain `--` SQL comments). `make migrate-up` calling the
+# `migrate` CLI never worked against this repo's actual file layout.
+#
+# Idempotent: tracks applied filenames in schema_migrations_applied so
+# re-running only picks up new files, safe to call on every deploy.
+set -euo pipefail
+
+PG_CONTAINER="${PG_CONTAINER:-live-platform-postgres}"
+PG_USER="${PG_USER:-postgres}"
+PG_DB="${PG_DB:-live_platform}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MIGRATIONS_DIR="$SCRIPT_DIR/../migrations"
 
 echo "Waiting for PostgreSQL to be ready..."
-until docker exec live-platform-postgres pg_isready -U postgres; do
+until docker exec "$PG_CONTAINER" pg_isready -U "$PG_USER" >/dev/null 2>&1; do
   sleep 2
 done
 
-echo "Running database migrations..."
-docker exec -i live-platform-postgres psql -U postgres -d live_platform <<-EOSQL
-    CREATE TABLE IF NOT EXISTS users (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        email VARCHAR(255) UNIQUE NOT NULL,
-        username VARCHAR(100) UNIQUE NOT NULL,
-        password_hash VARCHAR(255) NOT NULL,
-        full_name VARCHAR(255),
-        role VARCHAR(50) DEFAULT 'student',
-        is_active BOOLEAN DEFAULT true,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
+docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 -q -c "
+  CREATE TABLE IF NOT EXISTS schema_migrations_applied (
+    filename    TEXT PRIMARY KEY,
+    applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+"
 
-    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-    CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+applied_count=0
+for path in $(find "$MIGRATIONS_DIR" -maxdepth 1 -name "*.sql" | sort); do
+  filename="$(basename "$path")"
+  already="$(docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
+    "SELECT 1 FROM schema_migrations_applied WHERE filename = '$filename'")"
+  if [ "$already" = "1" ]; then
+    continue
+  fi
 
-    CREATE TABLE IF NOT EXISTS streams (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        title VARCHAR(255) NOT NULL,
-        description TEXT,
-        instructor_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        stream_key VARCHAR(255) UNIQUE NOT NULL,
-        status VARCHAR(50) DEFAULT 'scheduled',
-        scheduled_at TIMESTAMP,
-        started_at TIMESTAMP,
-        ended_at TIMESTAMP,
-        thumbnail_url TEXT,
-        viewer_count INTEGER DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
+  echo "Applying $filename ..."
+  docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 -q < "$path"
+  docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 -q -c \
+    "INSERT INTO schema_migrations_applied (filename) VALUES ('$filename')"
+  applied_count=$((applied_count + 1))
+done
 
-    CREATE INDEX IF NOT EXISTS idx_streams_instructor ON streams(instructor_id);
-    CREATE INDEX IF NOT EXISTS idx_streams_status ON streams(status);
-    CREATE INDEX IF NOT EXISTS idx_streams_stream_key ON streams(stream_key);
-
-    CREATE TABLE IF NOT EXISTS recordings (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        stream_id UUID NOT NULL REFERENCES streams(id) ON DELETE CASCADE,
-        file_path TEXT NOT NULL,
-        file_size BIGINT,
-        duration INTEGER,
-        status VARCHAR(50) DEFAULT 'processing',
-        thumbnail_url TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_recordings_stream ON recordings(stream_id);
-    CREATE INDEX IF NOT EXISTS idx_recordings_status ON recordings(status);
-
-    CREATE TABLE IF NOT EXISTS chat_messages (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        stream_id UUID NOT NULL REFERENCES streams(id) ON DELETE CASCADE,
-        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        message TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_chat_stream ON chat_messages(stream_id);
-    CREATE INDEX IF NOT EXISTS idx_chat_user ON chat_messages(user_id);
-    CREATE INDEX IF NOT EXISTS idx_chat_created ON chat_messages(created_at);
-EOSQL
-
-echo "Migrations completed successfully!"
+if [ "$applied_count" -eq 0 ]; then
+  echo "Already up to date — nothing to apply."
+else
+  echo "Applied $applied_count migration(s) successfully."
+fi

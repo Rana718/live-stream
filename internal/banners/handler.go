@@ -85,6 +85,7 @@ func (h *Handler) ListAll(c fiber.Ctx) error {
 // @Router /admin/banners [post]
 func (h *Handler) Create(c fiber.Ctx) error {
 	userID, _ := c.Locals("userID").(uuid.UUID)
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	var req UpsertBannerRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -92,7 +93,7 @@ func (h *Handler) Create(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	b, err := h.service.Create(c.Context(), userID, req)
+	b, err := h.service.Create(c.Context(), tenantID, userID, req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}

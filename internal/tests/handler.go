@@ -85,6 +85,7 @@ func parsePagination(c fiber.Ctx) (int32, int32) {
 // @Router /tests [post]
 func (h *Handler) CreateTest(c fiber.Ctx) error {
 	userID, _ := c.Locals("userID").(uuid.UUID)
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	var req CreateTestRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -92,7 +93,7 @@ func (h *Handler) CreateTest(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	t, err := h.service.CreateTest(c.Context(), userID, req)
+	t, err := h.service.CreateTest(c.Context(), tenantID, userID, req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}

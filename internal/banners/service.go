@@ -29,7 +29,7 @@ type UpsertBannerRequest struct {
 	EndsAt          *time.Time `json:"ends_at"`
 }
 
-func (s *Service) Create(ctx context.Context, creator uuid.UUID, req UpsertBannerRequest) (*db.Banner, error) {
+func (s *Service) Create(ctx context.Context, tenantID, creator uuid.UUID, req UpsertBannerRequest) (*db.Banner, error) {
 	b, err := s.q.CreateBanner(ctx, db.CreateBannerParams{
 		Title:           req.Title,
 		Subtitle:        utils.TextToPg(req.Subtitle),
@@ -42,6 +42,7 @@ func (s *Service) Create(ctx context.Context, creator uuid.UUID, req UpsertBanne
 		StartsAt:        utils.TimestampPtrToPg(req.StartsAt),
 		EndsAt:          utils.TimestampPtrToPg(req.EndsAt),
 		CreatedBy:       utils.UUIDToPg(creator),
+		TenantID:        utils.UUIDToPg(tenantID),
 	})
 	if err != nil {
 		return nil, err

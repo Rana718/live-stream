@@ -1,7 +1,8 @@
 -- name: UpsertAttendance :one
+-- tenant_id derived from the student (NOT NULL FK).
 INSERT INTO attendance (user_id, lecture_id, batch_id, status, join_time, leave_time,
-                        watched_seconds, is_auto, marked_by, notes, geo_lat, geo_lng, qr_code)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                        watched_seconds, is_auto, marked_by, notes, geo_lat, geo_lng, qr_code, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, (SELECT tenant_id FROM users WHERE id = $1))
 ON CONFLICT (user_id, lecture_id) DO UPDATE
     SET status = EXCLUDED.status,
         join_time = COALESCE(EXCLUDED.join_time, attendance.join_time),
@@ -107,8 +108,9 @@ HAVING ROUND(
 ORDER BY percent ASC;
 
 -- name: CreateQRCode :one
-INSERT INTO class_qr_codes (lecture_id, code, expires_at, created_by)
-VALUES ($1, $2, $3, $4)
+-- tenant_id derived from the parent lecture (NOT NULL FK).
+INSERT INTO class_qr_codes (lecture_id, code, expires_at, created_by, tenant_id)
+VALUES ($1, $2, $3, $4, (SELECT tenant_id FROM lectures WHERE id = $1))
 RETURNING *;
 
 -- name: GetQRCode :one

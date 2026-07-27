@@ -1,7 +1,8 @@
 -- name: CreateQuestion :one
+-- tenant_id derived from the parent test (NOT NULL FK).
 INSERT INTO questions (test_id, topic_id, question_text, question_type, image_url, marks,
-                      negative_marks, difficulty, explanation, correct_numerical_answer, display_order)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                      negative_marks, difficulty, explanation, correct_numerical_answer, display_order, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, (SELECT tenant_id FROM tests WHERE id = $1))
 RETURNING *;
 
 -- name: GetQuestionByID :one
@@ -25,8 +26,9 @@ RETURNING *;
 DELETE FROM questions WHERE id = $1;
 
 -- name: CreateQuestionOption :one
-INSERT INTO question_options (question_id, option_text, image_url, is_correct, display_order)
-VALUES ($1, $2, $3, $4, $5)
+-- tenant_id derived from the parent question (NOT NULL FK).
+INSERT INTO question_options (question_id, option_text, image_url, is_correct, display_order, tenant_id)
+VALUES ($1, $2, $3, $4, $5, (SELECT tenant_id FROM questions WHERE id = $1))
 RETURNING *;
 
 -- name: ListOptionsByQuestion :many

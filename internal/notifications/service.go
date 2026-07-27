@@ -77,7 +77,7 @@ type CreateAnnouncementRequest struct {
 	FanOut    bool       `json:"fan_out"`
 }
 
-func (s *Service) CreateAnnouncement(ctx context.Context, creatorID uuid.UUID, req CreateAnnouncementRequest) (*db.Announcement, error) {
+func (s *Service) CreateAnnouncement(ctx context.Context, tenantID, creatorID uuid.UUID, req CreateAnnouncementRequest) (*db.Announcement, error) {
 	if req.Priority == "" {
 		req.Priority = "normal"
 	}
@@ -89,6 +89,7 @@ func (s *Service) CreateAnnouncement(ctx context.Context, creatorID uuid.UUID, r
 		Body:      req.Body,
 		Priority:  utils.TextToPg(req.Priority),
 		ExpiresAt: utils.TimestampPtrToPg(req.ExpiresAt),
+		TenantID:  utils.UUIDToPg(tenantID),
 	})
 	if err != nil {
 		return nil, err

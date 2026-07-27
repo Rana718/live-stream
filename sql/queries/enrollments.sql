@@ -26,10 +26,14 @@ ORDER BY e.enrolled_at DESC
 LIMIT $2 OFFSET $3;
 
 -- name: UpdateEnrollmentProgress :exec
+-- $2 cast to numeric explicitly — without it, pgx's parameter-type
+-- inference sees `$2 >= 100` (untyped literal) and `progress_percent =
+-- $2` (numeric(5,2) column) and can't unify a single type for $2 across
+-- both usages, failing with "inconsistent types deduced for parameter".
 UPDATE enrollments
-SET progress_percent = $2,
-    status = CASE WHEN $2 >= 100 THEN 'completed' ELSE status END,
-    completed_at = CASE WHEN $2 >= 100 THEN CURRENT_TIMESTAMP ELSE completed_at END
+SET progress_percent = $2::numeric,
+    status = CASE WHEN $2::numeric >= 100 THEN 'completed' ELSE status END,
+    completed_at = CASE WHEN $2::numeric >= 100 THEN CURRENT_TIMESTAMP ELSE completed_at END
 WHERE id = $1;
 
 -- name: CancelEnrollment :exec

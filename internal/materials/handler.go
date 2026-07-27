@@ -46,6 +46,7 @@ func toMap(m *db.StudyMaterial) fiber.Map {
 // @Router /materials/upload [post]
 func (h *Handler) Upload(c fiber.Ctx) error {
 	userID, _ := c.Locals("userID").(uuid.UUID)
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 
 	file, err := c.FormFile("file")
 	if err != nil {
@@ -87,7 +88,7 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 	if ct == "" {
 		ct = "application/octet-stream"
 	}
-	m, err := h.service.Upload(c.Context(), userID, req, file.Filename, file.Size, f, ct)
+	m, err := h.service.Upload(c.Context(), tenantID, userID, req, file.Filename, file.Size, f, ct)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}

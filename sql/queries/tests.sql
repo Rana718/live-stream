@@ -1,8 +1,10 @@
 -- name: CreateTest :one
+-- course_id/exam_category_id/created_by are all nullable (a mock test can
+-- be exam-category-only, with no course) — passed explicitly.
 INSERT INTO tests (course_id, subject_id, chapter_id, topic_id, exam_category_id, title, description,
                   test_type, exam_year, duration_minutes, total_marks, passing_marks, negative_marking,
-                  shuffle_questions, language, is_free, is_published, scheduled_at, created_by)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+                  shuffle_questions, language, is_free, is_published, scheduled_at, created_by, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 RETURNING *;
 
 -- name: GetTestByID :one

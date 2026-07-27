@@ -1,6 +1,7 @@
 -- name: CreateBatch :one
-INSERT INTO batches (course_id, name, description, instructor_id, start_date, end_date, max_students, is_active)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+-- tenant_id derived from the parent course (NOT NULL FK).
+INSERT INTO batches (course_id, name, description, instructor_id, start_date, end_date, max_students, is_active, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, (SELECT tenant_id FROM courses WHERE id = $1))
 RETURNING *;
 
 -- name: GetBatchByID :one

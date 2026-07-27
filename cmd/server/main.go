@@ -267,8 +267,17 @@ func main() {
 		app.Use(middleware.RateLimit(cfg.RateLimit.RequestsPerMinute, cfg.RateLimit.Burst))
 	}
 
+	// Second, tenant-keyed budget for tenant-scoped route groups (mounted
+	// after each middleware.TenantContext() below) — see its doc comment
+	// for why the per-IP limiter above isn't sufficient on its own.
+	tenantRateLimit := func(c fiber.Ctx) error { return c.Next() }
+	if cfg.RateLimit.Enabled {
+		tenantRateLimit = middleware.RateLimitPerTenant(cfg.RateLimit.TenantRequestsPerMinute, cfg.RateLimit.TenantBurst)
+	}
+
 	// Prometheus
 	app.Get("/metrics", metrics.Handler())
+	metrics.ObservePoolStats(ctx, pgPool, 15*time.Second)
 
 	// Swagger UI + JSON
 	app.Get("/swagger/doc.json", func(c fiber.Ctx) error {
@@ -330,8 +339,16 @@ func main() {
 	// hit this to fetch logo + theme before issuing any JWT.
 	publicGroup := api.Group("/public")
 	publicGroup.Get("/tenants/by-code/:code",
-		middleware.PublicLookupContext(pgPool),
+		middleware.PublicLookupContext(),
 		tenantHandler.LookupByOrgCode,
+	)
+	// Caddy's on-demand-TLS ask endpoint — deliberately NOT under
+	// /api/v1/public. Caddy calls this server-to-server over the Docker
+	// network; the Caddyfile blocks any public request path starting with
+	// /internal/ so this never needs to be internet-reachable to work.
+	app.Get("/internal/caddy/ask",
+		middleware.PublicLookupContext(),
+		tenantHandler.CaddyAskDomain,
 	)
 	// Self-serve tenant signup. Public, rate-limited globally. Creates a
 	// 14-day trial tenant + first admin in one shot — converts the
@@ -361,7 +378,8 @@ func main() {
 	// new signup; this endpoint just exposes the user's own code.
 	api.Get("/referrals/me",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 		referralHandler.MyCode,
 	)
 
@@ -375,13 +393,15 @@ func main() {
 	)
 	api.Post("/courses/:id/buy",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 		middleware.StudentOrAbove(),
 		courseOrderHandler.Buy,
 	)
 	api.Post("/payments/verify",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 		courseOrderHandler.Verify,
 	)
 
@@ -394,25 +414,28 @@ func main() {
 	)
 	api.Get("/bundles",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 		bundleHandler.List,
 	)
 	api.Post("/bundles/:id/buy",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 		middleware.StudentOrAbove(),
 		bundleHandler.Buy,
 	)
 	api.Post("/bundles/verify",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 		bundleHandler.Verify,
 	)
 
 	// Super-admin lead triage.
 	api.Get("/admin/leads",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.SuperAdminContext(pgPool),
+		middleware.SuperAdminContext(),
 		leadHandler.List,
 	)
 
@@ -421,7 +444,8 @@ func main() {
 	deviceHandler := devices.NewHandler(deviceSvc)
 	devicesGroup := api.Group("/devices",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 	)
 	devicesGroup.Post("/register", deviceHandler.Register)
 	devicesGroup.Delete("/:token", deviceHandler.Unregister)
@@ -430,13 +454,15 @@ func main() {
 	couponHandler := coupons.NewHandler(coupons.NewService(pgPool))
 	couponsGroup := api.Group("/coupons",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 	)
 	couponsGroup.Post("/apply", couponHandler.Apply)
 
 	adminCouponsGroup := api.Group("/admin/coupons",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 		middleware.AdminOnly(),
 	)
 	adminCouponsGroup.Post("/", couponHandler.AdminCreate)
@@ -450,7 +476,8 @@ func main() {
 	bulkImportHandler := bulkimport.NewHandler(bulkimport.NewService(pgPool, log))
 	api.Post("/admin/users/bulk-import",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 		middleware.AdminOnly(),
 		bulkImportHandler.Import,
 	)
@@ -463,14 +490,16 @@ func main() {
 	)
 	api.Post("/admin/refunds",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 		middleware.AdminOnly(),
 		refundHandler.Issue,
 	)
 	// Admin payments list — feeds the refunds UI's refundable + history tabs.
 	api.Get("/admin/payments",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 		middleware.AdminOnly(),
 		refundHandler.AdminListPayments,
 	)
@@ -479,7 +508,8 @@ func main() {
 	// /bundles/verify endpoints are registered separately near coursebundles.
 	adminBundles := api.Group("/admin/bundles",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 		middleware.AdminOnly(),
 	)
 	adminBundles.Get("/",          bundleHandler.AdminList)
@@ -491,7 +521,8 @@ func main() {
 	// three audience modes (all / by course / single user).
 	api.Post("/admin/notifications",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 		middleware.AdminOnly(),
 		notifHandler.AdminBroadcast,
 	)
@@ -499,7 +530,8 @@ func main() {
 	// Admin/instructor publish toggle for individual tests.
 	api.Patch("/tests/:id/publish",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 		middleware.InstructorOrAdmin(),
 		testHandler.AdminSetPublished,
 	)
@@ -510,7 +542,8 @@ func main() {
 	scheduleHandler := schedule.NewHandler(schedule.NewService(pgPool))
 	scheduleGroup := api.Group("/admin/class-schedules",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 		middleware.AdminOnly(),
 	)
 	scheduleGroup.Post("/", scheduleHandler.Create)
@@ -528,7 +561,8 @@ func main() {
 	// on every request so the handler reads/writes only its tenant's rows.
 	tenantsGroup := api.Group("/tenants",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 	)
 	tenantsGroup.Get("/me", tenantHandler.MyTenant)
 	tenantsGroup.Get("/me/features", tenantHandler.Features)
@@ -537,7 +571,7 @@ func main() {
 	// Super-admin tenant provisioning (creates new tenants).
 	api.Post("/admin/tenants",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.SuperAdminContext(pgPool),
+		middleware.SuperAdminContext(),
 		tenantHandler.CreateTenant,
 	)
 
@@ -552,7 +586,7 @@ func main() {
 
 	platformGroup := api.Group("/admin/platform",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.SuperAdminContext(pgPool),
+		middleware.SuperAdminContext(),
 	)
 	platformGroup.Get("/stats", platformHandler.Stats)
 	platformGroup.Get("/audit", platformHandler.AuditLogs)
@@ -588,7 +622,7 @@ func main() {
 	// Super-admin lead triage (PATCH lives here too — POST list is below).
 	api.Patch("/admin/leads/:id",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.SuperAdminContext(pgPool),
+		middleware.SuperAdminContext(),
 		platformHandler.UpdateLeadStatus,
 	)
 
@@ -597,7 +631,7 @@ func main() {
 	// site reads via the public endpoints registered earlier.
 	cmsAdmin := api.Group("/admin/cms",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.SuperAdminContext(pgPool),
+		middleware.SuperAdminContext(),
 	)
 	cmsAdmin.Get("/posts", cmsHandler.AdminListPosts)
 	cmsAdmin.Post("/posts", cmsHandler.CreatePost)
@@ -695,14 +729,16 @@ func main() {
 	// Roster view — admin/instructor see who's enrolled in a course.
 	api.Get("/courses/:course_id/enrollments",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 		middleware.InstructorOrAdmin(),
 		enrollHandler.ListByCourse,
 	)
 	// Manual enrollment by an admin (e.g. paid offline, gift access).
 	api.Post("/admin/enrollments",
 		middleware.AuthMiddleware(&cfg.JWT),
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 		middleware.AdminOnly(),
 		enrollHandler.AdminEnroll,
 	)
@@ -800,7 +836,8 @@ func main() {
 	// Tenant_admin dashboard. TenantContext sets RLS so the queries scope
 	// to the caller's tenant automatically.
 	ag.Get("/tenant/dashboard",
-		middleware.TenantContext(pgPool),
+		middleware.TenantContext(),
+		tenantRateLimit,
 		middleware.AdminOnly(),
 		analyticsHandler.TenantDashboard,
 	)

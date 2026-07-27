@@ -1,8 +1,10 @@
 -- name: CreateBanner :one
+-- No tenant-scoped parent at all (created_by is nullable) — passed
+-- explicitly.
 INSERT INTO banners (title, subtitle, image_url, background_color,
                      link_type, link_id, link_url, display_order,
-                     starts_at, ends_at, created_by)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                     starts_at, ends_at, created_by, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 RETURNING *;
 
 -- name: GetBannerByID :one

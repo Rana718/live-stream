@@ -1,0 +1,17 @@
+// Type overrides for swag (swaggo) schema generation.
+// swag only parses types declared in this module; it can't resolve types
+// declared in external deps (jackc/pgx's pgtype package) without
+// --parseDependency, which recurses too deep to be usable here. Instead,
+// map each pgtype.* type used in sqlc-generated models to the primitive
+// it actually marshals to in JSON responses.
+replace pgtype.Numeric number
+replace pgtype.Text string
+replace pgtype.Timestamp string
+replace pgtype.Timestamptz string
+replace pgtype.Date string
+replace pgtype.Bool boolean
+replace pgtype.Int4 integer
+replace pgtype.Int8 integer
+replace pgtype.Float8 number
+replace pgtype.UUID string
+replace json.RawMessage object

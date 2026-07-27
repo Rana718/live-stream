@@ -89,6 +89,12 @@ type RateLimitConfig struct {
 	Enabled           bool
 	RequestsPerMinute int
 	Burst             int
+	// Tenant-keyed budget, mounted separately on tenant-scoped route
+	// groups (see middleware.RateLimitPerTenant) so one tenant's traffic
+	// spike can't throttle another tenant sharing an IP/NAT. Aggregates
+	// many users per tenant, so defaults well above the per-IP budget.
+	TenantRequestsPerMinute int
+	TenantBurst             int
 }
 
 type TLSConfig struct {
@@ -126,14 +132,21 @@ type SMSConfig struct {
 	TimeoutSec   int
 }
 
-// PushConfig configures FCM for mobile + web push notifications. Leave
-// ServerKey empty to disable push; the notifications service then only
-// records in-app rows.
+// PushConfig configures FCM HTTP v1 for mobile + web push notifications.
+// Leave ServiceAccountJSON and ServiceAccountFile both empty to disable
+// push; the notifications service then only records in-app rows.
+//
+// FCM's legacy server-key API (the one keyed on ServerKey) was sunset by
+// Google in 2024 — v1 requires a service-account key instead. Set
+// ServiceAccountJSON directly (handy for a Docker/K8s secret env var) or
+// ServiceAccountFile to a mounted key file path; JSON wins if both are set.
 type PushConfig struct {
-	Provider   string // "fcm" | ""
-	ServerKey  string // FCM legacy server key
-	BaseURL    string // default https://fcm.googleapis.com/fcm/send
-	TimeoutSec int
+	Provider           string // "fcm" | ""
+	ServiceAccountJSON string // raw service-account key JSON
+	ServiceAccountFile string // path to a service-account key JSON file
+	BaseURL            string // default https://fcm.googleapis.com
+	TimeoutSec         int
+	MaxConcurrency     int // bounded worker pool for per-token v1 sends; default 20
 }
 
 // CodemagicConfig configures the per-tenant white-label build pipeline.
@@ -237,9 +250,11 @@ func Load() (*Config, error) {
 			StreamKey: getEnv("RTMP_STREAM_KEY", ""),
 		},
 		RateLimit: RateLimitConfig{
-			Enabled:           getEnvBool("RATE_LIMIT_ENABLED", true),
-			RequestsPerMinute: getEnvInt("RATE_LIMIT_RPM", 120),
-			Burst:             getEnvInt("RATE_LIMIT_BURST", 30),
+			Enabled:                 getEnvBool("RATE_LIMIT_ENABLED", true),
+			RequestsPerMinute:       getEnvInt("RATE_LIMIT_RPM", 120),
+			Burst:                   getEnvInt("RATE_LIMIT_BURST", 30),
+			TenantRequestsPerMinute: getEnvInt("RATE_LIMIT_TENANT_RPM", 1200),
+			TenantBurst:             getEnvInt("RATE_LIMIT_TENANT_BURST", 300),
 		},
 		TLS: TLSConfig{
 			Enabled:  getEnvBool("TLS_ENABLED", false),
@@ -264,10 +279,12 @@ func Load() (*Config, error) {
 			TimeoutSec:  getEnvInt("SMS_TIMEOUT", 8),
 		},
 		Push: PushConfig{
-			Provider:   getEnv("PUSH_PROVIDER", ""),
-			ServerKey:  getEnv("FCM_SERVER_KEY", ""),
-			BaseURL:    getEnv("FCM_BASE_URL", "https://fcm.googleapis.com/fcm/send"),
-			TimeoutSec: getEnvInt("FCM_TIMEOUT", 6),
+			Provider:           getEnv("PUSH_PROVIDER", ""),
+			ServiceAccountJSON: getEnv("FCM_SERVICE_ACCOUNT_JSON", ""),
+			ServiceAccountFile: getEnv("FCM_SERVICE_ACCOUNT_FILE", ""),
+			BaseURL:            getEnv("FCM_BASE_URL", "https://fcm.googleapis.com"),
+			TimeoutSec:         getEnvInt("FCM_TIMEOUT", 6),
+			MaxConcurrency:     getEnvInt("FCM_MAX_CONCURRENCY", 20),
 		},
 		Codemagic: CodemagicConfig{
 			APIToken:      getEnv("CODEMAGIC_API_TOKEN", ""),

@@ -1,7 +1,9 @@
 -- name: CreateAssignment :one
+-- batch_id/course_id/created_by are all nullable — no guaranteed parent
+-- to derive from, passed explicitly.
 INSERT INTO assignments (batch_id, course_id, chapter_id, topic_id, title, description,
-                         attachment_url, due_date, max_marks, is_published, created_by)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                         attachment_url, due_date, max_marks, is_published, created_by, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 RETURNING *;
 
 -- name: GetAssignmentByID :one
@@ -33,8 +35,9 @@ RETURNING *;
 DELETE FROM assignments WHERE id = $1;
 
 -- name: SubmitAssignment :one
-INSERT INTO assignment_submissions (assignment_id, user_id, submission_text, file_path, status)
-VALUES ($1, $2, $3, $4, 'submitted')
+-- tenant_id derived from the parent assignment (NOT NULL FK).
+INSERT INTO assignment_submissions (assignment_id, user_id, submission_text, file_path, status, tenant_id)
+VALUES ($1, $2, $3, $4, 'submitted', (SELECT tenant_id FROM assignments WHERE id = $1))
 ON CONFLICT (assignment_id, user_id) DO UPDATE
     SET submission_text = EXCLUDED.submission_text,
         file_path = COALESCE(EXCLUDED.file_path, assignment_submissions.file_path),

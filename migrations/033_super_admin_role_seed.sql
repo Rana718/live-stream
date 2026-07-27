@@ -11,6 +11,22 @@
 -- The roles are stored as free-form text so we can introduce new roles
 -- without DDL. To prevent typos shorting the auth chain we add a CHECK
 -- constraint and a btree index for role-based filtering on /admin/users.
+--
+-- users.role was locked to a Postgres ENUM (user_role: student/admin/
+-- instructor only) by migration 005, which conflicts with that "free-form
+-- text" model — this migration predates super_admin existing as a value
+-- and would fail on ALTER TABLE ... ADD CONSTRAINT below with "invalid
+-- input value for enum user_role" the first time it's run against a truly
+-- fresh database. Convert back to VARCHAR to match tenant_users.role
+-- (already VARCHAR, see migration 027) before adding the CHECK. The Go
+-- layer already treats this column as pgtype.Text, not a generated Go
+-- enum — see the sqlc.yaml overrides — so this has no code-level impact.
+ALTER TABLE users
+    ALTER COLUMN role DROP DEFAULT,
+    ALTER COLUMN role TYPE VARCHAR(20) USING role::text,
+    ALTER COLUMN role SET DEFAULT 'student';
+DROP TYPE IF EXISTS user_role;
+
 ALTER TABLE users
     DROP CONSTRAINT IF EXISTS users_role_check;
 ALTER TABLE users

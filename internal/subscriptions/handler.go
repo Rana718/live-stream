@@ -70,6 +70,7 @@ func (h *Handler) ListPlans(c fiber.Ctx) error {
 // @Security BearerAuth
 // @Router /subscriptions/plans [post]
 func (h *Handler) CreatePlan(c fiber.Ctx) error {
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	var req UpsertPlanRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -77,7 +78,7 @@ func (h *Handler) CreatePlan(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	p, err := h.service.CreatePlan(c.Context(), req)
+	p, err := h.service.CreatePlan(c.Context(), tenantID, req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -91,6 +92,7 @@ func (h *Handler) CreatePlan(c fiber.Ctx) error {
 // @Router /subscriptions/checkout [post]
 func (h *Handler) Checkout(c fiber.Ctx) error {
 	userID, _ := c.Locals("userID").(uuid.UUID)
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	var req CheckoutRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -98,7 +100,7 @@ func (h *Handler) Checkout(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	resp, err := h.service.StartCheckout(c.Context(), userID, req, h.publicKey)
+	resp, err := h.service.StartCheckout(c.Context(), tenantID, userID, req, h.publicKey)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}

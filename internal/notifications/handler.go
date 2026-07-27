@@ -169,6 +169,7 @@ func (h *Handler) AdminSend(c fiber.Ctx) error {
 // @Router /announcements [post]
 func (h *Handler) CreateAnnouncement(c fiber.Ctx) error {
 	userID, _ := c.Locals("userID").(uuid.UUID)
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	var req CreateAnnouncementRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -176,7 +177,7 @@ func (h *Handler) CreateAnnouncement(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	a, err := h.service.CreateAnnouncement(c.Context(), userID, req)
+	a, err := h.service.CreateAnnouncement(c.Context(), tenantID, userID, req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}

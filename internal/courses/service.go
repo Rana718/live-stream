@@ -31,7 +31,7 @@ type CreateCourseRequest struct {
 	IsPublished     bool       `json:"is_published"`
 }
 
-func (s *Service) Create(ctx context.Context, creator uuid.UUID, req CreateCourseRequest) (*db.Course, error) {
+func (s *Service) Create(ctx context.Context, tenantID, creator uuid.UUID, req CreateCourseRequest) (*db.Course, error) {
 	if req.Language == "" {
 		req.Language = "en"
 	}
@@ -52,6 +52,7 @@ func (s *Service) Create(ctx context.Context, creator uuid.UUID, req CreateCours
 		IsFree:          utils.BoolToPg(req.IsFree),
 		IsPublished:     utils.BoolToPg(req.IsPublished),
 		CreatedBy:       utils.UUIDToPg(creator),
+		TenantID:        utils.UUIDToPg(tenantID),
 	})
 	if err != nil {
 		return nil, err

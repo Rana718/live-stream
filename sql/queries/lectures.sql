@@ -1,8 +1,11 @@
 -- name: CreateLecture :one
+-- topic_id/chapter_id/subject_id/instructor_id are all nullable, so there's
+-- no single guaranteed-present parent to derive tenant_id from — passed
+-- explicitly.
 INSERT INTO lectures (topic_id, chapter_id, subject_id, title, description, lecture_type,
                      instructor_id, stream_id, recording_id, thumbnail_url, scheduled_at,
-                     duration_seconds, language, is_free, is_published, display_order)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                     duration_seconds, language, is_free, is_published, display_order, tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 RETURNING *;
 
 -- name: GetLectureByID :one
@@ -54,8 +57,9 @@ UPDATE lectures SET view_count = view_count + 1 WHERE id = $1;
 DELETE FROM lectures WHERE id = $1;
 
 -- name: UpsertLectureView :one
-INSERT INTO lecture_views (user_id, lecture_id, watched_seconds, completed, last_watched_at)
-VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+-- tenant_id derived from the parent lecture (NOT NULL FK).
+INSERT INTO lecture_views (user_id, lecture_id, watched_seconds, completed, last_watched_at, tenant_id)
+VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, (SELECT tenant_id FROM lectures WHERE id = $2))
 ON CONFLICT (user_id, lecture_id) DO UPDATE
     SET watched_seconds = GREATEST(lecture_views.watched_seconds, EXCLUDED.watched_seconds),
         completed = lecture_views.completed OR EXCLUDED.completed,

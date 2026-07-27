@@ -40,7 +40,7 @@ type CreateVariantRequest struct {
 	Codec       string     `json:"codec"`
 }
 
-func (s *Service) CreateVariant(ctx context.Context, req CreateVariantRequest) (*db.VideoVariant, error) {
+func (s *Service) CreateVariant(ctx context.Context, tenantID uuid.UUID, req CreateVariantRequest) (*db.VideoVariant, error) {
 	if req.Codec == "" {
 		req.Codec = "h264"
 	}
@@ -54,6 +54,7 @@ func (s *Service) CreateVariant(ctx context.Context, req CreateVariantRequest) (
 		Width:       utils.Int4ToPg(req.Width),
 		Height:      utils.Int4ToPg(req.Height),
 		Codec:       utils.TextToPg(req.Codec),
+		TenantID:    utils.UUIDToPg(tenantID),
 	})
 	if err != nil {
 		return nil, err

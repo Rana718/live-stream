@@ -1,0 +1,70 @@
+# Production ingress: automatic Let's Encrypt TLS for the main API domain
+# plus on-demand TLS for tenant custom domains (docs/runbooks/dns-custom-domain.md).
+#
+# Env vars this file expects (set in docker-compose.caddy.yml or your
+# platform's env config):
+#   API_DOMAIN     - the main API hostname, e.g. api.vidyawarrior.in
+#   ACME_EMAIL     - contact address Let's Encrypt uses for expiry/abuse notices
+#
+# Custom tenant domains need no per-domain config here at all — on-demand
+# TLS below issues a cert the first time a request for a *new* hostname
+# arrives, gated by asking the app "is this domain actually registered to
+# a tenant?" first (see internal/tenants/handler.go CaddyAskDomain). That
+# ask step is why on-demand TLS is safe to leave open here rather than a
+# security hole: without it, anyone could point arbitrary DNS at this
+# ingress and make us burn Let's Encrypt's rate limits attempting
+# issuance for domains we have nothing to do with.
+{
+	email {$ACME_EMAIL}
+	on_demand_tls {
+		ask http://app:3000/internal/caddy/ask
+	}
+}
+
+# Main API domain — ordinary automatic HTTPS, not on-demand (we know this
+# hostname ahead of time, no need to ask permission to issue for it).
+{$API_DOMAIN} {
+	# Never let /internal/* reach the app through the public listener —
+	# it's meant for server-to-server calls only (Caddy's own ask
+	# callback above hits the app directly over the Docker network,
+	# bypassing this listener entirely).
+	@internal path /internal/*
+	respond @internal 404
+
+	reverse_proxy app:3000 {
+		header_up X-Real-IP {remote_host}
+	}
+
+	encode gzip zstd
+	log {
+		output file /var/log/caddy/api-access.log
+		format json
+	}
+}
+
+# Any other hostname that reaches this ingress: on-demand TLS + proxy.
+# This is what serves tenant custom domains (learn.theirinstitute.com) —
+# the tenant's DNS CNAMEs to this ingress, and the first HTTPS request
+# for their hostname triggers the ask-gated cert issuance above.
+:443 {
+	tls {
+		on_demand
+	}
+
+	@internal path /internal/*
+	respond @internal 404
+
+	reverse_proxy app:3000 {
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Real-IP {remote_host}
+		# Host header is NOT overridden — CustomDomain middleware
+		# (internal/middleware/customdomain.go) resolves the tenant from
+		# the original Host the browser sent.
+	}
+
+	encode gzip zstd
+	log {
+		output file /var/log/caddy/custom-domains-access.log
+		format json
+	}
+}

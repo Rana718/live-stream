@@ -1,12 +1,12 @@
-.PHONY: help install sqlc swagger migrate-up migrate-down docker-up docker-down docker-build docker-logs dev run build clean
+.PHONY: help install sqlc swagger migrate-up migrate-down docker-up docker-down docker-build docker-logs dev run build clean backup restore
 
 help:
 	@echo "Available commands:"
 	@echo "  make install       - Install dependencies"
 	@echo "  make sqlc          - Generate SQLC code"
 	@echo "  make swagger       - Generate Swagger documentation"
-	@echo "  make migrate-up    - Run database migrations"
-	@echo "  make migrate-down  - Rollback database migrations"
+	@echo "  make migrate-up    - Apply database migrations (idempotent)"
+	@echo "  make migrate-down  - Not supported (see comment on the target); restore from backup instead"
 	@echo "  make docker-up     - Start all Docker services"
 	@echo "  make docker-down   - Stop all Docker services"
 	@echo "  make docker-build  - Build Docker images"
@@ -15,6 +15,8 @@ help:
 	@echo "  make run           - Run the server locally"
 	@echo "  make build         - Build the server binary"
 	@echo "  make clean         - Clean build artifacts"
+	@echo "  make backup        - Dump the DB and upload it to MinIO"
+	@echo "  make restore       - Restore latest backup into a scratch DB (see docs/runbooks/backup-restore.md)"
 
 SQLC_VERSION := 1.31.0
 SQLC_OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
@@ -41,10 +43,16 @@ swagger:
 	swag init -g cmd/server/main.go -o docs
 
 migrate-up:
-	migrate -path migrations -database "postgresql://postgres:postgres@localhost:5432/live_platform?sslmode=disable" up
+	./scripts/migrate.sh
 
+# No golang-migrate/sql-migrate "down" support: these are single
+# NNN_name.sql files (not .up/.down pairs), and only one of the 43 has a
+# real (fully-commented-out) Down section — there was never a working
+# rollback path here. To undo a bad migration, restore from a pre-migration
+# backup instead: see docs/runbooks/backup-restore.md.
 migrate-down:
-	migrate -path migrations -database "postgresql://postgres:postgres@localhost:5432/live_platform?sslmode=disable" down
+	@echo "Not supported — see docs/runbooks/backup-restore.md to restore from a backup instead."
+	@exit 1
 
 docker-up:
 	docker-compose up -d
@@ -72,3 +80,9 @@ clean:
 	rm -rf tmp/
 	rm -rf internal/database/db/
 	rm -rf docs/
+
+backup:
+	./scripts/backup-db.sh
+
+restore:
+	./scripts/restore-db.sh latest
