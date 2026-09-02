@@ -1,3 +1,8 @@
+// Package materials — schema-v2 adapter over content_documents. The old
+// `study_materials` table (topic/chapter/subject-scoped) is gone; documents
+// now live in content_documents and are attached to courses via
+// course_lessons. Per-chapter/topic listing returns empty until the Phase-J
+// content UI; upload / get / presigned-download still work.
 package materials
 
 import (
@@ -10,6 +15,7 @@ import (
 	"live-platform/internal/utils"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
 )
@@ -25,88 +31,89 @@ func NewService(pool *pgxpool.Pool, mc *minio.Client, bucket string) *Service {
 }
 
 type UploadRequest struct {
-	TopicID      *uuid.UUID `json:"topic_id"`
-	ChapterID    *uuid.UUID `json:"chapter_id"`
-	SubjectID    *uuid.UUID `json:"subject_id"`
-	Title        string     `json:"title" validate:"required"`
-	Description  string     `json:"description"`
-	MaterialType string     `json:"material_type"`
-	Language     string     `json:"language"`
-	IsFree       bool       `json:"is_free"`
+	Title        string `json:"title" validate:"required"`
+	Description  string `json:"description"`
+	MaterialType string `json:"material_type"`
 }
 
-func (s *Service) Upload(ctx context.Context, tenantID, uploader uuid.UUID, req UploadRequest, filename string, size int64, reader io.Reader, contentType string) (*db.StudyMaterial, error) {
-	if req.MaterialType == "" {
-		req.MaterialType = "pdf"
-	}
-	if req.Language == "" {
-		req.Language = "en"
-	}
-	objectName := fmt.Sprintf("%s/%d-%s", req.MaterialType, time.Now().UnixNano(), filename)
+type Material struct {
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	FileKey  string `json:"file_key"`
+	FilePath string `json:"file_path"`
+	FileSize int64  `json:"file_size"`
+	Mime     string `json:"mime"`
+	FileType string `json:"file_type"`
+}
 
-	_, err := s.minio.PutObject(ctx, s.bucket, objectName, reader, size, minio.PutObjectOptions{ContentType: contentType})
+func (s *Service) Upload(ctx context.Context, tenantID, uploader uuid.UUID, req UploadRequest, filename string, size int64, reader io.Reader, contentType string) (Material, error) {
+	object := fmt.Sprintf("documents/%d-%s", time.Now().UnixNano(), filename)
+	if _, err := s.minio.PutObject(ctx, s.bucket, object, reader, size, minio.PutObjectOptions{ContentType: contentType}); err != nil {
+		return Material{}, err
+	}
+	d, err := s.q.CreateContentDocument(ctx, db.CreateContentDocumentParams{
+		TenantID: utils.UUIDToPg(tenantID),
+		Title:    req.Title,
+		FileKey:  object,
+		FileSize: pgtype.Int8{Int64: size, Valid: true},
+		Mime:     pgtype.Text{String: contentType, Valid: contentType != ""},
+	})
 	if err != nil {
-		return nil, err
+		return Material{}, err
 	}
+	return Material{
+		ID: utils.UUIDFromPg(d.ID), Title: d.Title, FileKey: d.FileKey, FilePath: d.FileKey,
+		FileSize: d.FileSize, Mime: utils.TextFromPg(d.Mime), FileType: utils.TextFromPg(d.Mime),
+	}, nil
+}
 
-	m, err := s.q.CreateStudyMaterial(ctx, db.CreateStudyMaterialParams{
-		TopicID:      utils.UUIDPtrToPg(req.TopicID),
-		ChapterID:    utils.UUIDPtrToPg(req.ChapterID),
-		SubjectID:    utils.UUIDPtrToPg(req.SubjectID),
-		Title:        req.Title,
-		Description:  utils.TextToPg(req.Description),
-		MaterialType: utils.TextToPg(req.MaterialType),
-		FilePath:     objectName,
-		FileSize:     utils.Int8ToPg(size),
-		Language:     utils.TextToPg(req.Language),
-		IsFree:       utils.BoolToPg(req.IsFree),
-		UploadedBy:   utils.UUIDToPg(uploader),
-		TenantID:     utils.UUIDToPg(tenantID),
+func (s *Service) Get(ctx context.Context, id uuid.UUID) (Material, error) {
+	d, err := s.q.GetContentDocument(ctx, utils.UUIDToPg(id))
+	if err != nil {
+		return Material{}, err
+	}
+	return Material{
+		ID: utils.UUIDFromPg(d.ID), Title: d.Title, FileKey: d.FileKey, FilePath: d.FileKey,
+		FileSize: d.FileSize, Mime: utils.TextFromPg(d.Mime), FileType: utils.TextFromPg(d.Mime),
+	}, nil
+}
+
+func (s *Service) ListForTenant(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]Material, error) {
+	rows, err := s.q.ListContentDocumentsForTenant(ctx, db.ListContentDocumentsForTenantParams{
+		TenantID: utils.UUIDToPg(tenantID), Limit: limit, Offset: offset,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &m, nil
-}
-
-func (s *Service) Get(ctx context.Context, id uuid.UUID) (*db.StudyMaterial, error) {
-	m, err := s.q.GetStudyMaterialByID(ctx, utils.UUIDToPg(id))
-	if err != nil {
-		return nil, err
+	out := make([]Material, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, Material{
+			ID: utils.UUIDFromPg(r.ID), Title: r.Title, FileKey: r.FileKey, FilePath: r.FileKey,
+			FileSize: r.FileSize, Mime: utils.TextFromPg(r.Mime), FileType: utils.TextFromPg(r.Mime),
+		})
 	}
-	return &m, nil
-}
-
-func (s *Service) ListByChapter(ctx context.Context, chapterID uuid.UUID) ([]db.StudyMaterial, error) {
-	return s.q.ListMaterialsByChapter(ctx, utils.UUIDToPg(chapterID))
-}
-
-func (s *Service) ListByTopic(ctx context.Context, topicID uuid.UUID) ([]db.StudyMaterial, error) {
-	return s.q.ListMaterialsByTopic(ctx, utils.UUIDToPg(topicID))
-}
-
-func (s *Service) ListBySubject(ctx context.Context, subjectID uuid.UUID) ([]db.StudyMaterial, error) {
-	return s.q.ListMaterialsBySubject(ctx, utils.UUIDToPg(subjectID))
+	return out, nil
 }
 
 func (s *Service) GetDownloadURL(ctx context.Context, id uuid.UUID, ttl time.Duration) (string, error) {
-	m, err := s.q.GetStudyMaterialByID(ctx, utils.UUIDToPg(id))
+	d, err := s.q.GetContentDocument(ctx, utils.UUIDToPg(id))
 	if err != nil {
 		return "", err
 	}
-	u, err := s.minio.PresignedGetObject(ctx, s.bucket, m.FilePath, ttl, nil)
+	u, err := s.minio.PresignedGetObject(ctx, s.bucket, d.FileKey, ttl, nil)
 	if err != nil {
 		return "", err
 	}
-	_ = s.q.IncrementMaterialDownload(ctx, utils.UUIDToPg(id))
 	return u.String(), nil
 }
 
-func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
-	m, err := s.q.GetStudyMaterialByID(ctx, utils.UUIDToPg(id))
+func (s *Service) Delete(ctx context.Context, tenantID, id uuid.UUID) error {
+	d, err := s.q.GetContentDocument(ctx, utils.UUIDToPg(id))
 	if err != nil {
 		return err
 	}
-	_ = s.minio.RemoveObject(ctx, s.bucket, m.FilePath, minio.RemoveObjectOptions{})
-	return s.q.DeleteStudyMaterial(ctx, utils.UUIDToPg(id))
+	_ = s.minio.RemoveObject(ctx, s.bucket, d.FileKey, minio.RemoveObjectOptions{})
+	return s.q.DeleteContentDocument(ctx, db.DeleteContentDocumentParams{
+		ID: utils.UUIDToPg(id), TenantID: utils.UUIDToPg(tenantID),
+	})
 }

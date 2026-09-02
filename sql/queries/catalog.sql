@@ -188,6 +188,14 @@ FROM content_documents WHERE id = $1;
 -- name: GetContentLink :one
 SELECT id, title, url FROM content_links WHERE id = $1;
 
+-- name: ListContentDocumentsForTenant :many
+SELECT id, title, file_key, file_size, mime, page_count, created_at
+FROM content_documents WHERE tenant_id = $1
+ORDER BY created_at DESC LIMIT $2 OFFSET $3;
+
+-- name: DeleteContentDocument :exec
+DELETE FROM content_documents WHERE id = $1 AND tenant_id = $2;
+
 -- name: CreateCourseLesson :one
 INSERT INTO course_lessons (
     tenant_id, course_id, section_id, title, content_kind, video_id, document_id,
