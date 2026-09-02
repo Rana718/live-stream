@@ -58,6 +58,15 @@ func fullView(c db.GetCourseRow) fiber.Map {
 	}
 }
 
+// priceMinorFor returns the course's active price in paise, 0 if free/unpriced.
+func (h *Handler) priceMinorFor(c fiber.Ctx, courseID uuid.UUID) int64 {
+	p, err := h.service.GetPrice(c.Context(), courseID)
+	if err != nil {
+		return 0
+	}
+	return p
+}
+
 func json(b []byte) any {
 	if len(b) == 0 {
 		return nil
@@ -135,18 +144,25 @@ func (h *Handler) Get(c fiber.Ctx) error {
 		if err != nil {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found"})
 		}
-		return c.JSON(fullView(course))
+		return c.JSON(withPrice(fullView(course), h.priceMinorFor(c, id)))
 	}
 	row, err := h.service.GetBySlug(c.Context(), middleware.CurrentTenantID(c), idParam)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found"})
 	}
 	// GetCourseBySlugRow is a subset; re-fetch full by id for a consistent shape.
-	course, err := h.service.Get(c.Context(), uuid.UUID(row.ID.Bytes))
+	cid := uuid.UUID(row.ID.Bytes)
+	course, err := h.service.Get(c.Context(), cid)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found"})
 	}
-	return c.JSON(fullView(course))
+	return c.JSON(withPrice(fullView(course), h.priceMinorFor(c, cid)))
+}
+
+func withPrice(m fiber.Map, minor int64) fiber.Map {
+	m["price_minor"] = minor
+	m["price"] = float64(minor) / 100
+	return m
 }
 
 // Create — POST /courses  (instructor/admin)
@@ -175,7 +191,7 @@ func (h *Handler) Update(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
-	row, err := h.service.Update(c.Context(), id, req)
+	row, err := h.service.Update(c.Context(), middleware.CurrentTenantID(c), id, req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}

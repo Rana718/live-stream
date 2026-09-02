@@ -331,6 +331,14 @@ func main() {
 	// --- API v1 routes ---
 	api := app.Group("/api/v1")
 
+	// Catalog read routes are hit by the authenticated portal (JWT carries
+	// the tenant) and, in principle, the anonymous marketing site. This pair
+	// sets RLS scope from the JWT when present and falls back to the
+	// public-lookup policy otherwise — without it every catalog GET runs
+	// with blank GUCs and returns zero rows.
+	catalogAuth := middleware.OptionalAuthMiddleware(&cfg.JWT)
+	catalogCtx := middleware.OptionalTenantContext()
+
 	// --- Tenants (multi-tenant control plane) ---
 	tenantSvc := tenants.NewService(pgPool)
 	tenantHandler := tenants.NewHandler(tenantSvc)
@@ -704,25 +712,25 @@ func main() {
 
 	// Exam categories
 	ec := api.Group("/exam-categories")
-	ec.Get("/", examHandler.List)
+	ec.Get("/", catalogAuth, catalogCtx, examHandler.List)
 	ec.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.AdminOnly(), examHandler.Create)
 	ec.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.AdminOnly(), examHandler.Update)
 	ec.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.AdminOnly(), examHandler.Delete)
 
 	// Courses
 	cg := api.Group("/courses")
-	cg.Get("/", courseHandler.List)
+	cg.Get("/", catalogAuth, catalogCtx, courseHandler.List)
 	cg.Get("/manage", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), courseHandler.ListForAdmin)
-	cg.Get("/:id", courseHandler.Get)
+	cg.Get("/:id", catalogAuth, catalogCtx, courseHandler.Get)
 	cg.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), courseHandler.Create)
 	cg.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), courseHandler.Update)
 	cg.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.AdminOnly(), courseHandler.Delete)
 
 	// Batches
 	bg := api.Group("/batches")
-	bg.Get("/course/:course_id", batchHandler.ListByCourse)
+	bg.Get("/course/:course_id", catalogAuth, catalogCtx, batchHandler.ListByCourse)
 	bg.Get("/my", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), batchHandler.ListMine)
-	bg.Get("/:id", batchHandler.Get)
+	bg.Get("/:id", catalogAuth, catalogCtx, batchHandler.Get)
 	bg.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), batchHandler.Create)
 	bg.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), batchHandler.Update)
 	bg.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.AdminOnly(), batchHandler.Delete)
@@ -759,30 +767,30 @@ func main() {
 
 	// Subjects / Chapters / Topics
 	subj := api.Group("/subjects")
-	subj.Get("/course/:course_id", subjectHandler.ListByCourse)
-	subj.Get("/:id", subjectHandler.Get)
+	subj.Get("/course/:course_id", catalogAuth, catalogCtx, subjectHandler.ListByCourse)
+	subj.Get("/:id", catalogAuth, catalogCtx, subjectHandler.Get)
 	subj.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), subjectHandler.Create)
 	subj.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), subjectHandler.Update)
 	subj.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), subjectHandler.Delete)
 
 	ch := api.Group("/chapters")
-	ch.Get("/subject/:subject_id", chapterHandler.ListBySubject)
-	ch.Get("/:id", chapterHandler.Get)
+	ch.Get("/subject/:subject_id", catalogAuth, catalogCtx, chapterHandler.ListBySubject)
+	ch.Get("/:id", catalogAuth, catalogCtx, chapterHandler.Get)
 	ch.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), chapterHandler.Create)
 	ch.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), chapterHandler.Update)
 	ch.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), chapterHandler.Delete)
 
 	tp := api.Group("/topics")
-	tp.Get("/chapter/:chapter_id", topicHandler.ListByChapter)
-	tp.Get("/:id", topicHandler.Get)
+	tp.Get("/chapter/:chapter_id", catalogAuth, catalogCtx, topicHandler.ListByChapter)
+	tp.Get("/:id", catalogAuth, catalogCtx, topicHandler.Get)
 	tp.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), topicHandler.Create)
 	tp.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), topicHandler.Update)
 	tp.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), topicHandler.Delete)
 
 	// Lectures
 	lg := api.Group("/lectures")
-	lg.Get("/", lectureHandler.List)
-	lg.Get("/:id", lectureHandler.Get)
+	lg.Get("/", catalogAuth, catalogCtx, lectureHandler.List)
+	lg.Get("/:id", catalogAuth, catalogCtx, lectureHandler.Get)
 	lg.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), lectureHandler.Create)
 	lg.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), lectureHandler.Update)
 	lg.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), lectureHandler.Delete)
@@ -797,15 +805,15 @@ func main() {
 	// Study materials
 	mg := api.Group("/materials")
 	mg.Post("/upload", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), materialHandler.Upload)
-	mg.Get("/chapter/:chapter_id", materialHandler.ListByChapter)
-	mg.Get("/topic/:topic_id", materialHandler.ListByTopic)
-	mg.Get("/:id", materialHandler.Get)
+	mg.Get("/chapter/:chapter_id", catalogAuth, catalogCtx, materialHandler.ListByChapter)
+	mg.Get("/topic/:topic_id", catalogAuth, catalogCtx, materialHandler.ListByTopic)
+	mg.Get("/:id", catalogAuth, catalogCtx, materialHandler.Get)
 	mg.Get("/:id/download", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), materialHandler.GetDownloadURL)
 	mg.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), materialHandler.Delete)
 
 	// Tests / Questions / Attempts (DPPs + PYQs share this API via test_type)
 	tg := api.Group("/tests")
-	tg.Get("/", testHandler.ListTests)
+	tg.Get("/", catalogAuth, catalogCtx, testHandler.ListTests)
 	tg.Get("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), testHandler.GetTest)
 	tg.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), testHandler.CreateTest)
 	tg.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), testHandler.UpdateTest)

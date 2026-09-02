@@ -64,7 +64,8 @@ VALUES ($1, $2, $3, sqlc.narg(compare_at_minor)::bigint, 'INR')
 RETURNING id, tenant_id, product_id, amount_minor, compare_at_minor, currency;
 
 -- name: DeactivatePricesForProduct :exec
-UPDATE prices SET is_active = false WHERE product_id = $1 AND is_active;
+UPDATE prices SET is_active = false, valid_to = now()
+WHERE product_id = $1 AND is_active AND deleted_at IS NULL;
 
 -- ───────────────────────────────────────────────────────────────── coupons
 

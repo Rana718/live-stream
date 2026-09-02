@@ -39,6 +39,24 @@ func TenantContext() fiber.Handler {
 	}
 }
 
+// OptionalTenantContext sets tenant RLS scope from the JWT when one is
+// present, and otherwise opts into the public-lookup policy. Mount it on
+// catalog *read* routes that the authenticated portal and the anonymous
+// marketing site both hit (courses, subjects, batches, …). Pair it with
+// OptionalAuthMiddleware so c.Locals is populated first.
+func OptionalTenantContext() fiber.Handler {
+	return func(c fiber.Ctx) error {
+		tenantID, ok := c.Locals("tenantID").(uuid.UUID)
+		if ok && tenantID != uuid.Nil {
+			userID, _ := c.Locals("userID").(uuid.UUID)
+			c.SetContext(database.WithTenant(c.Context(), tenantID.String(), userID.String()))
+		} else {
+			c.SetContext(database.WithPublicLookup(c.Context()))
+		}
+		return c.Next()
+	}
+}
+
 // SuperAdminContext is a convenience wrapper for cron / provisioning
 // endpoints that need to bypass RLS. Mount this on the platform-admin route
 // group instead of TenantContext.

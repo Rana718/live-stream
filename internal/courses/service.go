@@ -9,6 +9,7 @@ import (
 	"live-platform/internal/utils"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -36,6 +37,17 @@ type CreateCourseRequest struct {
 	HsnSac           string     `json:"hsn_sac"`
 	TaxRateBps       int32      `json:"tax_rate_bps"`
 	RefundWindowDays int32      `json:"refund_window_days"`
+	// Price: the portal sends rupees in `price`; `price_minor` is the
+	// canonical paise field. 0 / omitted leaves the course free.
+	Price      float64 `json:"price"`
+	PriceMinor int64   `json:"price_minor"`
+}
+
+func (r CreateCourseRequest) priceMinor() int64 {
+	if r.PriceMinor > 0 {
+		return r.PriceMinor
+	}
+	return int64(r.Price * 100)
 }
 
 func (r CreateCourseRequest) summary() string {
@@ -68,7 +80,7 @@ func (s *Service) Create(ctx context.Context, tenantID, creator uuid.UUID, req C
 	}); err == nil {
 		req.Slug = req.Slug + "-" + uuid.NewString()[:6]
 	}
-	return s.q.CreateCourse(ctx, db.CreateCourseParams{
+	row, err := s.q.CreateCourse(ctx, db.CreateCourseParams{
 		TenantID:         utils.UUIDToPg(tenantID),
 		Title:            req.Title,
 		ExamCategoryID:   utils.UUIDPtrToPg(req.ExamCategoryID),
@@ -85,10 +97,59 @@ func (s *Service) Create(ctx context.Context, tenantID, creator uuid.UUID, req C
 		RefundWindowDays: utils.Int4ToPg(req.RefundWindowDays),
 		CreatedBy:        utils.UUIDToPg(creator),
 	})
+	if err != nil {
+		return row, err
+	}
+	if pm := req.priceMinor(); pm > 0 {
+		_ = s.SetPrice(ctx, tenantID, uuid.UUID(row.ID.Bytes), pm, req.TaxRateBps)
+	}
+	return row, nil
+}
+
+// SetPrice ensures the course has a product row and an active price. Runs
+// non-transactionally — a stale price is a display bug, not lost money
+// (checkout re-reads it).
+func (s *Service) SetPrice(ctx context.Context, tenantID, courseID uuid.UUID, amountMinor int64, taxRateBps int32) error {
+	var productID pgtype.UUID
+	if p, err := s.q.GetProductForCourse(ctx, utils.UUIDToPg(courseID)); err == nil {
+		productID = p.ID
+	} else {
+		p, err := s.q.CreateProduct(ctx, db.CreateProductParams{
+			TenantID:   utils.UUIDToPg(tenantID),
+			Kind:       db.ProductKind("course"),
+			CourseID:   utils.UUIDToPg(courseID),
+			TaxRateBps: pgtype.Int4{Int32: taxRateBps, Valid: true},
+		})
+		if err != nil {
+			return err
+		}
+		productID = p.ID
+	}
+	if cur, err := s.q.GetActivePrice(ctx, productID); err == nil && cur.AmountMinor == amountMinor {
+		return nil
+	}
+	_ = s.q.DeactivatePricesForProduct(ctx, productID)
+	_, err := s.q.UpsertActivePrice(ctx, db.UpsertActivePriceParams{
+		TenantID: utils.UUIDToPg(tenantID), ProductID: productID, AmountMinor: amountMinor,
+	})
+	return err
 }
 
 func (s *Service) Get(ctx context.Context, id uuid.UUID) (db.GetCourseRow, error) {
 	return s.q.GetCourse(ctx, utils.UUIDToPg(id))
+}
+
+// GetPrice returns the course's active price in paise (0 if free/unpriced).
+func (s *Service) GetPrice(ctx context.Context, courseID uuid.UUID) (int64, error) {
+	p, err := s.q.GetProductForCourse(ctx, utils.UUIDToPg(courseID))
+	if err != nil {
+		return 0, err
+	}
+	pr, err := s.q.GetActivePrice(ctx, p.ID)
+	if err != nil {
+		return 0, err
+	}
+	return pr.AmountMinor, nil
 }
 
 func (s *Service) GetBySlug(ctx context.Context, tenantID uuid.UUID, slug string) (db.GetCourseBySlugRow, error) {
@@ -121,8 +182,8 @@ func (s *Service) Search(ctx context.Context, tenantID uuid.UUID, q string, limi
 	})
 }
 
-func (s *Service) Update(ctx context.Context, id uuid.UUID, req CreateCourseRequest) (db.UpdateCourseRow, error) {
-	return s.q.UpdateCourse(ctx, db.UpdateCourseParams{
+func (s *Service) Update(ctx context.Context, tenantID, id uuid.UUID, req CreateCourseRequest) (db.UpdateCourseRow, error) {
+	row, err := s.q.UpdateCourse(ctx, db.UpdateCourseParams{
 		ID:               utils.UUIDToPg(id),
 		Title:            utils.TextToPg(req.Title),
 		Summary:          utils.TextToPg(req.summary()),
@@ -136,6 +197,13 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, req CreateCourseRequ
 		TaxRateBps:       utils.Int4ToPg(req.TaxRateBps),
 		RefundWindowDays: utils.Int4ToPg(req.RefundWindowDays),
 	})
+	if err != nil {
+		return row, err
+	}
+	if pm := req.priceMinor(); pm > 0 {
+		_ = s.SetPrice(ctx, tenantID, id, pm, req.TaxRateBps)
+	}
+	return row, nil
 }
 
 func (s *Service) SetPublished(ctx context.Context, id uuid.UUID, published bool) error {
