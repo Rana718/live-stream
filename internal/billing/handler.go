@@ -52,6 +52,26 @@ func (h *Handler) ListMine(c fiber.Ctx) error {
 	return c.JSON(out)
 }
 
+// AdminList — GET /admin/invoices  (every invoice for the tenant)
+func (h *Handler) AdminList(c fiber.Ctx) error {
+	limit, offset := pagination(c)
+	rows, err := h.svc.q.ListTenantInvoices(c.Context(), db.ListTenantInvoicesParams{
+		TenantID: utils.UUIDToPg(middleware.CurrentTenantID(c)), Limit: limit, Offset: offset,
+	})
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	out := make([]fiber.Map, len(rows))
+	for i, r := range rows {
+		out[i] = fiber.Map{
+			"id": utils.UUIDFromPg(r.ID), "number": r.Number,
+			"order_id": utils.UUIDFromPg(r.OrderID), "status": string(r.Status),
+			"total_minor": r.TotalMinor, "issued_at": r.IssuedAt.Time,
+		}
+	}
+	return c.JSON(out)
+}
+
 // Get — GET /invoices/:id
 func (h *Handler) Get(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))

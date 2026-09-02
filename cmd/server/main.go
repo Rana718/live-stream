@@ -581,6 +581,7 @@ func main() {
 	invg := api.Group("/invoices", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext())
 	invg.Get("/mine", invoiceHandler.ListMine)
 	invg.Get("/:id", invoiceHandler.Get)
+	api.Get("/admin/invoices", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.AdminOnly(), invoiceHandler.AdminList)
 
 	// Authenticated tenant endpoints. TenantContext sets the RLS session var
 	// on every request so the handler reads/writes only its tenant's rows.

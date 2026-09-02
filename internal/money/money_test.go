@@ -152,6 +152,49 @@ func TestSplitGST_InterState(t *testing.T) {
 	}
 }
 
+func TestSplitGSTInclusive(t *testing.T) {
+	// ₹4999 GST-inclusive @ 18%: taxable = 4999*10000/11800 = ₹4236.44,
+	// tax = ₹762.56, split CGST ₹381.28 / SGST ₹381.28.
+	g := SplitGSTInclusive(New(499900, INR), 1800, false)
+	if g.Taxable.Minor != 423644 {
+		t.Fatalf("taxable = %d, want 423644", g.Taxable.Minor)
+	}
+	if g.CGST.Minor != 38128 || g.SGST.Minor != 38128 {
+		t.Fatalf("cgst=%d sgst=%d, want 38128 each", g.CGST.Minor, g.SGST.Minor)
+	}
+	// Components + taxable always reconstitute the gross exactly.
+	if g.Taxable.Minor+g.CGST.Minor+g.SGST.Minor+g.IGST.Minor != 499900 {
+		t.Fatalf("components do not sum to gross")
+	}
+	// inter-state: all tax in IGST
+	gi := SplitGSTInclusive(New(499900, INR), 1800, true)
+	if gi.IGST.Minor != 76256 || gi.CGST.Minor != 0 {
+		t.Fatalf("inter: igst=%d cgst=%d", gi.IGST.Minor, gi.CGST.Minor)
+	}
+	// zero rate: everything is taxable, no tax
+	g0 := SplitGSTInclusive(New(10000, INR), 0, false)
+	if g0.Taxable.Minor != 10000 || g0.CGST.Minor != 0 {
+		t.Fatalf("zero rate: taxable=%d cgst=%d", g0.Taxable.Minor, g0.CGST.Minor)
+	}
+}
+
+func TestSplitGSTInclusiveReconstitutes(t *testing.T) {
+	rng := rand.New(rand.NewSource(11))
+	for i := 0; i < 5000; i++ {
+		gross := New(rng.Int63n(9_000_000)+1, INR)
+		rate := []int64{0, 500, 1200, 1800, 2800}[rng.Intn(5)]
+		inter := rng.Intn(2) == 0
+		g := SplitGSTInclusive(gross, rate, inter)
+		if g.Taxable.Minor+g.CGST.Minor+g.SGST.Minor+g.IGST.Minor != gross.Minor {
+			t.Fatalf("gross=%d rate=%d: components sum to %d",
+				gross.Minor, rate, g.Taxable.Minor+g.CGST.Minor+g.SGST.Minor+g.IGST.Minor)
+		}
+		if g.Total.Minor != gross.Minor {
+			t.Fatalf("total %d != gross %d", g.Total.Minor, gross.Minor)
+		}
+	}
+}
+
 func TestGSTComponentsPlusRoundOffEqualTotal(t *testing.T) {
 	rng := rand.New(rand.NewSource(7))
 	for i := 0; i < 3000; i++ {
