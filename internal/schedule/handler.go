@@ -27,14 +27,10 @@ func (h *Handler) Create(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(row)
 }
 
-// List — GET /api/v1/admin/class-schedules?active=true|false
+// List — GET /api/v1/admin/class-schedules
 func (h *Handler) List(c fiber.Ctx) error {
-	var active *bool
-	if v := c.Query("active"); v != "" {
-		b := v == "true" || v == "1"
-		active = &b
-	}
-	rows, err := h.svc.List(c.Context(), active, 100, 0)
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
+	rows, err := h.svc.List(c.Context(), tenantID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
