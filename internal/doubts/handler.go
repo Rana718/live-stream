@@ -3,50 +3,35 @@ package doubts
 import (
 	"strconv"
 
-	"live-platform/internal/database/db"
 	"live-platform/internal/middleware"
 	"live-platform/internal/utils"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Handler struct{ service *Service }
 
 func NewHandler(s *Service) *Handler { return &Handler{service: s} }
 
-func doubtToMap(d *db.Doubt) fiber.Map {
+func answerView(id, doubtID, answeredBy pgtype.UUID, text, atype string, accepted bool, model string, createdAt any) fiber.Map {
 	return fiber.Map{
-		"id":            utils.UUIDFromPg(d.ID),
-		"user_id":       utils.UUIDFromPg(d.UserID),
-		"lecture_id":    utils.UUIDFromPg(d.LectureID),
-		"chapter_id":    utils.UUIDFromPg(d.ChapterID),
-		"topic_id":      utils.UUIDFromPg(d.TopicID),
-		"question_text": d.QuestionText,
-		"input_type":    utils.TextFromPg(d.InputType),
-		"voice_url":     utils.TextFromPg(d.VoiceUrl),
-		"status":        utils.TextFromPg(d.Status),
-		"language":      utils.TextFromPg(d.Language),
-		"created_at":    d.CreatedAt,
-	}
-}
-
-func answerToMap(a *db.DoubtAnswer) fiber.Map {
-	return fiber.Map{
-		"id":          utils.UUIDFromPg(a.ID),
-		"doubt_id":    utils.UUIDFromPg(a.DoubtID),
-		"answer_text": a.AnswerText,
-		"answer_type": utils.TextFromPg(a.AnswerType),
-		"answered_by": utils.UUIDFromPg(a.AnsweredBy),
-		"is_accepted": utils.BoolFromPg(a.IsAccepted),
-		"model_name":  utils.TextFromPg(a.ModelName),
-		"created_at":  a.CreatedAt,
+		"id":          utils.UUIDFromPg(id),
+		"doubt_id":    utils.UUIDFromPg(doubtID),
+		"answer_text": text,
+		"content":     text, // legacy alias
+		"answer_type": atype,
+		"answered_by": utils.UUIDFromPg(answeredBy),
+		"is_accepted": accepted,
+		"accepted":    accepted,
+		"model_name":  model,
+		"created_at":  createdAt,
 	}
 }
 
 func parsePagination(c fiber.Ctx) (int32, int32) {
-	limit := int32(20)
-	offset := int32(0)
+	limit, offset := int32(20), int32(0)
 	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 100 {
 		limit = int32(l)
 	}
@@ -56,27 +41,31 @@ func parsePagination(c fiber.Ctx) (int32, int32) {
 	return limit, offset
 }
 
-// Ask godoc
-// @Summary Submit a doubt — optionally get an AI answer synchronously
-// @Tags doubts
-// @Security BearerAuth
-// @Router /doubts [post]
+// Ask — POST /doubts
 func (h *Handler) Ask(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
 	var req AskDoubtRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
-	if err := middleware.ValidateStruct(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	if len(req.question()) < 3 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "question is required"})
 	}
-	d, ai, err := h.service.Ask(c.Context(), userID, req)
-	if err != nil && d == nil {
+	d, ai, err := h.service.Ask(c.Context(), middleware.CurrentTenantID(c), middleware.CurrentUserID(c), req)
+	if err != nil && d.ID.Valid == false {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	resp := fiber.Map{"doubt": doubtToMap(d)}
+	resp := fiber.Map{
+		"doubt": fiber.Map{
+			"id":            utils.UUIDFromPg(d.ID),
+			"user_id":       utils.UUIDFromPg(d.UserID),
+			"question":      d.QuestionText,
+			"question_text": d.QuestionText,
+			"status":        string(d.Status),
+			"created_at":    d.CreatedAt.Time,
+		},
+	}
 	if ai != nil {
-		resp["ai_answer"] = answerToMap(ai)
+		resp["ai_answer"] = answerView(ai.ID, ai.DoubtID, ai.AnsweredBy, ai.AnswerText, ai.AnswerType, ai.IsAccepted, "", ai.CreatedAt.Time)
 	}
 	if err != nil {
 		resp["ai_error"] = err.Error()
@@ -84,11 +73,7 @@ func (h *Handler) Ask(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(resp)
 }
 
-// GetDoubt godoc
-// @Summary Get a doubt and all its answers
-// @Tags doubts
-// @Security BearerAuth
-// @Router /doubts/{id} [get]
+// Get — GET /doubts/:id
 func (h *Handler) Get(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
@@ -99,99 +84,90 @@ func (h *Handler) Get(c fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found"})
 	}
 	out := make([]fiber.Map, len(answers))
-	for i := range answers {
-		out[i] = answerToMap(&answers[i])
+	for i, a := range answers {
+		out[i] = answerView(a.ID, utils.UUIDToPg(id), a.AnsweredBy, a.AnswerText, a.AnswerType, a.IsAccepted, utils.TextFromPg(a.ModelName), a.CreatedAt.Time)
 	}
-	resp := doubtToMap(d)
-	resp["answers"] = out
-	return c.JSON(resp)
+	return c.JSON(fiber.Map{
+		"id":            utils.UUIDFromPg(d.ID),
+		"user_id":       utils.UUIDFromPg(d.UserID),
+		"lesson_id":     utils.UUIDFromPg(d.LessonID),
+		"chapter_id":    utils.UUIDFromPg(d.ChapterID),
+		"topic_id":      utils.UUIDFromPg(d.TopicID),
+		"question":      d.QuestionText,
+		"question_text": d.QuestionText,
+		"input_type":     d.InputType,
+		"attachment_url": utils.TextFromPg(d.AttachmentUrl),
+		"status":         string(d.Status),
+		"language":       d.Language,
+		"created_at":    d.CreatedAt.Time,
+		"answers":       out,
+	})
 }
 
-// ListMine godoc
-// @Summary List my doubts
-// @Tags doubts
-// @Security BearerAuth
-// @Router /doubts/my [get]
+// ListMine — GET /doubts/my
 func (h *Handler) ListMine(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
 	limit, offset := parsePagination(c)
-	rows, err := h.service.ListMine(c.Context(), userID, limit, offset)
+	rows, err := h.service.ListMine(c.Context(), middleware.CurrentTenantID(c), middleware.CurrentUserID(c), limit, offset)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	out := make([]fiber.Map, len(rows))
-	for i := range rows {
-		out[i] = doubtToMap(&rows[i])
+	for i, r := range rows {
+		out[i] = fiber.Map{
+			"id":            utils.UUIDFromPg(r.ID),
+			"question":      r.QuestionText,
+			"question_text": r.QuestionText,
+			"status":        string(r.Status),
+			"created_at":    r.CreatedAt.Time,
+		}
 	}
 	return c.JSON(out)
 }
 
-// ListByLecture godoc
-// @Summary List public doubts for a specific lecture
-// @Tags doubts
-// @Security BearerAuth
-// @Router /doubts/lecture/{lecture_id} [get]
+// ListByLecture — GET /doubts/lecture/:lecture_id. Not scoped server-side in
+// v2; returns pending for the tenant. (Retired in Phase J.)
 func (h *Handler) ListByLecture(c fiber.Ctx) error {
-	id, err := uuid.Parse(c.Params("lecture_id"))
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid lecture id"})
-	}
-	limit, offset := parsePagination(c)
-	rows, err := h.service.ListByLecture(c.Context(), id, limit, offset)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-	}
-	out := make([]fiber.Map, len(rows))
-	for i := range rows {
-		out[i] = doubtToMap(&rows[i])
-	}
-	return c.JSON(out)
+	return h.ListPending(c)
 }
 
-// ListPending godoc
-// @Summary List pending doubts for instructors
-// @Tags doubts
-// @Security BearerAuth
-// @Router /doubts/pending [get]
+// ListPending — GET /doubts/pending  (instructor/admin)
 func (h *Handler) ListPending(c fiber.Ctx) error {
 	limit, offset := parsePagination(c)
-	rows, err := h.service.ListPending(c.Context(), limit, offset)
+	rows, err := h.service.ListPending(c.Context(), middleware.CurrentTenantID(c), limit, offset)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	out := make([]fiber.Map, len(rows))
-	for i := range rows {
-		out[i] = doubtToMap(&rows[i])
+	for i, r := range rows {
+		out[i] = fiber.Map{
+			"id":            utils.UUIDFromPg(r.ID),
+			"user_id":       utils.UUIDFromPg(r.UserID),
+			"student_name":  utils.TextFromPg(r.FullName),
+			"question":      r.QuestionText,
+			"question_text": r.QuestionText,
+			"created_at":    r.CreatedAt.Time,
+		}
 	}
 	return c.JSON(out)
 }
 
-// InstructorAnswer godoc
-// @Summary Post an instructor answer to a doubt
-// @Tags doubts
-// @Security BearerAuth
-// @Router /doubts/answer [post]
+// InstructorAnswer — POST /doubts/answer
 func (h *Handler) InstructorAnswer(c fiber.Ctx) error {
-	instrID, _ := c.Locals("userID").(uuid.UUID)
 	var req InstructorAnswerRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
-	if err := middleware.ValidateStruct(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	if len(req.text()) < 3 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "answer is required"})
 	}
-	a, err := h.service.AnswerAsInstructor(c.Context(), instrID, req)
+	a, err := h.service.AnswerAsInstructor(c.Context(), middleware.CurrentTenantID(c), middleware.CurrentUserID(c), req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.Status(fiber.StatusCreated).JSON(answerToMap(a))
+	return c.Status(fiber.StatusCreated).JSON(answerView(a.ID, a.DoubtID, a.AnsweredBy, a.AnswerText, a.AnswerType, a.IsAccepted, "", a.CreatedAt.Time))
 }
 
-// AcceptAnswer godoc
-// @Summary Mark an answer as accepted
-// @Tags doubts
-// @Security BearerAuth
-// @Router /doubts/answers/{id}/accept [post]
+// AcceptAnswer — POST /doubts/answers/:id/accept
 func (h *Handler) AcceptAnswer(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
@@ -203,18 +179,14 @@ func (h *Handler) AcceptAnswer(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": "accepted"})
 }
 
-// Delete godoc
-// @Summary Delete a doubt
-// @Tags doubts
-// @Security BearerAuth
-// @Router /doubts/{id} [delete]
+// Delete — DELETE /doubts/:id. No hard-delete in v2; mark closed.
 func (h *Handler) Delete(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
 	}
-	if err := h.service.Delete(c.Context(), id); err != nil {
+	if err := h.service.SetStatus(c.Context(), id, "closed"); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"message": "deleted"})
+	return c.JSON(fiber.Map{"message": "closed"})
 }
