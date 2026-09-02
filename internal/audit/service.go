@@ -19,10 +19,10 @@ type Service struct{ q *db.Queries }
 
 func NewService(pool *pgxpool.Pool) *Service { return &Service{q: db.New(pool)} }
 
-// Write records one audit entry. Callers swallow the error if they don't
-// want log failure to fail the request.
+// Write records one audit entry — matches middleware.AuditRecorder. The
+// `metadata` map lands in the `after` jsonb column.
 func (s *Service) Write(ctx context.Context, tenantID, actorID uuid.UUID, actorRole, action, entityType string,
-	entityID *uuid.UUID, ip, userAgent string, before, after map[string]any) error {
+	entityID *uuid.UUID, ip, userAgent string, metadata map[string]any) error {
 
 	var addr *netip.Addr
 	if ip != "" {
@@ -30,14 +30,11 @@ func (s *Service) Write(ctx context.Context, tenantID, actorID uuid.UUID, actorR
 			addr = &p
 		}
 	}
-	marshal := func(m map[string]any) []byte {
-		if len(m) == 0 {
-			return nil
+	var after []byte
+	if len(metadata) > 0 {
+		if b, err := json.Marshal(metadata); err == nil {
+			after = b
 		}
-		if b, err := json.Marshal(m); err == nil {
-			return b
-		}
-		return nil
 	}
 	return s.q.WriteAuditLog(ctx, db.WriteAuditLogParams{
 		TenantID:    utils.UUIDToPg(tenantID),
@@ -46,8 +43,7 @@ func (s *Service) Write(ctx context.Context, tenantID, actorID uuid.UUID, actorR
 		Action:      action,
 		EntityType:  utils.TextToPg(entityType),
 		EntityID:    utils.UUIDPtrToPg(entityID),
-		Before:      marshal(before),
-		After:       marshal(after),
+		After:       after,
 		Ip:          addr,
 		UserAgent:   utils.TextToPg(userAgent),
 	})

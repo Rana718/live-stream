@@ -105,3 +105,8 @@ func (s *Service) RewardOnPurchase(ctx context.Context, referredUser uuid.UUID) 
 	}
 	return DefaultRewardMinor, nil
 }
+
+// AttachSignup is the auth.Referrer interface name for AttachToSignup.
+func (s *Service) AttachSignup(ctx context.Context, tenantID, newUserID uuid.UUID, code string) {
+	s.AttachToSignup(ctx, tenantID, newUserID, code)
+}

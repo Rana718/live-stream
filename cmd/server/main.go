@@ -22,7 +22,6 @@ import (
 	"live-platform/internal/batches"
 	"live-platform/internal/bookmarks"
 	"live-platform/internal/bulkimport"
-	"live-platform/internal/cache"
 	"live-platform/internal/chapters"
 	"live-platform/internal/chat"
 	"live-platform/internal/cms"
@@ -333,11 +332,7 @@ func main() {
 	api := app.Group("/api/v1")
 
 	// --- Tenants (multi-tenant control plane) ---
-	// Hot-read cache for tenant + course lookups. The single Redis client
-	// already in use for refresh-token storage is shared.
-	hotCache := cache.New(redisClient)
-
-	tenantSvc := tenants.NewService(pgPool).WithCache(hotCache)
+	tenantSvc := tenants.NewService(pgPool)
 	tenantHandler := tenants.NewHandler(tenantSvc)
 
 	// Referrals — per-user code + reward tracking. The OTP verify path
@@ -661,26 +656,16 @@ func main() {
 	cmsAdmin.Get("/pages/:slug", cmsHandler.AdminGetCmsPage)
 	cmsAdmin.Put("/pages/:slug", cmsHandler.UpsertCmsPage)
 
-	// Auth
+	// Auth — schema-v2: phone-OTP + Google only; opaque DB refresh tokens;
+	// switch-org re-mints the JWT with the target tenant's role.
 	authRoutes := api.Group("/auth")
-	authRoutes.Post("/register/student", middleware.PublicLookupContext(), authHandler.RegisterStudent)
-	authRoutes.Post("/register/instructor", middleware.PublicLookupContext(), authHandler.RegisterInstructor)
-	authRoutes.Post("/login", authHandler.Login)
-	authRoutes.Post("/refresh", authHandler.RefreshToken)
-	authRoutes.Post("/forgot-password", authHandler.ForgotPassword)
-	authRoutes.Post("/reset-password", authHandler.ResetPassword)
-	authRoutes.Post("/verify-email", authHandler.ConfirmEmailVerification)
-	authRoutes.Post("/logout", middleware.AuthMiddleware(&cfg.JWT), authHandler.Logout)
-	authRoutes.Get("/me", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), authHandler.GetMe)
-	authRoutes.Post("/verify-email/start", middleware.AuthMiddleware(&cfg.JWT), authHandler.SendEmailVerification)
-	authRoutes.Post("/register/admin", middleware.AuthMiddleware(&cfg.JWT), middleware.AdminOnly(), middleware.TenantContext(), authHandler.RegisterAdmin)
-
-	// Mobile OTP + Google sign-in. `otp/send` and `otp/verify` are public so
-	// brand-new users can establish accounts; `link/*` require a bearer token
-	// because they mutate an existing identity.
-	authRoutes.Post("/otp/send", middleware.PublicLookupContext(), authHandler.SendOtp)
-	authRoutes.Post("/otp/verify", middleware.PublicLookupContext(), authHandler.VerifyOtp)
+	authRoutes.Post("/otp/send", middleware.PublicLookupContext(), authHandler.SendOTP)
+	authRoutes.Post("/otp/verify", middleware.PublicLookupContext(), authHandler.VerifyOTP)
 	authRoutes.Post("/google", middleware.PublicLookupContext(), authHandler.GoogleSignIn)
+	authRoutes.Post("/refresh", authHandler.Refresh)
+	authRoutes.Post("/logout", middleware.AuthMiddleware(&cfg.JWT), authHandler.Logout)
+	authRoutes.Post("/switch-org", middleware.AuthMiddleware(&cfg.JWT), authHandler.SwitchOrg)
+	authRoutes.Get("/me", middleware.AuthMiddleware(&cfg.JWT), authHandler.Me)
 	authRoutes.Post("/link/phone", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), authHandler.LinkPhone)
 	authRoutes.Post("/link/google", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), authHandler.LinkGoogle)
 
@@ -689,7 +674,7 @@ func main() {
 	userRoutes.Get("/profile", userHandler.GetProfile)
 	userRoutes.Put("/profile", userHandler.UpdateProfile)
 	userRoutes.Post("/me/onboarding", userHandler.CompleteOnboarding)
-	userRoutes.Get("/", middleware.AdminOnly(), userHandler.ListUsers)
+	userRoutes.Get("/", middleware.AdminOnly(), userHandler.ListMembers)
 
 	// Streaming (existing)
 	streams := api.Group("/streams")
