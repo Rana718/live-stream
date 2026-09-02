@@ -17,32 +17,8 @@ type Handler struct {
 
 func NewHandler(s *Service) *Handler { return &Handler{service: s} }
 
-func courseToMap(c *db.Course) fiber.Map {
-	return fiber.Map{
-		"id":               utils.UUIDFromPg(c.ID),
-		"exam_category_id": utils.UUIDFromPg(c.ExamCategoryID),
-		"title":            c.Title,
-		"slug":             c.Slug,
-		"description":      utils.TextFromPg(c.Description),
-		"thumbnail_url":    utils.TextFromPg(c.ThumbnailUrl),
-		"price":            utils.NumericToFloat(c.Price),
-		"discounted_price": utils.NumericToFloat(c.DiscountedPrice),
-		"duration_months":  utils.Int4FromPg(c.DurationMonths),
-		"language":         utils.TextFromPg(c.Language),
-		"level":            utils.TextFromPg(c.Level),
-		"is_free":          utils.BoolFromPg(c.IsFree),
-		"is_published":     utils.BoolFromPg(c.IsPublished),
-		"class_level":      utils.TextFromPg(c.ClassLevel),
-		"exam_goal":        utils.TextFromPg(c.ExamGoal),
-		"created_by":       utils.UUIDFromPg(c.CreatedBy),
-		"created_at":       c.CreatedAt,
-		"updated_at":       c.UpdatedAt,
-	}
-}
-
 func parsePagination(c fiber.Ctx) (int32, int32) {
-	limit := int32(20)
-	offset := int32(0)
+	limit, offset := int32(20), int32(0)
 	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 100 {
 		limit = int32(l)
 	}
@@ -52,72 +28,83 @@ func parsePagination(c fiber.Ctx) (int32, int32) {
 	return limit, offset
 }
 
-// ListCourses godoc
-// @Summary List published courses
-// @Tags courses
-// @Param limit query int false "Page size"
-// @Param offset query int false "Offset"
-// @Param exam_category query string false "Exam category UUID"
-// @Param language query string false "Language code"
-// @Param q query string false "Search query"
-// @Success 200 {array} map[string]interface{}
-// @Router /courses [get]
+// fullView renders a GetCourseRow with legacy-compatible keys (description,
+// is_published) so the current frontend keeps working during the migration.
+func fullView(c db.GetCourseRow) fiber.Map {
+	return fiber.Map{
+		"id":                 utils.UUIDFromPg(c.ID),
+		"tenant_id":          utils.UUIDFromPg(c.TenantID),
+		"exam_category_id":   utils.UUIDFromPg(c.ExamCategoryID),
+		"title":              c.Title,
+		"slug":               c.Slug,
+		"summary":            utils.TextFromPg(c.Summary),
+		"description":        utils.TextFromPg(c.Summary),
+		"description_rich":   json(c.DescriptionRich),
+		"thumbnail_url":      utils.TextFromPg(c.ThumbnailUrl),
+		"promo_video_url":    utils.TextFromPg(c.PromoVideoUrl),
+		"language":           c.Language,
+		"level":              c.Level,
+		"class_level":        utils.TextFromPg(c.ClassLevel),
+		"exam_goal":          utils.TextFromPg(c.ExamGoal),
+		"status":             string(c.Status),
+		"is_published":       c.Status == db.PublishStatusPublished,
+		"approval_status":    c.ApprovalStatus,
+		"hsn_sac":            utils.TextFromPg(c.HsnSac),
+		"tax_rate_bps":       c.TaxRateBps,
+		"refund_window_days": c.RefundWindowDays,
+		"created_by":         utils.UUIDFromPg(c.CreatedBy),
+		"created_at":         c.CreatedAt.Time,
+		"updated_at":         c.UpdatedAt.Time,
+	}
+}
+
+func json(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
+}
+
+// List — GET /courses. Published catalogue for the caller's tenant.
 func (h *Handler) List(c fiber.Ctx) error {
 	limit, offset := parsePagination(c)
+	tenantID := middleware.CurrentTenantID(c)
 
 	if q := c.Query("q"); q != "" {
-		out, err := h.service.Search(c.Context(), q, limit, offset)
+		rows, err := h.service.Search(c.Context(), tenantID, q, limit, offset)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 		}
-		return renderCourseList(c, out)
-	}
-	if ec := c.Query("exam_category"); ec != "" {
-		ecID, err := uuid.Parse(ec)
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid exam_category"})
+		out := make([]fiber.Map, len(rows))
+		for i, r := range rows {
+			out[i] = fiber.Map{
+				"id": utils.UUIDFromPg(r.ID), "title": r.Title, "slug": r.Slug,
+				"summary": utils.TextFromPg(r.Summary), "description": utils.TextFromPg(r.Summary),
+				"thumbnail_url": utils.TextFromPg(r.ThumbnailUrl),
+			}
 		}
-		out, err := h.service.ListByExamCategory(c.Context(), ecID, limit, offset)
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-		}
-		return renderCourseList(c, out)
+		return c.JSON(out)
 	}
-	if lang := c.Query("language"); lang != "" {
-		out, err := h.service.ListByLanguage(c.Context(), lang, limit, offset)
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-		}
-		return renderCourseList(c, out)
-	}
-	classLevel := c.Query("class_level")
-	examGoal := c.Query("exam_goal")
-	if classLevel != "" || examGoal != "" {
-		out, err := h.service.ListForLearner(c.Context(), classLevel, examGoal, limit, offset)
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-		}
-		return renderCourseList(c, out)
-	}
-	out, err := h.service.ListPublished(c.Context(), limit, offset)
+
+	rows, err := h.service.ListPublished(c.Context(), tenantID, limit, offset)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	return renderCourseList(c, out)
-}
-
-func renderCourseList(c fiber.Ctx, rows []db.Course) error {
 	out := make([]fiber.Map, len(rows))
-	for i := range rows {
-		out[i] = courseToMap(&rows[i])
+	for i, r := range rows {
+		out[i] = fiber.Map{
+			"id": utils.UUIDFromPg(r.ID), "title": r.Title, "slug": r.Slug,
+			"summary": utils.TextFromPg(r.Summary), "description": utils.TextFromPg(r.Summary),
+			"thumbnail_url": utils.TextFromPg(r.ThumbnailUrl),
+			"language":      r.Language, "level": r.Level,
+			"class_level": utils.TextFromPg(r.ClassLevel), "exam_goal": utils.TextFromPg(r.ExamGoal),
+			"is_published": true,
+		}
 	}
 	return c.JSON(out)
 }
 
-// GetCourse godoc
-// @Summary Get a course by id or slug
-// @Tags courses
-// @Router /courses/{id} [get]
+// Get — GET /courses/:id  (id or slug)
 func (h *Handler) Get(c fiber.Ctx) error {
 	idParam := c.Params("id")
 	if id, err := uuid.Parse(idParam); err == nil {
@@ -125,23 +112,22 @@ func (h *Handler) Get(c fiber.Ctx) error {
 		if err != nil {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found"})
 		}
-		return c.JSON(courseToMap(course))
+		return c.JSON(fullView(course))
 	}
-	course, err := h.service.GetBySlug(c.Context(), idParam)
+	row, err := h.service.GetBySlug(c.Context(), middleware.CurrentTenantID(c), idParam)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found"})
 	}
-	return c.JSON(courseToMap(course))
+	// GetCourseBySlugRow is a subset; re-fetch full by id for a consistent shape.
+	course, err := h.service.Get(c.Context(), uuid.UUID(row.ID.Bytes))
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found"})
+	}
+	return c.JSON(fullView(course))
 }
 
-// CreateCourse godoc
-// @Summary Create a course (instructor/admin)
-// @Tags courses
-// @Security BearerAuth
-// @Router /courses [post]
+// Create — POST /courses  (instructor/admin)
 func (h *Handler) Create(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
-	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	var req CreateCourseRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -149,18 +135,14 @@ func (h *Handler) Create(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	course, err := h.service.Create(c.Context(), tenantID, userID, req)
+	row, err := h.service.Create(c.Context(), middleware.CurrentTenantID(c), middleware.CurrentUserID(c), req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.Status(fiber.StatusCreated).JSON(courseToMap(course))
+	return c.Status(fiber.StatusCreated).JSON(row)
 }
 
-// UpdateCourse godoc
-// @Summary Update a course (instructor/admin)
-// @Tags courses
-// @Security BearerAuth
-// @Router /courses/{id} [put]
+// Update — PUT /courses/:id
 func (h *Handler) Update(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
@@ -170,18 +152,37 @@ func (h *Handler) Update(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
-	course, err := h.service.Update(c.Context(), id, req)
+	row, err := h.service.Update(c.Context(), id, req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(courseToMap(course))
+	if req.Description != "" || req.Summary != "" {
+		// no-op: summary handled in Update
+	}
+	// honour an is_published toggle if the client sent one
+	if v := c.Query("publish"); v == "true" || v == "false" {
+		_ = h.service.SetPublished(c.Context(), id, v == "true")
+	}
+	return c.JSON(row)
 }
 
-// DeleteCourse godoc
-// @Summary Delete a course (admin)
-// @Tags courses
-// @Security BearerAuth
-// @Router /courses/{id} [delete]
+// SetPublished — PATCH /courses/:id/publish  { is_published: bool }
+func (h *Handler) SetPublished(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	var body struct {
+		IsPublished bool `json:"is_published"`
+	}
+	_ = c.Bind().JSON(&body)
+	if err := h.service.SetPublished(c.Context(), id, body.IsPublished); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"id": id, "is_published": body.IsPublished})
+}
+
+// Delete — DELETE /courses/:id  (admin, soft)
 func (h *Handler) Delete(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
