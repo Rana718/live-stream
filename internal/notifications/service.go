@@ -1,3 +1,6 @@
+// Package notifications — schema-v2. notifications.type → template_key,
+// resource_* → entity_*, is_read → read_at (timestamptz). Announcements
+// fan out into per-user notification rows via the FanOut* queries.
 package notifications
 
 import (
@@ -8,6 +11,7 @@ import (
 	"live-platform/internal/utils"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -15,38 +19,36 @@ type Service struct{ q *db.Queries }
 
 func NewService(pool *pgxpool.Pool) *Service { return &Service{q: db.New(pool)} }
 
-// Create inserts a notification targeting a single user.
-// Callers use this from other services (e.g., tests after grading, attendance low alert).
-func (s *Service) Create(ctx context.Context, userID uuid.UUID, notifType, title, body, resourceType string, resourceID *uuid.UUID) (*db.Notification, error) {
-	n, err := s.q.CreateNotification(ctx, db.CreateNotificationParams{
-		UserID:       utils.UUIDToPg(userID),
-		Type:         notifType,
-		Title:        title,
-		Body:         utils.TextToPg(body),
-		ResourceType: utils.TextToPg(resourceType),
-		ResourceID:   utils.UUIDPtrToPg(resourceID),
-	})
-	if err != nil {
-		return nil, err
+func ntext(s string) pgtype.Text {
+	if s == "" {
+		return pgtype.Text{}
 	}
-	return &n, nil
+	return pgtype.Text{String: s, Valid: true}
 }
 
-func (s *Service) ListMine(ctx context.Context, userID uuid.UUID, limit, offset int32) ([]db.Notification, error) {
-	return s.q.ListMyNotifications(ctx, db.ListMyNotificationsParams{
-		UserID: utils.UUIDToPg(userID),
-		Limit:  limit, Offset: offset,
+func (s *Service) Create(ctx context.Context, tenantID, userID uuid.UUID, templateKey, title, body, entityType string, entityID *uuid.UUID) (db.CreateNotificationRow, error) {
+	return s.q.CreateNotification(ctx, db.CreateNotificationParams{
+		TenantID:    utils.UUIDToPg(tenantID),
+		UserID:      utils.UUIDToPg(userID),
+		TemplateKey: templateKey,
+		Title:       title,
+		Body:        ntext(body),
+		EntityType:  ntext(entityType),
+		EntityID:    utils.UUIDPtrToPg(entityID),
 	})
 }
 
-func (s *Service) ListMyUnread(ctx context.Context, userID uuid.UUID, limit int32) ([]db.Notification, error) {
-	return s.q.ListMyUnreadNotifications(ctx, db.ListMyUnreadNotificationsParams{
-		UserID: utils.UUIDToPg(userID), Limit: limit,
+func (s *Service) ListMine(ctx context.Context, tenantID, userID uuid.UUID, limit, offset int32) ([]db.ListNotificationsRow, error) {
+	return s.q.ListNotifications(ctx, db.ListNotificationsParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID),
+		Limit: limit, Offset: offset,
 	})
 }
 
-func (s *Service) UnreadCount(ctx context.Context, userID uuid.UUID) (int64, error) {
-	return s.q.CountMyUnread(ctx, utils.UUIDToPg(userID))
+func (s *Service) UnreadCount(ctx context.Context, tenantID, userID uuid.UUID) (int64, error) {
+	return s.q.CountUnreadNotifications(ctx, db.CountUnreadNotificationsParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID),
+	})
 }
 
 func (s *Service) MarkRead(ctx context.Context, id, userID uuid.UUID) error {
@@ -55,8 +57,10 @@ func (s *Service) MarkRead(ctx context.Context, id, userID uuid.UUID) error {
 	})
 }
 
-func (s *Service) MarkAllRead(ctx context.Context, userID uuid.UUID) error {
-	return s.q.MarkAllMyNotificationsRead(ctx, utils.UUIDToPg(userID))
+func (s *Service) MarkAllRead(ctx context.Context, tenantID, userID uuid.UUID) error {
+	return s.q.MarkAllNotificationsRead(ctx, db.MarkAllNotificationsReadParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID),
+	})
 }
 
 func (s *Service) Delete(ctx context.Context, id, userID uuid.UUID) error {
@@ -65,7 +69,7 @@ func (s *Service) Delete(ctx context.Context, id, userID uuid.UUID) error {
 	})
 }
 
-// --- Announcements ---
+// ── announcements ───────────────────────────────────────────────────
 
 type CreateAnnouncementRequest struct {
 	BatchID   *uuid.UUID `json:"batch_id"`
@@ -77,58 +81,60 @@ type CreateAnnouncementRequest struct {
 	FanOut    bool       `json:"fan_out"`
 }
 
-func (s *Service) CreateAnnouncement(ctx context.Context, tenantID, creatorID uuid.UUID, req CreateAnnouncementRequest) (*db.Announcement, error) {
+func (s *Service) CreateAnnouncement(ctx context.Context, tenantID, creatorID uuid.UUID, req CreateAnnouncementRequest) (db.CreateAnnouncementRow, error) {
 	if req.Priority == "" {
 		req.Priority = "normal"
 	}
+	exp := pgtype.Timestamptz{}
+	if req.ExpiresAt != nil {
+		exp = pgtype.Timestamptz{Time: *req.ExpiresAt, Valid: true}
+	}
 	a, err := s.q.CreateAnnouncement(ctx, db.CreateAnnouncementParams{
-		BatchID:   utils.UUIDPtrToPg(req.BatchID),
-		CourseID:  utils.UUIDPtrToPg(req.CourseID),
+		TenantID:  utils.UUIDToPg(tenantID),
 		CreatedBy: utils.UUIDToPg(creatorID),
+		CourseID:  utils.UUIDPtrToPg(req.CourseID),
+		BatchID:   utils.UUIDPtrToPg(req.BatchID),
 		Title:     req.Title,
 		Body:      req.Body,
-		Priority:  utils.TextToPg(req.Priority),
-		ExpiresAt: utils.TimestampPtrToPg(req.ExpiresAt),
-		TenantID:  utils.UUIDToPg(tenantID),
+		Priority:  ntext(req.Priority),
+		ExpiresAt: exp,
 	})
 	if err != nil {
-		return nil, err
+		return db.CreateAnnouncementRow{}, err
 	}
 	if req.FanOut {
-		if req.BatchID != nil {
-			_ = s.q.FanOutToBatchEnrollees(ctx, db.FanOutToBatchEnrolleesParams{
-				Type:       "announcement",
-				Title:      req.Title,
-				Body:       utils.TextToPg(req.Body),
-				ResourceID: a.ID,
-				BatchID:    utils.UUIDToPg(*req.BatchID),
-			})
-		} else if req.CourseID != nil {
-			_ = s.q.FanOutToCourseEnrollees(ctx, db.FanOutToCourseEnrolleesParams{
-				Type:       "announcement",
-				Title:      req.Title,
-				Body:       utils.TextToPg(req.Body),
-				ResourceID: a.ID,
-				CourseID:   utils.UUIDToPg(*req.CourseID),
-			})
-		}
+		s.fanOut(ctx, tenantID, req.BatchID, req.CourseID, "announcement", req.Title, req.Body, uuid.UUID(a.ID.Bytes))
 	}
-	return &a, nil
+	return a, nil
 }
 
-func (s *Service) ListGlobalAnnouncements(ctx context.Context, limit, offset int32) ([]db.Announcement, error) {
-	return s.q.ListAnnouncementsGlobal(ctx, db.ListAnnouncementsGlobalParams{Limit: limit, Offset: offset})
+func (s *Service) fanOut(ctx context.Context, tenantID uuid.UUID, batchID, courseID *uuid.UUID, tmpl, title, body string, entityID uuid.UUID) {
+	eid := utils.UUIDToPg(entityID)
+	switch {
+	case batchID != nil:
+		_ = s.q.FanOutToBatchEnrollees(ctx, db.FanOutToBatchEnrolleesParams{
+			TenantID: utils.UUIDToPg(tenantID), TemplateKey: tmpl, Title: title,
+			Body: ntext(body), EntityID: eid, BatchID: utils.UUIDToPg(*batchID),
+		})
+	case courseID != nil:
+		_ = s.q.FanOutToCourseEnrollees(ctx, db.FanOutToCourseEnrolleesParams{
+			TenantID: utils.UUIDToPg(tenantID), TemplateKey: tmpl, Title: title,
+			Body: ntext(body), EntityID: eid, CourseID: utils.UUIDToPg(*courseID),
+		})
+	default:
+		_ = s.q.FanOutToAllTenantStudents(ctx, db.FanOutToAllTenantStudentsParams{
+			TenantID: utils.UUIDToPg(tenantID), TemplateKey: tmpl, Title: title,
+			Body: ntext(body), EntityID: eid,
+		})
+	}
 }
 
-func (s *Service) ListBatchAnnouncements(ctx context.Context, batchID uuid.UUID, limit, offset int32) ([]db.Announcement, error) {
-	return s.q.ListAnnouncementsByBatch(ctx, db.ListAnnouncementsByBatchParams{
-		BatchID: utils.UUIDToPg(batchID), Limit: limit, Offset: offset,
-	})
-}
-
-func (s *Service) ListCourseAnnouncements(ctx context.Context, courseID uuid.UUID, limit, offset int32) ([]db.Announcement, error) {
-	return s.q.ListAnnouncementsByCourse(ctx, db.ListAnnouncementsByCourseParams{
-		CourseID: utils.UUIDToPg(courseID), Limit: limit, Offset: offset,
+func (s *Service) ListAnnouncements(ctx context.Context, tenantID uuid.UUID, courseID, batchID *uuid.UUID, limit, offset int32) ([]db.ListAnnouncementsRow, error) {
+	return s.q.ListAnnouncements(ctx, db.ListAnnouncementsParams{
+		TenantID: utils.UUIDToPg(tenantID),
+		CourseID: utils.UUIDPtrToPg(courseID),
+		BatchID:  utils.UUIDPtrToPg(batchID),
+		Limit:    limit, Offset: offset,
 	})
 }
 

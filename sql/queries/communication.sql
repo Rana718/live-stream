@@ -118,3 +118,23 @@ UPDATE messaging_threads SET unread_count = 0 WHERE id = $1;
 -- name: ListMessagingMessages :many
 SELECT id, direction, body, status, created_at
 FROM messaging_messages WHERE thread_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
+
+-- ─────────────────────────────────────────── notification fan-out (broadcasts)
+
+-- name: FanOutToCourseEnrollees :exec
+INSERT INTO notifications (tenant_id, user_id, template_key, title, body, entity_type, entity_id)
+SELECT $1, e.user_id, $2, $3, sqlc.narg(body)::text, 'announcement', sqlc.narg(entity_id)::uuid
+FROM enrollments e
+WHERE e.tenant_id = $1 AND e.course_id = sqlc.arg(course_id)::uuid;
+
+-- name: FanOutToBatchEnrollees :exec
+INSERT INTO notifications (tenant_id, user_id, template_key, title, body, entity_type, entity_id)
+SELECT $1, e.user_id, $2, $3, sqlc.narg(body)::text, 'announcement', sqlc.narg(entity_id)::uuid
+FROM enrollments e
+WHERE e.tenant_id = $1 AND e.batch_id = sqlc.arg(batch_id)::uuid;
+
+-- name: FanOutToAllTenantStudents :exec
+INSERT INTO notifications (tenant_id, user_id, template_key, title, body, entity_type, entity_id)
+SELECT $1, tu.user_id, $2, $3, sqlc.narg(body)::text, 'announcement', sqlc.narg(entity_id)::uuid
+FROM tenant_users tu
+WHERE tu.tenant_id = $1 AND tu.role = 'student' AND tu.deleted_at IS NULL;

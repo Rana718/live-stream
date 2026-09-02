@@ -3,49 +3,27 @@ package notifications
 import (
 	"strconv"
 
-	"live-platform/internal/database/db"
 	"live-platform/internal/middleware"
 	"live-platform/internal/utils"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Handler struct{ service *Service }
 
 func NewHandler(s *Service) *Handler { return &Handler{service: s} }
 
-func notifToMap(n *db.Notification) fiber.Map {
-	return fiber.Map{
-		"id":            utils.UUIDFromPg(n.ID),
-		"type":          n.Type,
-		"title":         n.Title,
-		"body":          utils.TextFromPg(n.Body),
-		"resource_type": utils.TextFromPg(n.ResourceType),
-		"resource_id":   utils.UUIDFromPg(n.ResourceID),
-		"is_read":       utils.BoolFromPg(n.IsRead),
-		"created_at":    n.CreatedAt,
-		"read_at":       n.ReadAt,
+func tv(t pgtype.Timestamptz) any {
+	if !t.Valid {
+		return nil
 	}
-}
-
-func announcementToMap(a *db.Announcement) fiber.Map {
-	return fiber.Map{
-		"id":           utils.UUIDFromPg(a.ID),
-		"batch_id":     utils.UUIDFromPg(a.BatchID),
-		"course_id":    utils.UUIDFromPg(a.CourseID),
-		"created_by":   utils.UUIDFromPg(a.CreatedBy),
-		"title":        a.Title,
-		"body":         a.Body,
-		"priority":     utils.TextFromPg(a.Priority),
-		"published_at": a.PublishedAt,
-		"expires_at":   a.ExpiresAt,
-	}
+	return t.Time
 }
 
 func parsePagination(c fiber.Ctx) (int32, int32) {
-	limit := int32(20)
-	offset := int32(0)
+	limit, offset := int32(30), int32(0)
 	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 100 {
 		limit = int32(l)
 	}
@@ -55,96 +33,83 @@ func parsePagination(c fiber.Ctx) (int32, int32) {
 	return limit, offset
 }
 
-// ListMine godoc
-// @Summary List my notifications
-// @Tags notifications
-// @Security BearerAuth
-// @Router /notifications [get]
+func (h *Handler) tenant(c fiber.Ctx) uuid.UUID { return middleware.CurrentTenantID(c) }
+func (h *Handler) user(c fiber.Ctx) uuid.UUID   { return middleware.CurrentUserID(c) }
+
+// ListMine — GET /notifications
 func (h *Handler) ListMine(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
 	limit, offset := parsePagination(c)
-	rows, err := h.service.ListMine(c.Context(), userID, limit, offset)
+	rows, err := h.service.ListMine(c.Context(), h.tenant(c), h.user(c), limit, offset)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	out := make([]fiber.Map, len(rows))
-	for i := range rows {
-		out[i] = notifToMap(&rows[i])
+	for i, n := range rows {
+		out[i] = fiber.Map{
+			"id":            utils.UUIDFromPg(n.ID),
+			"type":          n.TemplateKey,
+			"template_key":  n.TemplateKey,
+			"title":         n.Title,
+			"body":          utils.TextFromPg(n.Body),
+			"entity_type":   utils.TextFromPg(n.EntityType),
+			"resource_type": utils.TextFromPg(n.EntityType),
+			"entity_id":     utils.UUIDFromPg(n.EntityID),
+			"resource_id":   utils.UUIDFromPg(n.EntityID),
+			"is_read":       n.ReadAt.Valid,
+			"read_at":       tv(n.ReadAt),
+			"created_at":    tv(n.CreatedAt),
+		}
 	}
 	return c.JSON(out)
 }
 
-// UnreadCount godoc
-// @Summary Count of my unread notifications
-// @Tags notifications
-// @Security BearerAuth
-// @Router /notifications/unread-count [get]
+// UnreadCount — GET /notifications/unread-count
 func (h *Handler) UnreadCount(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
-	n, err := h.service.UnreadCount(c.Context(), userID)
+	n, err := h.service.UnreadCount(c.Context(), h.tenant(c), h.user(c))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"unread": n})
 }
 
-// MarkRead godoc
-// @Summary Mark a notification read
-// @Tags notifications
-// @Security BearerAuth
-// @Router /notifications/{id}/read [post]
+// MarkRead — POST /notifications/:id/read
 func (h *Handler) MarkRead(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
 	}
-	if err := h.service.MarkRead(c.Context(), id, userID); err != nil {
+	if err := h.service.MarkRead(c.Context(), id, h.user(c)); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"message": "ok"})
 }
 
-// MarkAllRead godoc
-// @Summary Mark all my notifications read
-// @Tags notifications
-// @Security BearerAuth
-// @Router /notifications/read-all [post]
+// MarkAllRead — POST /notifications/read-all
 func (h *Handler) MarkAllRead(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
-	if err := h.service.MarkAllRead(c.Context(), userID); err != nil {
+	if err := h.service.MarkAllRead(c.Context(), h.tenant(c), h.user(c)); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"message": "ok"})
 }
 
-// Delete godoc
-// @Summary Delete a notification
-// @Tags notifications
-// @Security BearerAuth
-// @Router /notifications/{id} [delete]
+// Delete — DELETE /notifications/:id
 func (h *Handler) Delete(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
 	}
-	if err := h.service.Delete(c.Context(), id, userID); err != nil {
+	if err := h.service.Delete(c.Context(), id, h.user(c)); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"message": "deleted"})
 }
 
-// AdminSend godoc
-// @Summary Admin: push a notification to a specific user
-// @Tags notifications
-// @Security BearerAuth
-// @Router /admin/notifications/send [post]
+// AdminSend — POST /admin/notifications/send
 func (h *Handler) AdminSend(c fiber.Ctx) error {
 	var req struct {
-		UserID       uuid.UUID  `json:"user_id" validate:"required"`
-		Type         string     `json:"type" validate:"required"`
-		Title        string     `json:"title" validate:"required"`
+		UserID       uuid.UUID  `json:"user_id"`
+		Type         string     `json:"type"`
+		Title        string     `json:"title"`
 		Body         string     `json:"body"`
 		ResourceType string     `json:"resource_type"`
 		ResourceID   *uuid.UUID `json:"resource_id"`
@@ -152,24 +117,21 @@ func (h *Handler) AdminSend(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
-	if err := middleware.ValidateStruct(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	if req.UserID == uuid.Nil || req.Title == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "user_id and title required"})
 	}
-	n, err := h.service.Create(c.Context(), req.UserID, req.Type, req.Title, req.Body, req.ResourceType, req.ResourceID)
+	if req.Type == "" {
+		req.Type = "admin"
+	}
+	n, err := h.service.Create(c.Context(), h.tenant(c), req.UserID, req.Type, req.Title, req.Body, req.ResourceType, req.ResourceID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.Status(fiber.StatusCreated).JSON(notifToMap(n))
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"id": utils.UUIDFromPg(n.ID)})
 }
 
-// CreateAnnouncement godoc
-// @Summary Create a (possibly fan-out) announcement (instructor/admin)
-// @Tags announcements
-// @Security BearerAuth
-// @Router /announcements [post]
+// CreateAnnouncement — POST /announcements
 func (h *Handler) CreateAnnouncement(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
-	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	var req CreateAnnouncementRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -177,67 +139,59 @@ func (h *Handler) CreateAnnouncement(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	a, err := h.service.CreateAnnouncement(c.Context(), tenantID, userID, req)
+	a, err := h.service.CreateAnnouncement(c.Context(), h.tenant(c), h.user(c), req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.Status(fiber.StatusCreated).JSON(announcementToMap(a))
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"id": utils.UUIDFromPg(a.ID), "title": a.Title, "body": a.Body, "priority": a.Priority,
+	})
 }
 
-// ListGlobal godoc
-// @Summary List global announcements
-// @Tags announcements
-// @Router /announcements [get]
-func (h *Handler) ListGlobal(c fiber.Ctx) error {
+func (h *Handler) listAnnouncements(c fiber.Ctx, courseID, batchID *uuid.UUID) error {
 	limit, offset := parsePagination(c)
-	rows, err := h.service.ListGlobalAnnouncements(c.Context(), limit, offset)
-	return renderAnnouncements(c, rows, err)
-}
-
-// ListBatch godoc
-// @Summary List announcements for a batch
-// @Tags announcements
-// @Router /announcements/batch/{batch_id} [get]
-func (h *Handler) ListBatch(c fiber.Ctx) error {
-	batchID, err := uuid.Parse(c.Params("batch_id"))
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid batch id"})
-	}
-	limit, offset := parsePagination(c)
-	rows, err := h.service.ListBatchAnnouncements(c.Context(), batchID, limit, offset)
-	return renderAnnouncements(c, rows, err)
-}
-
-// ListCourse godoc
-// @Summary List announcements for a course
-// @Tags announcements
-// @Router /announcements/course/{course_id} [get]
-func (h *Handler) ListCourse(c fiber.Ctx) error {
-	courseID, err := uuid.Parse(c.Params("course_id"))
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course id"})
-	}
-	limit, offset := parsePagination(c)
-	rows, err := h.service.ListCourseAnnouncements(c.Context(), courseID, limit, offset)
-	return renderAnnouncements(c, rows, err)
-}
-
-func renderAnnouncements(c fiber.Ctx, rows []db.Announcement, err error) error {
+	rows, err := h.service.ListAnnouncements(c.Context(), h.tenant(c), courseID, batchID, limit, offset)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	out := make([]fiber.Map, len(rows))
-	for i := range rows {
-		out[i] = announcementToMap(&rows[i])
+	for i, a := range rows {
+		out[i] = fiber.Map{
+			"id":           utils.UUIDFromPg(a.ID),
+			"course_id":    utils.UUIDFromPg(a.CourseID),
+			"batch_id":     utils.UUIDFromPg(a.BatchID),
+			"title":        a.Title,
+			"body":         a.Body,
+			"priority":     a.Priority,
+			"published_at": tv(a.PublishedAt),
+			"expires_at":   tv(a.ExpiresAt),
+		}
 	}
 	return c.JSON(out)
 }
 
-// DeleteAnnouncement godoc
-// @Summary Delete an announcement (admin)
-// @Tags announcements
-// @Security BearerAuth
-// @Router /announcements/{id} [delete]
+// ListGlobal — GET /announcements
+func (h *Handler) ListGlobal(c fiber.Ctx) error { return h.listAnnouncements(c, nil, nil) }
+
+// ListBatch — GET /announcements/batch/:batch_id
+func (h *Handler) ListBatch(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("batch_id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid batch id"})
+	}
+	return h.listAnnouncements(c, nil, &id)
+}
+
+// ListCourse — GET /announcements/course/:course_id
+func (h *Handler) ListCourse(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("course_id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course id"})
+	}
+	return h.listAnnouncements(c, &id, nil)
+}
+
+// DeleteAnnouncement — DELETE /announcements/:id
 func (h *Handler) DeleteAnnouncement(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
