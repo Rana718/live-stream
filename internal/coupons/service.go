@@ -1,16 +1,6 @@
-// Package coupons issues + validates discount codes a tenant can apply to
-// course purchases, fee payments, and subscription checkouts.
-//
-// Validation rules (in order, all must pass):
-//   1. Coupon exists, belongs to the tenant, is_active = true.
-//   2. now() between starts_at and ends_at.
-//   3. amount >= min_amount.
-//   4. usage_limit not yet reached (used_count < limit).
-//   5. scope == 'all' OR (scope == 'course' AND coupon_courses includes the
-//      course) OR (scope == 'subscription' AND a plan_id is supplied).
-//   6. The user hasn't redeemed THIS coupon before (per-user-once policy).
-//
-// Discount calculation: percent caps at max_discount when set.
+// Package coupons — schema-v2. coupons.type (percent|flat), percent_bps /
+// value_minor / max_discount_minor / min_order_minor, per_user_limit,
+// applies_to (all|products|categories). Product scoping via coupon_products.
 package coupons
 
 import (
@@ -20,6 +10,7 @@ import (
 	"time"
 
 	"live-platform/internal/database/db"
+	"live-platform/internal/utils"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -32,191 +23,197 @@ type Service struct {
 
 func NewService(pool *pgxpool.Pool) *Service { return &Service{q: db.New(pool)} }
 
-type CreateInput struct {
-	Code          string     `json:"code" validate:"required,min=4,max=40"`
-	DiscountType  string     `json:"discount_type" validate:"required,oneof=percent flat"`
-	DiscountValue int        `json:"discount_value" validate:"required,min=1"`
-	MaxDiscount   *int       `json:"max_discount"`
-	Scope         string     `json:"scope" validate:"required,oneof=all course subscription"`
-	MinAmount     int        `json:"min_amount"`
-	StartsAt      *time.Time `json:"starts_at"`
-	EndsAt        *time.Time `json:"ends_at"`
-	UsageLimit    *int       `json:"usage_limit"`
-	CourseIDs     []uuid.UUID `json:"course_ids"`
+func ntext(s string) pgtype.Text {
+	if s == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: s, Valid: true}
 }
 
-func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, in CreateInput) (*db.Coupon, error) {
-	starts := time.Now().UTC()
-	if in.StartsAt != nil {
-		starts = *in.StartsAt
+type CreateInput struct {
+	Code          string      `json:"code" validate:"required,min=4,max=40"`
+	DiscountType  string      `json:"discount_type" validate:"required,oneof=percent flat"`
+	DiscountValue int         `json:"discount_value" validate:"required,min=1"`
+	MaxDiscount   *int        `json:"max_discount"` // paise
+	Scope         string      `json:"scope"`
+	MinAmount     int         `json:"min_amount"` // paise
+	StartsAt      *time.Time  `json:"starts_at"`
+	EndsAt        *time.Time  `json:"ends_at"`
+	UsageLimit    *int        `json:"usage_limit"`
+	PerUserLimit  *int        `json:"per_user_limit"`
+	ProductIDs    []uuid.UUID `json:"product_ids"`
+	CourseIDs     []uuid.UUID `json:"course_ids"` // resolved to products
+}
+
+func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, in CreateInput) (db.CreateCouponRow, error) {
+	scope := in.Scope
+	if scope == "" || scope == "course" || scope == "subscription" {
+		scope = "all"
 	}
-	var ends pgtype.Timestamptz
-	if in.EndsAt != nil {
-		ends = pgtype.Timestamptz{Time: *in.EndsAt, Valid: true}
+	if len(in.ProductIDs) > 0 || len(in.CourseIDs) > 0 {
+		scope = "products"
 	}
-	maxDisc := pgtype.Int4{}
+
+	var percentBps, valueMinor pgtype.Int8
+	pbps := pgtype.Int4{}
+	if in.DiscountType == "percent" {
+		pbps = pgtype.Int4{Int32: int32(in.DiscountValue) * 100, Valid: true}
+	} else {
+		valueMinor = pgtype.Int8{Int64: int64(in.DiscountValue), Valid: true}
+	}
+	_ = percentBps
+
+	maxDisc := pgtype.Int8{}
 	if in.MaxDiscount != nil {
-		maxDisc = pgtype.Int4{Int32: int32(*in.MaxDiscount), Valid: true}
+		maxDisc = pgtype.Int8{Int64: int64(*in.MaxDiscount), Valid: true}
 	}
 	usage := pgtype.Int4{}
 	if in.UsageLimit != nil {
 		usage = pgtype.Int4{Int32: int32(*in.UsageLimit), Valid: true}
 	}
+	perUser := pgtype.Int4{Int32: 1, Valid: true}
+	if in.PerUserLimit != nil {
+		perUser = pgtype.Int4{Int32: int32(*in.PerUserLimit), Valid: true}
+	}
+	var ends pgtype.Timestamptz
+	if in.EndsAt != nil {
+		ends = pgtype.Timestamptz{Time: *in.EndsAt, Valid: true}
+	}
+	starts := pgtype.Timestamptz{}
+	if in.StartsAt != nil {
+		starts = pgtype.Timestamptz{Time: *in.StartsAt, Valid: true}
+	}
 
-	coupon, err := s.q.CreateCoupon(ctx, db.CreateCouponParams{
-		TenantID:      pgtype.UUID{Bytes: tenantID, Valid: true},
-		Code:          in.Code,
-		DiscountType:  in.DiscountType,
-		DiscountValue: int32(in.DiscountValue),
-		MaxDiscount:   maxDisc,
-		Scope:         in.Scope,
-		MinAmount:     int32(in.MinAmount),
-		StartsAt:      pgtype.Timestamptz{Time: starts, Valid: true},
-		EndsAt:        ends,
-		UsageLimit:    usage,
+	row, err := s.q.CreateCoupon(ctx, db.CreateCouponParams{
+		TenantID:         utils.UUIDToPg(tenantID),
+		Code:             strings.ToUpper(strings.TrimSpace(in.Code)),
+		Type:             db.CouponType(in.DiscountType),
+		PercentBps:       pbps,
+		ValueMinor:       valueMinor,
+		MaxDiscountMinor: maxDisc,
+		MinOrderMinor:    pgtype.Int8{Int64: int64(in.MinAmount), Valid: in.MinAmount > 0},
+		AppliesTo:        db.NullCouponScope{CouponScope: db.CouponScope(scope), Valid: true},
+		StartsAt:         starts,
+		EndsAt:           ends,
+		UsageLimit:       usage,
+		PerUserLimit:     perUser,
 	})
 	if err != nil {
-		return nil, err
+		return db.CreateCouponRow{}, err
 	}
-	for _, cid := range in.CourseIDs {
-		_ = s.q.AttachCouponToCourse(ctx, db.AttachCouponToCourseParams{
-			CouponID: coupon.ID,
-			CourseID: pgtype.UUID{Bytes: cid, Valid: true},
+	for _, pid := range in.ProductIDs {
+		_ = s.q.AttachCouponToProduct(ctx, db.AttachCouponToProductParams{
+			TenantID: utils.UUIDToPg(tenantID), CouponID: row.ID, ProductID: utils.UUIDToPg(pid),
 		})
 	}
-	return &coupon, nil
+	for _, cid := range in.CourseIDs {
+		if p, e := s.q.GetProductForCourse(ctx, utils.UUIDToPg(cid)); e == nil {
+			_ = s.q.AttachCouponToProduct(ctx, db.AttachCouponToProductParams{
+				TenantID: utils.UUIDToPg(tenantID), CouponID: row.ID, ProductID: p.ID,
+			})
+		}
+	}
+	return row, nil
 }
 
-func (s *Service) List(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]db.Coupon, error) {
+func (s *Service) List(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]db.ListCouponsRow, error) {
 	return s.q.ListCoupons(ctx, db.ListCouponsParams{
-		TenantID: pgtype.UUID{Bytes: tenantID, Valid: true},
-		Limit:    limit,
-		Offset:   offset,
+		TenantID: utils.UUIDToPg(tenantID), Limit: limit, Offset: offset,
 	})
 }
 
-func (s *Service) SetActive(ctx context.Context, id uuid.UUID, active bool) error {
+func (s *Service) SetActive(ctx context.Context, tenantID, id uuid.UUID, active bool) error {
 	return s.q.SetCouponActive(ctx, db.SetCouponActiveParams{
-		ID:       pgtype.UUID{Bytes: id, Valid: true},
-		IsActive: active,
+		ID: utils.UUIDToPg(id), TenantID: utils.UUIDToPg(tenantID), IsActive: active,
 	})
 }
 
-func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
-	return s.q.DeleteCoupon(ctx, pgtype.UUID{Bytes: id, Valid: true})
+func (s *Service) Delete(ctx context.Context, tenantID, id uuid.UUID) error {
+	return s.q.DeleteCoupon(ctx, db.DeleteCouponParams{
+		ID: utils.UUIDToPg(id), TenantID: utils.UUIDToPg(tenantID),
+	})
 }
 
-// ApplyResult is returned by Apply: the caller (course purchase / fees / etc.)
-// charges (amount - amount_off) to Razorpay.
+// ApplyResult — the caller charges (final_amount) to the gateway.
 type ApplyResult struct {
 	CouponID  uuid.UUID `json:"coupon_id"`
 	Code      string    `json:"code"`
-	AmountOff int       `json:"amount_off"`     // paise
-	Final     int       `json:"final_amount"`   // paise after discount
-	Message   string    `json:"message,omitempty"`
+	AmountOff int       `json:"amount_off"`
+	Final     int       `json:"final_amount"`
 }
 
-// Apply validates a code against an in-progress purchase. It does not
-// mark the coupon as redeemed — call Redeem after the payment is verified
-// so a failed checkout doesn't burn a single-use coupon.
 func (s *Service) Apply(ctx context.Context, tenantID, userID uuid.UUID, code string,
-	amountPaise int, courseID *uuid.UUID, isSubscription bool) (*ApplyResult, error) {
+	amountMinor int, courseID *uuid.UUID, isSubscription bool) (*ApplyResult, error) {
 
 	code = strings.ToUpper(strings.TrimSpace(code))
-	coupon, err := s.q.GetCouponByCode(ctx, db.GetCouponByCodeParams{
-		TenantID: pgtype.UUID{Bytes: tenantID, Valid: true},
-		Code:     code,
+	cp, err := s.q.GetCouponByCode(ctx, db.GetCouponByCodeParams{
+		TenantID: utils.UUIDToPg(tenantID), Code: code,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("invalid coupon")
 	}
 
 	now := time.Now().UTC()
-	if !coupon.IsActive || coupon.StartsAt.Time.After(now) {
+	if !cp.IsActive || cp.StartsAt.Time.After(now) {
 		return nil, fmt.Errorf("coupon not active yet")
 	}
-	if coupon.EndsAt.Valid && coupon.EndsAt.Time.Before(now) {
+	if cp.EndsAt.Valid && cp.EndsAt.Time.Before(now) {
 		return nil, fmt.Errorf("coupon expired")
 	}
-	if amountPaise < int(coupon.MinAmount) {
+	if int64(amountMinor) < cp.MinOrderMinor {
 		return nil, fmt.Errorf("minimum amount not met")
 	}
-	if coupon.UsageLimit.Valid && coupon.UsedCount >= coupon.UsageLimit.Int32 {
+	if cp.UsageLimit.Valid && cp.UsedCount >= cp.UsageLimit.Int32 {
 		return nil, fmt.Errorf("coupon exhausted")
 	}
 
-	switch coupon.Scope {
-	case "course":
-		if courseID == nil {
-			return nil, fmt.Errorf("coupon only applies on course purchase")
-		}
-		ids, _ := s.q.ListCouponCourses(ctx, coupon.ID)
-		ok := false
-		for _, id := range ids {
-			if uuid.UUID(id.Bytes) == *courseID {
-				ok = true
-				break
+	if string(cp.AppliesTo) == "products" && courseID != nil {
+		if p, e := s.q.GetProductForCourse(ctx, utils.UUIDToPg(*courseID)); e == nil {
+			ok, _ := s.q.CouponAllowsProduct(ctx, db.CouponAllowsProductParams{
+				CouponID: cp.ID, ProductID: p.ID,
+			})
+			if !ok.Bool {
+				return nil, fmt.Errorf("coupon doesn't apply to this course")
 			}
 		}
-		if !ok {
-			return nil, fmt.Errorf("coupon doesn't apply to this course")
-		}
-	case "subscription":
-		if !isSubscription {
-			return nil, fmt.Errorf("coupon only applies on subscription checkout")
-		}
 	}
 
-	// Per-user-once policy.
-	prior, _ := s.q.CountCouponRedemptionsByUser(ctx, db.CountCouponRedemptionsByUserParams{
-		CouponID: coupon.ID,
-		UserID:   pgtype.UUID{Bytes: userID, Valid: true},
+	prior, _ := s.q.CountUserCouponRedemptions(ctx, db.CountUserCouponRedemptionsParams{
+		CouponID: cp.ID, UserID: utils.UUIDToPg(userID),
 	})
-	if prior > 0 {
-		return nil, fmt.Errorf("already redeemed by this user")
+	if int(prior) >= int(cp.PerUserLimit) {
+		return nil, fmt.Errorf("redemption limit reached for this user")
 	}
 
-	// Compute discount.
 	off := 0
-	switch coupon.DiscountType {
+	switch string(cp.Type) {
 	case "percent":
-		off = amountPaise * int(coupon.DiscountValue) / 100
-		if coupon.MaxDiscount.Valid && off > int(coupon.MaxDiscount.Int32) {
-			off = int(coupon.MaxDiscount.Int32)
+		off = amountMinor * int(cp.PercentBps.Int32) / 10000
+		if cp.MaxDiscountMinor.Valid && int64(off) > cp.MaxDiscountMinor.Int64 {
+			off = int(cp.MaxDiscountMinor.Int64)
 		}
 	case "flat":
-		off = int(coupon.DiscountValue)
+		off = int(cp.ValueMinor.Int64)
 	}
-	if off > amountPaise {
-		off = amountPaise
+	if off > amountMinor {
+		off = amountMinor
 	}
 	return &ApplyResult{
-		CouponID:  uuid.UUID(coupon.ID.Bytes),
-		Code:      coupon.Code,
-		AmountOff: off,
-		Final:     amountPaise - off,
+		CouponID: uuid.UUID(cp.ID.Bytes), Code: cp.Code, AmountOff: off, Final: amountMinor - off,
 	}, nil
 }
 
-// Redeem records a successful redemption and increments usage. Call from
-// the payment-verify handler after the charge succeeds. amount_off should
-// match what Apply returned for this same checkout.
-func (s *Service) Redeem(ctx context.Context, tenantID, couponID, userID uuid.UUID,
-	paymentID *uuid.UUID, amountOff int) error {
-
-	pay := pgtype.UUID{}
-	if paymentID != nil {
-		pay = pgtype.UUID{Bytes: *paymentID, Valid: true}
-	}
+// Redeem records a redemption + bumps usage. Call after payment success.
+func (s *Service) Redeem(ctx context.Context, tenantID, couponID, userID uuid.UUID, orderID *uuid.UUID, amountOffMinor int) error {
 	_, err := s.q.RecordCouponRedemption(ctx, db.RecordCouponRedemptionParams{
-		TenantID:  pgtype.UUID{Bytes: tenantID, Valid: true},
-		CouponID:  pgtype.UUID{Bytes: couponID, Valid: true},
-		UserID:    pgtype.UUID{Bytes: userID, Valid: true},
-		PaymentID: pay,
-		AmountOff: int32(amountOff),
+		TenantID:       utils.UUIDToPg(tenantID),
+		CouponID:       utils.UUIDToPg(couponID),
+		UserID:         utils.UUIDToPg(userID),
+		OrderID:        utils.UUIDPtrToPg(orderID),
+		AmountOffMinor: int64(amountOffMinor),
 	})
 	if err != nil {
 		return err
 	}
-	return s.q.IncrementCouponUsage(ctx, pgtype.UUID{Bytes: couponID, Valid: true})
+	return s.q.IncrementCouponUsage(ctx, utils.UUIDToPg(couponID))
 }

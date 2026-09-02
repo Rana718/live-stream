@@ -71,6 +71,7 @@ func (h *Handler) AdminList(c fiber.Ctx) error {
 }
 
 func (h *Handler) AdminSetActive(c fiber.Ctx) error {
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
@@ -79,18 +80,19 @@ func (h *Handler) AdminSetActive(c fiber.Ctx) error {
 		IsActive bool `json:"is_active"`
 	}
 	_ = c.Bind().Body(&body)
-	if err := h.svc.SetActive(c.Context(), id, body.IsActive); err != nil {
+	if err := h.svc.SetActive(c.Context(), tenantID, id, body.IsActive); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"updated": true})
 }
 
 func (h *Handler) AdminDelete(c fiber.Ctx) error {
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
 	}
-	if err := h.svc.Delete(c.Context(), id); err != nil {
+	if err := h.svc.Delete(c.Context(), tenantID, id); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"deleted": true})

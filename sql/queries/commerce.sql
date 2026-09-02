@@ -317,3 +317,33 @@ SELECT e.id, e.user_id, e.batch_id, e.status, e.progress_bps, e.started_at,
 FROM enrollments e JOIN users u ON u.id = e.user_id
 WHERE e.tenant_id = $1 AND e.course_id = $2
 ORDER BY e.started_at DESC NULLS LAST LIMIT $3 OFFSET $4;
+
+-- ─────────────────────────────────────────────────── coupon admin CRUD
+
+-- name: CreateCoupon :one
+INSERT INTO coupons (tenant_id, code, type, percent_bps, value_minor, max_discount_minor,
+                     min_order_minor, applies_to, starts_at, ends_at, usage_limit, per_user_limit)
+VALUES ($1, sqlc.arg(code)::citext, $2, sqlc.narg(percent_bps)::int, sqlc.narg(value_minor)::bigint,
+        sqlc.narg(max_discount_minor)::bigint, COALESCE(sqlc.narg(min_order_minor)::bigint, 0),
+        COALESCE(sqlc.narg(applies_to)::coupon_scope, 'all'),
+        COALESCE(sqlc.narg(starts_at)::timestamptz, now()), sqlc.narg(ends_at)::timestamptz,
+        sqlc.narg(usage_limit)::int, COALESCE(sqlc.narg(per_user_limit)::int, 1))
+RETURNING id, tenant_id, code, type, percent_bps, value_minor, max_discount_minor,
+          min_order_minor, applies_to, starts_at, ends_at, usage_limit, per_user_limit,
+          used_count, is_active;
+
+-- name: ListCoupons :many
+SELECT id, code, type, percent_bps, value_minor, max_discount_minor, min_order_minor,
+       applies_to, starts_at, ends_at, usage_limit, per_user_limit, used_count, is_active
+FROM coupons WHERE tenant_id = $1
+ORDER BY created_at DESC LIMIT $2 OFFSET $3;
+
+-- name: SetCouponActive :exec
+UPDATE coupons SET is_active = $2 WHERE id = $1 AND tenant_id = $3;
+
+-- name: DeleteCoupon :exec
+DELETE FROM coupons WHERE id = $1 AND tenant_id = $2;
+
+-- name: AttachCouponToProduct :exec
+INSERT INTO coupon_products (tenant_id, coupon_id, product_id) VALUES ($1, $2, $3)
+ON CONFLICT (coupon_id, product_id) DO NOTHING;
