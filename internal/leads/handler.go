@@ -1,24 +1,17 @@
 package leads
 
 import (
+	"live-platform/internal/database"
+
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
-type Handler struct {
-	svc *Service
-}
+type Handler struct{ svc *Service }
 
 func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 
-// Create handles POST /api/v1/public/leads.
-//
-//	@Summary	Public lead capture (marketing site)
-//	@Tags		leads
-//	@Param		body	body	CreateLeadInput	true	"Prospect form fields"
-//	@Success	201		{object}	map[string]interface{}
-//	@Router		/public/leads [post]
+// POST /public/leads
 func (h *Handler) Create(c fiber.Ctx) error {
 	var in CreateLeadInput
 	if err := c.Bind().Body(&in); err != nil {
@@ -32,22 +25,11 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"message": "thanks — our team will reach out soon",
-		"lead":    row,
+		"message": "thanks — our team will reach out soon", "lead": row,
 	})
 }
 
-// BookingIntent handles POST /api/v1/public/leads/:id/booking-intent
-//
-// Called from the marketing demo page after the user picks a Cal.com slot
-// type ("quick" or "deep"). Bumps the lead status to 'demo' so sales can
-// triage. We don't validate the slot enum strictly — the only consumer is
-// our own marketing site and the worst case is a janky note string.
-//
-//	@Summary	Record marketing demo slot intent
-//	@Tags		leads
-//	@Param		id	path	string	true	"Lead UUID"
-//	@Router		/public/leads/{id}/booking-intent [post]
+// POST /public/leads/:id/booking-intent
 func (h *Handler) BookingIntent(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
@@ -60,27 +42,42 @@ func (h *Handler) BookingIntent(c fiber.Ctx) error {
 	if body.Slot == "" {
 		body.Slot = "unspecified"
 	}
-	lead, err := h.svc.MarkBookingIntent(c.Context(),
-		pgtype.UUID{Bytes: id, Valid: true}, body.Slot)
-	if err != nil {
+	if err := h.svc.UpdateStatus(database.WithSuperAdmin(c.Context()), id, "contacted", uuid.Nil,
+		"Booking intent: "+body.Slot+" slot picked from website"); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"lead": lead})
+	return c.JSON(fiber.Map{"ok": true})
 }
 
-// List handles GET /api/v1/admin/leads (super_admin only).
-//
-//	@Summary	Triage marketing leads
-//	@Tags		leads
-//	@Security	BearerAuth
-//	@Router		/admin/leads [get]
+// GET /admin/leads  (super_admin)
 func (h *Handler) List(c fiber.Ctx) error {
-	status := c.Query("status")
-	limit := int32(50)
-	offset := int32(0)
-	rows, err := h.svc.List(c.Context(), status, limit, offset)
+	rows, err := h.svc.List(c.Context(), c.Query("status"), 50, 0)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(rows)
+}
+
+// PATCH /admin/leads/:id  (super_admin)
+func (h *Handler) UpdateLead(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	var req struct {
+		Status     string `json:"status"`
+		AssignedTo string `json:"assigned_to"`
+		Notes      string `json:"notes"`
+	}
+	if err := c.Bind().JSON(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
+	}
+	assignee := uuid.Nil
+	if req.AssignedTo != "" {
+		assignee, _ = uuid.Parse(req.AssignedTo)
+	}
+	if err := h.svc.UpdateStatus(c.Context(), id, req.Status, assignee, req.Notes); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"ok": true})
 }

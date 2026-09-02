@@ -81,6 +81,21 @@ UPDATE device_tokens SET revoked_at = now() WHERE token = $1;
 SELECT token, platform FROM device_tokens
 WHERE tenant_id = $1 AND user_id = $2 AND revoked_at IS NULL;
 
+-- name: CountActiveDeviceTokens :one
+SELECT count(*) FROM device_tokens
+WHERE tenant_id = $1 AND user_id = $2 AND revoked_at IS NULL;
+
+-- name: TrimOldestDeviceTokens :exec
+-- Keep only the `keep` most-recently-seen active tokens for a user; revoke
+-- the rest (anti account-sharing cap).
+UPDATE device_tokens d SET revoked_at = now()
+WHERE d.id IN (
+    SELECT dt.id FROM device_tokens dt
+    WHERE dt.tenant_id = $1 AND dt.user_id = $2 AND dt.revoked_at IS NULL
+    ORDER BY dt.last_seen_at DESC
+    OFFSET sqlc.arg(keep)::int
+);
+
 -- name: UpsertMessagingThread :one
 INSERT INTO messaging_threads (tenant_id, user_id, channel, phone, last_message_at)
 VALUES ($1, sqlc.narg(user_id)::uuid, $2, sqlc.arg(phone)::citext, now())
