@@ -100,10 +100,10 @@ func (h *Handler) GetMyRecordings(c fiber.Ctx) error {
 	return c.JSON(rows)
 }
 
-// ListMine — GET /recordings/mine  (student: recordings available to me)
+// ListMine — GET /recordings/mine  (student: recordings for my enrolled courses)
 func (h *Handler) ListMine(c fiber.Ctx) error {
 	limit, offset := pagination(c)
-	rows, err := h.service.ForTenant(c.Context(), h.tenant(c), limit, offset)
+	rows, err := h.service.ForUser(c.Context(), h.tenant(c), middleware.CurrentUserID(c), limit, offset)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}

@@ -601,6 +601,7 @@ func main() {
 	platformGroup.Get("/stats", platformHandler.Stats)
 	platformGroup.Get("/audit", platformHandler.AuditLogs)
 	platformGroup.Get("/users", platformHandler.ListUsers)
+	platformGroup.Get("/payments", platformHandler.ListPayments)
 
 	platformGroup.Get("/tenants", platformHandler.ListTenants)
 	platformGroup.Post("/tenants/:id/suspend", platformHandler.Suspend)
@@ -687,6 +688,7 @@ func main() {
 	// Recordings (existing)
 	recs := api.Group("/recordings")
 	recs.Get("/my", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), recordingHandler.GetMyRecordings)
+	recs.Get("/mine", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.StudentOrAbove(), recordingHandler.ListMine)
 	recs.Post("/upload", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), recordingHandler.UploadRecording)
 	recs.Get("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.StudentOrAbove(), recordingHandler.GetRecording)
 	recs.Get("/:id/url", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.StudentOrAbove(), recordingHandler.GetRecordingURL)
@@ -742,6 +744,14 @@ func main() {
 		tenantRateLimit,
 		middleware.AdminOnly(),
 		enrollHandler.AdminEnroll,
+	)
+	// Admin un-enrolls a user from a course.
+	api.Delete("/admin/enrollments/:course_id/:user_id",
+		middleware.AuthMiddleware(&cfg.JWT),
+		middleware.TenantContext(),
+		tenantRateLimit,
+		middleware.AdminOnly(),
+		enrollHandler.AdminCancel,
 	)
 
 	// Subjects / Chapters / Topics

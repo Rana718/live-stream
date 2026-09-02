@@ -124,12 +124,13 @@ func (s *Service) resolveTenant(ctx context.Context, orgCode string) (db.GetTena
 // ---- token bundle -----------------------------------------------------------
 
 type UserInfo struct {
-	ID       uuid.UUID `json:"id"`
-	Email    string    `json:"email,omitempty"`
-	Phone    string    `json:"phone,omitempty"`
-	FullName string    `json:"full_name,omitempty"`
-	Role     string    `json:"role"`
-	TenantID uuid.UUID `json:"tenant_id"`
+	ID                   uuid.UUID `json:"id"`
+	Email                string    `json:"email,omitempty"`
+	Phone                string    `json:"phone,omitempty"`
+	FullName             string    `json:"full_name,omitempty"`
+	Role                 string    `json:"role"`
+	TenantID             uuid.UUID `json:"tenant_id"`
+	IsPlatformSuperAdmin bool      `json:"is_platform_super_admin,omitempty"`
 }
 
 type TokenBundle struct {
@@ -155,6 +156,12 @@ func (s *Service) issueTokens(ctx context.Context, userID, tenantID uuid.UUID, p
 		return nil, ErrNoMembership
 	}
 	role := string(mem.Role)
+	// A platform super-admin is super_admin in every tenant they hold a
+	// membership in — the tenant_users row only exists so OTP login can
+	// resolve a tenant. SuperAdminContext / RequireRole key off this string.
+	if u.IsPlatformSuperAdmin {
+		role = "super_admin"
+	}
 
 	access, err := utils.GenerateAccessToken(userID, textVal(u.Email), role, tenantID, u.TokenVersion, s.cfg.JWT.AccessSecret, s.accessTTL())
 	if err != nil {
@@ -190,6 +197,7 @@ func (s *Service) issueTokens(ctx context.Context, userID, tenantID uuid.UUID, p
 		User: UserInfo{
 			ID: userID, Email: textVal(u.Email), Phone: textVal(u.Phone),
 			FullName: textVal(u.FullName), Role: role, TenantID: tenantID,
+			IsPlatformSuperAdmin: u.IsPlatformSuperAdmin,
 		},
 	}, nil
 }

@@ -130,8 +130,30 @@ func (s *Service) ForInstructor(ctx context.Context, tenantID, instructorID uuid
 	return out, nil
 }
 
-// ForTenant is the student-facing "my recordings" list. TODO(Phase D): scope
-// by entitlement/enrolment instead of the whole tenant.
+// ForUser is the student-facing "my recordings" list — ready recordings for
+// live sessions of courses the user is enrolled in.
+func (s *Service) ForUser(ctx context.Context, tenantID, userID uuid.UUID, limit, offset int32) ([]Recording, error) {
+	rows, err := s.q.ListRecordingsForUser(ctx, db.ListRecordingsForUserParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID),
+		Limit: limit, Offset: offset,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Recording, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, Recording{
+			ID: utils.UUIDFromPg(r.ID), SessionID: utils.UUIDFromPg(r.SessionID),
+			CourseID: utils.UUIDFromPg(r.CourseID), Title: r.SessionTitle,
+			FileKey: utils.TextFromPg(r.FileKey), Status: string(r.Status),
+			DurationSec: utils.Int4FromPg(r.DurationSec), ThumbnailURL: utils.TextFromPg(r.ThumbnailUrl),
+			CreatedAt: r.CreatedAt.Time,
+		})
+	}
+	return out, nil
+}
+
+// ForTenant is an admin-wide recordings list.
 func (s *Service) ForTenant(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]Recording, error) {
 	rows, err := s.q.ListRecordingsForTenant(ctx, db.ListRecordingsForTenantParams{
 		TenantID: utils.UUIDToPg(tenantID), Limit: limit, Offset: offset,

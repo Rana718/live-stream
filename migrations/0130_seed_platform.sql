@@ -15,9 +15,43 @@ WHERE NOT EXISTS (
     SELECT 1 FROM tax_rates t WHERE t.tenant_id IS NULL AND t.hsn_sac = v.hsn_sac
 );
 
--- Platform super-admin. Password auth is added out-of-band; this row just
--- needs to exist so someone can be granted access.
-INSERT INTO users (id, email, full_name, is_platform_super_admin, status)
-VALUES ('00000000-0000-0000-0000-0000000000aa',
-        'platform-admin@example.com', 'Platform Admin', true, 'active')
-ON CONFLICT (id) DO NOTHING;
+-- Platform super-admin identity + a login path. v2 auth is phone-OTP / Google
+-- only (no password), and a login always resolves a tenant from an org code
+-- and a tenant_users membership. So the super-admin needs: a phone identity,
+-- and a membership in a dedicated PLATFORM tenant that exists only to give the
+-- OTP flow something to resolve. issueTokens() promotes the emitted role to
+-- 'super_admin' whenever users.is_platform_super_admin is true, regardless of
+-- the tenant_users.role stored here.
+DO $$
+DECLARE
+    super_admin uuid := '00000000-0000-0000-0000-0000000000aa';
+    platform    uuid := '00000000-0000-0000-0000-00000000000a';
+    super_phone text := '+919000000000';
+BEGIN
+    INSERT INTO users (id, email, phone, full_name, is_platform_super_admin, status)
+    VALUES (super_admin, 'platform-admin@example.com', super_phone,
+            'Platform Admin', true, 'active')
+    ON CONFLICT (id) DO NOTHING;
+    -- Row may predate this migration — backfill the phone.
+    UPDATE users SET phone = super_phone
+    WHERE id = super_admin AND phone IS NULL;
+
+    INSERT INTO auth_identities (user_id, provider, provider_uid, verified_at)
+    VALUES (super_admin, 'phone', super_phone, now())
+    ON CONFLICT (provider, provider_uid) DO NOTHING;
+
+    INSERT INTO tenants (id, org_code, name, slug, status, plan, timezone)
+    VALUES (platform, 'PLATFORM', 'Platform', 'platform', 'active', 'enterprise', 'Asia/Kolkata')
+    ON CONFLICT (id) DO NOTHING;
+
+    INSERT INTO tenant_settings (tenant_id, features)
+    VALUES (platform, '{}'::jsonb)
+    ON CONFLICT (tenant_id) DO NOTHING;
+
+    INSERT INTO tenant_users (tenant_id, user_id, role, status)
+    VALUES (platform, super_admin, 'owner', 'active')
+    ON CONFLICT (tenant_id, user_id) DO NOTHING;
+
+    UPDATE tenants SET owner_user_id = super_admin
+    WHERE id = platform AND owner_user_id IS NULL;
+END $$;

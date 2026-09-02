@@ -40,6 +40,22 @@ func NewService(pool *pgxpool.Pool) *Service { return &Service{q: db.New(pool)} 
 // the manual paste-an-account-ID path keeps working without it.
 func (s *Service) WithRazorpay(rp RazorpayLinker) *Service { s.rp = rp; return s }
 
+// ListPayments returns payments across every tenant for the super-admin
+// finance view. Optional status / tenant filters.
+func (s *Service) ListPayments(ctx context.Context, status string, tenantID *uuid.UUID, limit, offset int32) ([]db.PlatformListPaymentsRow, error) {
+	var st db.NullPaymentStatus
+	if status != "" {
+		st = db.NullPaymentStatus{PaymentStatus: db.PaymentStatus(status), Valid: true}
+	}
+	tid := pgtype.UUID{}
+	if tenantID != nil {
+		tid = utils.UUIDToPg(*tenantID)
+	}
+	return s.q.PlatformListPayments(ctx, db.PlatformListPaymentsParams{
+		Status: st, TenantID: tid, Limit: limit, Offset: offset,
+	})
+}
+
 // ─────────────────────────────────────────────────────────────── tenants
 
 // ListTenants returns every tenant with its member count. Optional `status`

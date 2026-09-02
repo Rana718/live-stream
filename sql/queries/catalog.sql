@@ -233,6 +233,21 @@ WHERE course_id = $1 AND deleted_at IS NULL
   AND (sqlc.narg(published_only)::boolean IS NOT TRUE OR status = 'published')
 ORDER BY display_order;
 
+-- name: ListCourseLessonsForTenant :many
+-- Flat tenant-wide lesson list for the "Lectures" index page. Joins the
+-- course title so the frontend can group without a second round-trip.
+SELECT cl.id, cl.section_id, cl.course_id, cl.title, cl.content_kind,
+       cl.video_id, cl.document_id, cl.link_id, cl.live_session_id,
+       cl.is_preview, cl.display_order, cl.available_after_days, cl.available_at,
+       cl.status, c.title AS course_title
+FROM course_lessons cl
+JOIN courses c ON c.id = cl.course_id AND c.deleted_at IS NULL
+WHERE cl.tenant_id = $1 AND cl.deleted_at IS NULL
+  AND (sqlc.narg(course_id)::uuid IS NULL OR cl.course_id = sqlc.narg(course_id)::uuid)
+  AND (sqlc.narg(published_only)::boolean IS NOT TRUE OR cl.status = 'published')
+ORDER BY c.title, cl.display_order
+LIMIT $2 OFFSET $3;
+
 -- name: UpdateCourseLesson :exec
 UPDATE course_lessons SET
     title = COALESCE(sqlc.narg(title)::text, title),
@@ -322,6 +337,20 @@ SELECT r.id, r.session_id, r.file_key, r.duration_sec, r.status, r.thumbnail_url
 FROM recordings r
 JOIN live_sessions s ON s.id = r.session_id
 WHERE r.tenant_id = $1 AND s.instructor_id = $2
+ORDER BY r.created_at DESC
+LIMIT $3 OFFSET $4;
+
+-- name: ListRecordingsForUser :many
+-- Ready recordings for live sessions belonging to a course the user is
+-- enrolled in (enrollment is the per-course access projection of an
+-- entitlement). Scopes the student "My recordings" page.
+SELECT r.id, r.session_id, r.file_key, r.duration_sec, r.status, r.thumbnail_url,
+       r.created_at, s.title AS session_title, s.course_id
+FROM recordings r
+JOIN live_sessions s ON s.id = r.session_id
+JOIN enrollments e ON e.course_id = s.course_id
+     AND e.user_id = $2 AND e.status = 'active'
+WHERE r.tenant_id = $1 AND r.status = 'ready'
 ORDER BY r.created_at DESC
 LIMIT $3 OFFSET $4;
 

@@ -33,6 +33,28 @@ func parsePagination(c fiber.Ctx) (int32, int32) {
 	return int32(limit), int32(offset)
 }
 
+// ListPayments — GET /api/v1/admin/platform/payments?status=&tenant_id=
+//
+//	@Summary  Super-admin: payments across every tenant
+//	@Tags     platformadmin
+//	@Security BearerAuth
+//	@Router   /admin/platform/payments [get]
+func (h *Handler) ListPayments(c fiber.Ctx) error {
+	limit, offset := parsePagination(c)
+	status := c.Query("status")
+	var tid *uuid.UUID
+	if v := c.Query("tenant_id"); v != "" {
+		if p, e := uuid.Parse(v); e == nil {
+			tid = &p
+		}
+	}
+	rows, err := h.svc.ListPayments(c.Context(), status, tid, limit, offset)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(rows)
+}
+
 // ListTenants — GET /api/v1/admin/platform/tenants?status=active
 //
 //	@Summary  Super-admin: list every tenant on the platform

@@ -45,6 +45,7 @@ type CreateLectureRequest struct {
 type Lesson struct {
 	ID           string     `json:"id"`
 	CourseID     string     `json:"course_id"`
+	CourseTitle  string     `json:"course_title,omitempty"`
 	SectionID    string     `json:"section_id"`
 	Title        string     `json:"title"`
 	ContentKind  string     `json:"content_kind"`
@@ -196,6 +197,35 @@ func (s *Service) ListByCourse(ctx context.Context, courseID uuid.UUID) ([]Lesso
 			IsFree: r.IsPreview, IsPublished: r.Status == db.PublishStatusPublished,
 			DisplayOrder: r.DisplayOrder,
 		}
+		out = append(out, l)
+	}
+	return out, nil
+}
+
+// ListForTenant is the flat "all lectures" index (optionally filtered by
+// course). Fills CourseID/CourseTitle so the UI can group.
+func (s *Service) ListForTenant(ctx context.Context, tenantID uuid.UUID, courseID *uuid.UUID, limit, offset int32) ([]Lesson, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	rows, err := s.q.ListCourseLessonsForTenant(ctx, db.ListCourseLessonsForTenantParams{
+		TenantID: utils.UUIDToPg(tenantID),
+		CourseID: utils.UUIDPtrToPg(courseID),
+		Limit:    limit, Offset: offset,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Lesson, 0, len(rows))
+	for _, r := range rows {
+		l := Lesson{
+			ID: utils.UUIDFromPg(r.ID), CourseID: utils.UUIDFromPg(r.CourseID),
+			SectionID: utils.UUIDFromPg(r.SectionID), Title: r.Title,
+			CourseTitle: r.CourseTitle, ContentKind: string(r.ContentKind),
+			IsPreview: r.IsPreview, IsFree: r.IsPreview,
+			IsPublished: r.Status == db.PublishStatusPublished, DisplayOrder: r.DisplayOrder,
+		}
+		s.resolveContent(ctx, &l, r.ContentKind, r.VideoID, r.DocumentID, r.LinkID)
 		out = append(out, l)
 	}
 	return out, nil

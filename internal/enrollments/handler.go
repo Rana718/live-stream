@@ -120,6 +120,23 @@ func (h *Handler) AdminEnroll(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"id": utils.UUIDFromPg(e.ID)})
 }
 
+// AdminCancel — DELETE /admin/enrollments/:course_id/:user_id
+// Admin un-enrolls another user from a course.
+func (h *Handler) AdminCancel(c fiber.Ctx) error {
+	courseID, err := uuid.Parse(c.Params("course_id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course id"})
+	}
+	userID, err := uuid.Parse(c.Params("user_id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid user id"})
+	}
+	if err := h.service.Cancel(c.Context(), h.tenant(c), userID, courseID); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"message": "cancelled"})
+}
+
 // Cancel — DELETE /enrollments/:course_id
 func (h *Handler) Cancel(c fiber.Ctx) error {
 	courseID, err := uuid.Parse(c.Params("course_id"))

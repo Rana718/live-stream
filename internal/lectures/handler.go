@@ -64,8 +64,14 @@ func (h *Handler) List(c fiber.Ctx) error {
 		}
 		return c.JSON(rows)
 	}
-	// topic_id / chapter_id / subject_id / live / q are not modelled in v2 yet.
-	return c.JSON([]Lesson{})
+	// No course filter → flat tenant-wide list. topic_id / chapter_id /
+	// subject_id / live / q filters are not modelled in v2; they fall
+	// through to the same list (the frontend groups client-side).
+	rows, err := h.service.ListForTenant(c.Context(), h.tenant(c), nil, 200, 0)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(rows)
 }
 
 // Get — GET /lectures/:id

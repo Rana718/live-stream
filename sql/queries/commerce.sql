@@ -399,6 +399,23 @@ WHERE p.tenant_id = $1
 ORDER BY p.created_at DESC
 LIMIT $2 OFFSET $3;
 
+-- name: PlatformListPayments :many
+-- Cross-tenant payment list for the super-admin console. Runs under
+-- WithSuperAdmin (RLS bypass); never mount on a tenant route.
+SELECT p.id, p.tenant_id, p.order_id, p.user_id, p.gateway, p.gateway_payment_id,
+       p.method, p.status, p.amount_minor, p.currency, p.captured_at, p.created_at,
+       o.code AS order_code,
+       u.full_name, u.email, u.phone,
+       t.org_code, t.name AS tenant_name
+FROM payments p
+JOIN orders o ON o.id = p.order_id
+JOIN users u ON u.id = p.user_id
+JOIN tenants t ON t.id = p.tenant_id
+WHERE (sqlc.narg(status)::payment_status IS NULL OR p.status = sqlc.narg(status)::payment_status)
+  AND (sqlc.narg(tenant_id)::uuid IS NULL OR p.tenant_id = sqlc.narg(tenant_id)::uuid)
+ORDER BY p.created_at DESC
+LIMIT $1 OFFSET $2;
+
 -- name: GetPaymentByIDForTenant :one
 SELECT p.id, p.tenant_id, p.order_id, p.user_id, p.gateway_payment_id, p.status, p.amount_minor
 FROM payments p WHERE p.id = $1 AND p.tenant_id = $2;
