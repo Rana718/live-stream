@@ -1,11 +1,7 @@
-// Package coursebundles implements admin-curated multi-course combos. The
-// student-facing replacement for the subscription model: instead of paying
-// monthly for everything, students buy individual courses, and bundles
-// stack two or three at a discount.
-//
-// Buy / verify mirrors the single-course flow in `courseorders` — same
-// Razorpay order shape, same payments table, same Route splits — but
-// fan-out enrolls the student into every course in the bundle on verify.
+// Package coursebundles — schema-v2. A bundle is a course_bundles row + a
+// products row (kind='bundle'); its contents are bundle_items linking the
+// bundle product to each course's product. Buying a bundle grants a bundle
+// entitlement and fans out to per-course entitlements + enrolments.
 package coursebundles
 
 import (
@@ -36,222 +32,141 @@ func NewService(pool *pgxpool.Pool, rp *payments.Razorpay) *Service {
 
 func (s *Service) WithProducer(p *events.Producer) *Service { s.producer = p; return s }
 
-// BundleView is the student-store payload. Includes a "save_paise" field
-// computed server-side so we don't repeat the math on every client.
-type BundleView struct {
-	ID               string   `json:"id"`
-	Title            string   `json:"title"`
-	Description      string   `json:"description"`
-	PricePaise       int32    `json:"price_paise"`
-	MemberPricePaise int32    `json:"member_price_paise"`
-	SavePaise        int32    `json:"save_paise"`
-	CourseIDs        []string `json:"course_ids"`
-	CoverURL         string   `json:"cover_url"`
+func ntext(s string) pgtype.Text {
+	if s == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: s, Valid: true}
 }
 
-// List returns all active bundles for the current tenant. RLS in Postgres
-// scopes by tenant — the Go side just relays.
-func (s *Service) List(ctx context.Context) ([]BundleView, error) {
-	rows, err := s.q.ListCourseBundles(ctx)
+type BundleView struct {
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	CoverURL    string   `json:"cover_url"`
+	PricePaise  int64    `json:"price_paise"`
+	PriceMinor  int64    `json:"price_minor"`
+	IsActive    bool     `json:"is_active"`
+	CourseIDs   []string `json:"course_ids"`
+	Courses     []any    `json:"courses"`
+}
+
+func (s *Service) bundleView(ctx context.Context, tenantID uuid.UUID, id pgtype.UUID, title, desc string, cover pgtype.Text, active bool) BundleView {
+	v := BundleView{
+		ID: utils.UUIDFromPg(id), Title: title, Description: desc,
+		CoverURL: utils.TextFromPg(cover), IsActive: active,
+	}
+	prod, err := s.q.GetProductForBundle(ctx, id)
+	if err != nil {
+		return v
+	}
+	if p, e := s.q.GetActivePrice(ctx, prod.ID); e == nil {
+		v.PriceMinor, v.PricePaise = p.AmountMinor, p.AmountMinor
+	}
+	courses, _ := s.q.ListBundleCourses(ctx, prod.ID)
+	for _, cr := range courses {
+		v.CourseIDs = append(v.CourseIDs, utils.UUIDFromPg(cr.ID))
+		v.Courses = append(v.Courses, map[string]any{
+			"id": utils.UUIDFromPg(cr.ID), "title": cr.Title, "slug": cr.Slug,
+			"thumbnail_url": utils.TextFromPg(cr.ThumbnailUrl),
+		})
+	}
+	return v
+}
+
+func (s *Service) List(ctx context.Context, tenantID uuid.UUID) ([]BundleView, error) {
+	rows, err := s.q.ListCourseBundles(ctx, utils.UUIDToPg(tenantID))
 	if err != nil {
 		return nil, err
 	}
 	out := make([]BundleView, 0, len(rows))
 	for _, r := range rows {
-		// course_ids comes back as `interface{}` because it's a Postgres
-		// uuid[] aggregate; pgx decodes it as []any of [16]byte. Normalise
-		// to the string form clients expect.
-		ids := decodeUUIDArray(r.CourseIds)
-		member := r.MemberPricePaise
-		save := member - r.PricePaise
-		if save < 0 {
-			// Bundle priced higher than members? Don't show a negative
-			// savings number; admin probably misconfigured.
-			save = 0
-		}
-		out = append(out, BundleView{
-			ID:               uuid.UUID(r.ID.Bytes).String(),
-			Title:            r.Title,
-			Description:      r.Description.String,
-			PricePaise:       r.PricePaise,
-			MemberPricePaise: member,
-			SavePaise:        save,
-			CourseIDs:        ids,
-			CoverURL:         r.CoverUrl.String,
-		})
+		out = append(out, s.bundleView(ctx, tenantID, r.ID, r.Title, utils.TextFromPg(r.Description), r.CoverUrl, r.IsActive))
 	}
 	return out, nil
 }
 
-// Buy creates a Razorpay order for a bundle. Returns the same shape as
-// the single-course Buy so the client checkout code can be reused.
-func (s *Service) Buy(ctx context.Context, tenantID, userID, bundleID uuid.UUID, keyID string) (*BuyResult, error) {
-	bundle, err := s.q.GetCourseBundleByID(ctx, pgtype.UUID{Bytes: bundleID, Valid: true})
-	if err != nil {
-		return nil, fmt.Errorf("bundle not found")
-	}
-	if !bundle.IsActive {
-		return nil, fmt.Errorf("bundle not for sale")
-	}
-	amountPaise := int64(bundle.PricePaise)
-	if amountPaise <= 0 {
-		return nil, fmt.Errorf("bundle has no price set")
-	}
+// ── buy / verify ────────────────────────────────────────────────────
 
-	receipt := fmt.Sprintf("bundle-%s", bundleID.String()[:8])
-	notes := map[string]string{
-		"tenant_id": tenantID.String(),
-		"user_id":   userID.String(),
-		"bundle_id": bundleID.String(),
-	}
-
-	// Same Route-split logic as single-course purchases. We don't compute
-	// a different split for bundles — the platform commission rate keys
-	// off the tenant's plan, not the SKU type.
-	tenant, tErr := s.q.GetTenantByID(ctx, pgtype.UUID{Bytes: tenantID, Valid: true})
-	var transfers []payments.Transfer
-	if tErr == nil && tenant.RazorpayAccountID.Valid && tenant.RazorpayAccountID.String != "" {
-		_, tenantShare := payments.SplitForTenant(amountPaise, tenant.Plan)
-		if tenantShare > 0 {
-			transfers = []payments.Transfer{{
-				Account:  tenant.RazorpayAccountID.String,
-				Amount:   tenantShare,
-				Currency: "INR",
-				Notes:    notes,
-			}}
-		}
-	}
-
-	order, err := s.rp.CreateOrderWithTransfers(ctx, amountPaise, "INR", receipt, notes, transfers)
-	if err != nil {
-		return nil, err
-	}
-
-	// We piggy-back on course_orders for the payment row. course_id is
-	// nullable on that table; bundle purchases set it NULL and stash the
-	// bundle_id in metadata. (verify reads metadata.bundle_id to fan out.)
-	meta, _ := json.Marshal(map[string]string{
-		"bundle_id":    bundleID.String(),
-		"bundle_title": bundle.Title,
-		"receipt":      receipt,
-	})
-	row, err := s.q.CreateBundleOrder(ctx, db.CreateBundleOrderParams{
-		TenantID:        pgtype.UUID{Bytes: tenantID, Valid: true},
-		UserID:          pgtype.UUID{Bytes: userID, Valid: true},
-		Amount:          utils.NumericFromFloat(float64(amountPaise) / 100), // rupees
-		Column4:         "INR",
-		ProviderOrderID: pgtype.Text{String: order.ID, Valid: true},
-		Metadata:        meta,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &BuyResult{
-		OrderID:   order.ID,
-		Amount:    amountPaise,
-		Currency:  "INR",
-		PaymentID: uuid.UUID(row.ID.Bytes).String(),
-		KeyID:     keyID,
-		Title:     bundle.Title,
-	}, nil
-}
-
-// Verify is the bundle-aware sibling of courseorders.Verify. Same
-// signature-check, but enrolls the student into every course of the
-// bundle on success.
-func (s *Service) Verify(ctx context.Context, req VerifyRequest, userID uuid.UUID) error {
-	if !s.rp.VerifyPaymentSignature(req.RazorpayOrderID, req.RazorpayPaymentID, req.RazorpaySignature) {
-		return fmt.Errorf("signature mismatch")
-	}
-
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	qtx := s.q.WithTx(tx)
-
-	row, err := qtx.GetCourseOrderByProviderOrderIDForUpdate(ctx, pgtype.Text{String: req.RazorpayOrderID, Valid: true})
-	if err != nil {
-		return fmt.Errorf("order not found")
-	}
-	if uuid.UUID(row.UserID.Bytes) != userID {
-		return fmt.Errorf("not your order")
-	}
-	if row.Status.String == "paid" {
-		return nil // idempotent
-	}
-	if row.Status.String == "refunded" {
-		return fmt.Errorf("order was refunded")
-	}
-
-	// Pull the bundle id back out of the metadata jsonb.
-	var meta map[string]string
-	_ = json.Unmarshal(row.Metadata, &meta)
-	bundleStr := meta["bundle_id"]
-	if bundleStr == "" {
-		return fmt.Errorf("not a bundle order")
-	}
-	bundleID, err := uuid.Parse(bundleStr)
-	if err != nil {
-		return fmt.Errorf("malformed bundle id")
-	}
-
-	if _, err := qtx.MarkCourseOrderPaid(ctx, db.MarkCourseOrderPaidParams{
-		ID:                row.ID,
-		ProviderPaymentID: pgtype.Text{String: req.RazorpayPaymentID, Valid: true},
-		ProviderSignature: pgtype.Text{String: req.RazorpaySignature, Valid: true},
-	}); err != nil {
-		return err
-	}
-
-	// Fan out: enroll into every course in the bundle, in the same
-	// transaction — a failure rolls the whole settlement back so a retry
-	// (client verify or webhook) completes it cleanly.
-	items, err := qtx.ListCourseBundleItems(ctx, pgtype.UUID{Bytes: bundleID, Valid: true})
-	if err != nil {
-		return err
-	}
-	for _, courseID := range items {
-		if _, err := qtx.CreateEnrollment(ctx, db.CreateEnrollmentParams{
-			UserID:   row.UserID,
-			CourseID: courseID,
-			TenantID: row.TenantID,
-		}); err != nil {
-			return fmt.Errorf("enroll into bundle course: %w", err)
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-
-	tenantID := uuid.UUID(row.TenantID.Bytes)
-	if s.producer != nil {
-		s.producer.Emit(ctx, events.TypePaymentSucceeded, tenantID, userID, map[string]any{
-			"order_id":    req.RazorpayOrderID,
-			"payment_id":  req.RazorpayPaymentID,
-			"bundle_id":   bundleID,
-			"amount_paid": row.Amount,
-		})
-		for _, courseID := range items {
-			s.producer.Emit(ctx, events.TypeCoursePurchased, tenantID, userID, map[string]any{
-				"course_id":  uuid.UUID(courseID.Bytes),
-				"via_bundle": bundleID,
-			})
-		}
-	}
-	return nil
-}
-
-type BuyResult struct {
+type CreateOrderResult struct {
 	OrderID   string `json:"order_id"`
 	Amount    int64  `json:"amount"`
 	Currency  string `json:"currency"`
 	PaymentID string `json:"payment_record_id"`
 	KeyID     string `json:"key_id,omitempty"`
-	Title     string `json:"title"`
+}
+
+func (s *Service) Buy(ctx context.Context, tenantID, userID, bundleID uuid.UUID, keyID string) (*CreateOrderResult, error) {
+	b, err := s.q.GetCourseBundle(ctx, utils.UUIDToPg(bundleID))
+	if err != nil {
+		return nil, fmt.Errorf("bundle not found")
+	}
+	prod, err := s.q.GetProductForBundle(ctx, utils.UUIDToPg(bundleID))
+	if err != nil {
+		return nil, fmt.Errorf("bundle not for sale")
+	}
+	owns, _ := s.q.CheckEntitlement(ctx, db.CheckEntitlementParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID), ProductID: prod.ID,
+	})
+	if owns {
+		return nil, fmt.Errorf("already purchased")
+	}
+	price, err := s.q.GetActivePrice(ctx, prod.ID)
+	if err != nil || price.AmountMinor <= 0 {
+		return nil, fmt.Errorf("bundle is unpriced")
+	}
+	total := price.AmountMinor
+
+	seq, _ := s.q.NextOrderSequence(ctx, utils.UUIDToPg(tenantID))
+	code := fmt.Sprintf("ORD-%06d", seq)
+	rpOrder, err := s.rp.CreateOrder(ctx, total, "INR", code, map[string]string{
+		"tenant_id": tenantID.String(), "user_id": userID.String(), "bundle_id": bundleID.String(),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	notes, _ := json.Marshal(map[string]string{"bundle_id": bundleID.String()})
+	order, err := q.CreateOrder(ctx, db.CreateOrderParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID), Code: code,
+		SubtotalMinor: total, TotalMinor: total,
+		Status:         db.NullOrderStatus{OrderStatus: db.OrderStatus("awaiting_payment"), Valid: true},
+		Gateway:        pgtype.Text{String: "razorpay", Valid: true},
+		GatewayOrderID: pgtype.Text{String: rpOrder.ID, Valid: true},
+		Notes:          notes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if _, err := q.CreateOrderItem(ctx, db.CreateOrderItemParams{
+		TenantID: utils.UUIDToPg(tenantID), OrderID: order.ID, ProductID: prod.ID,
+		ProductKind: db.ProductKind("bundle"), Title: b.Title, UnitMinor: total, Qty: 1,
+		LineSubtotalMinor: total, TaxableMinor: total, TotalMinor: total,
+		GrantsEntitlement: pgtype.Bool{Bool: true, Valid: true},
+	}); err != nil {
+		return nil, err
+	}
+	pay, err := q.CreatePayment(ctx, db.CreatePaymentParams{
+		TenantID: utils.UUIDToPg(tenantID), OrderID: order.ID, UserID: utils.UUIDToPg(userID),
+		GatewayOrderID: pgtype.Text{String: rpOrder.ID, Valid: true}, AmountMinor: total,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &CreateOrderResult{
+		OrderID: rpOrder.ID, Amount: total, Currency: "INR",
+		PaymentID: utils.UUIDFromPg(pay.ID), KeyID: keyID,
+	}, nil
 }
 
 type VerifyRequest struct {
@@ -260,30 +175,81 @@ type VerifyRequest struct {
 	RazorpaySignature string `json:"razorpay_signature"`
 }
 
-// decodeUUIDArray normalises Postgres uuid[] aggregate output into
-// hex-string UUIDs. pgx returns these as []any of [16]byte; we don't
-// import the pgtype helper because it's not exported for arrays.
-func decodeUUIDArray(v interface{}) []string {
-	if v == nil {
-		return nil
+func (s *Service) Verify(ctx context.Context, req VerifyRequest, userID uuid.UUID) error {
+	if !s.rp.VerifyPaymentSignature(req.RazorpayOrderID, req.RazorpayPaymentID, req.RazorpaySignature) {
+		return fmt.Errorf("signature mismatch")
 	}
-	switch arr := v.(type) {
-	case []interface{}:
-		out := make([]string, 0, len(arr))
-		for _, e := range arr {
-			if b, ok := e.([16]byte); ok {
-				out = append(out, uuid.UUID(b).String())
-			} else if s, ok := e.(string); ok {
-				out = append(out, s)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	order, err := q.GetOrderByGatewayOrderIDForUpdate(ctx, req.RazorpayOrderID)
+	if err != nil {
+		return fmt.Errorf("order not found")
+	}
+	if uuid.UUID(order.UserID.Bytes) != userID {
+		return fmt.Errorf("not your order")
+	}
+	if string(order.Status) == "paid" {
+		return tx.Commit(ctx)
+	}
+	paid, err := q.MarkOrderPaid(ctx, order.ID)
+	if err != nil {
+		return err
+	}
+	pays, _ := q.ListPaymentsForOrder(ctx, order.ID)
+	for _, p := range pays {
+		if string(p.Status) == "created" || string(p.Status) == "authorized" {
+			_, _ = q.MarkPaymentCaptured(ctx, db.MarkPaymentCapturedParams{
+				ID: p.ID, GatewayPaymentID: pgtype.Text{String: req.RazorpayPaymentID, Valid: true},
+				Signature: pgtype.Text{String: req.RazorpaySignature, Valid: true},
+			})
+			break
+		}
+	}
+
+	items, err := q.ListOrderItems(ctx, order.ID)
+	if err != nil {
+		return err
+	}
+	for _, it := range items {
+		if !it.GrantsEntitlement {
+			continue
+		}
+		// bundle entitlement
+		if _, err := q.GrantEntitlement(ctx, db.GrantEntitlementParams{
+			TenantID: paid.TenantID, UserID: paid.UserID, ProductID: it.ProductID,
+			ProductKind: it.ProductKind, Source: db.EntitlementSource("purchase"), OrderItemID: it.ID,
+		}); err != nil {
+			return err
+		}
+		// fan out to each course in the bundle
+		contents, _ := q.ListBundleItemProducts(ctx, it.ProductID)
+		for _, cp := range contents {
+			if _, err := q.GrantEntitlement(ctx, db.GrantEntitlementParams{
+				TenantID: paid.TenantID, UserID: paid.UserID, ProductID: cp.ID,
+				ProductKind: cp.Kind, Source: db.EntitlementSource("bundle"), OrderItemID: it.ID,
+			}); err != nil {
+				return err
+			}
+			if cp.CourseID.Valid {
+				if _, err := q.UpsertEnrollment(ctx, db.UpsertEnrollmentParams{
+					TenantID: paid.TenantID, UserID: paid.UserID, CourseID: cp.CourseID,
+				}); err != nil {
+					return err
+				}
 			}
 		}
-		return out
-	case [][16]byte:
-		out := make([]string, 0, len(arr))
-		for _, b := range arr {
-			out = append(out, uuid.UUID(b).String())
-		}
-		return out
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if s.producer != nil {
+		s.producer.Emit(ctx, events.TypeCoursePurchased, uuid.UUID(paid.TenantID.Bytes), userID,
+			map[string]any{"order_id": utils.UUIDFromPg(order.ID), "kind": "bundle"})
 	}
 	return nil
 }

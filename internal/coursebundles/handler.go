@@ -20,7 +20,8 @@ func NewHandler(svc *Service, razorpayKeyID string) *Handler {
 //	@Tags		bundles
 //	@Security	BearerAuth
 func (h *Handler) List(c fiber.Ctx) error {
-	rows, err := h.svc.List(c.Context())
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
+	rows, err := h.svc.List(c.Context(), tenantID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}

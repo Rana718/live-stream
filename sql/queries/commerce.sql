@@ -347,3 +347,39 @@ DELETE FROM coupons WHERE id = $1 AND tenant_id = $2;
 -- name: AttachCouponToProduct :exec
 INSERT INTO coupon_products (tenant_id, coupon_id, product_id) VALUES ($1, $2, $3)
 ON CONFLICT (coupon_id, product_id) DO NOTHING;
+
+-- ─────────────────────────────────────────────────── course_bundles
+
+-- name: CreateCourseBundle :one
+INSERT INTO course_bundles (tenant_id, title, description, cover_url, display_order)
+VALUES ($1, $2, sqlc.narg(description)::text, sqlc.narg(cover_url)::text,
+        COALESCE(sqlc.narg(display_order)::int, 0))
+RETURNING id, tenant_id, title, description, cover_url, is_active, display_order;
+
+-- name: GetCourseBundle :one
+SELECT id, tenant_id, title, description, cover_url, is_active, display_order
+FROM course_bundles WHERE id = $1;
+
+-- name: ListCourseBundles :many
+SELECT id, title, description, cover_url, is_active, display_order
+FROM course_bundles WHERE tenant_id = $1 AND is_active
+ORDER BY display_order, created_at DESC;
+
+-- name: AdminListCourseBundles :many
+SELECT id, title, description, cover_url, is_active, display_order
+FROM course_bundles WHERE tenant_id = $1
+ORDER BY display_order, created_at DESC;
+
+-- name: SetCourseBundleActive :exec
+UPDATE course_bundles SET is_active = $2 WHERE id = $1 AND tenant_id = $3;
+
+-- name: DeleteCourseBundle :exec
+DELETE FROM course_bundles WHERE id = $1 AND tenant_id = $2;
+
+-- name: ListBundleCourses :many
+SELECT c.id, c.title, c.slug, c.thumbnail_url
+FROM bundle_items bi
+JOIN products ip ON ip.id = bi.item_product_id AND ip.course_id IS NOT NULL
+JOIN courses c ON c.id = ip.course_id
+WHERE bi.bundle_product_id = $1
+ORDER BY bi.position;

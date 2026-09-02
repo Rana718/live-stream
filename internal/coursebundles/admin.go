@@ -2,112 +2,126 @@ package coursebundles
 
 import (
 	"context"
-	"fmt"
-	"strings"
 
 	"live-platform/internal/database/db"
+	"live-platform/internal/utils"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// Admin-side bundle CRUD. Lives next to the public service so we share
-// the existing q (Queries) and BundleView shapes — keeps the JSON shape
-// the admin UI sees identical to what students get on the store.
-
 type AdminBundleInput struct {
 	Title        string   `json:"title"`
 	Description  string   `json:"description"`
-	PricePaise   int32    `json:"price_paise"`
+	PricePaise   int64    `json:"price_paise"`
+	PriceMinor   int64    `json:"price_minor"`
 	CoverURL     string   `json:"cover_url"`
 	DisplayOrder int32    `json:"display_order"`
 	CourseIDs    []string `json:"course_ids"`
 	IsActive     *bool    `json:"is_active"`
 }
 
-func (s *Service) AdminList(ctx context.Context) ([]BundleView, error) {
-	rows, err := s.q.AdminListBundles(ctx)
+func (in AdminBundleInput) price() int64 {
+	if in.PriceMinor > 0 {
+		return in.PriceMinor
+	}
+	return in.PricePaise
+}
+
+func (s *Service) AdminList(ctx context.Context, tenantID uuid.UUID) ([]BundleView, error) {
+	rows, err := s.q.AdminListCourseBundles(ctx, utils.UUIDToPg(tenantID))
 	if err != nil {
 		return nil, err
 	}
 	out := make([]BundleView, 0, len(rows))
 	for _, r := range rows {
-		ids := decodeUUIDArray(r.CourseIds)
-		// AdminListBundles returns member_price_paise as int32 directly.
-		member := r.MemberPricePaise
-		save := member - r.PricePaise
-		if save < 0 {
-			save = 0
-		}
-		out = append(out, BundleView{
-			ID:               uuid.UUID(r.ID.Bytes).String(),
-			Title:            r.Title,
-			Description:      r.Description.String,
-			PricePaise:       r.PricePaise,
-			MemberPricePaise: member,
-			SavePaise:        save,
-			CourseIDs:        ids,
-			CoverURL:         r.CoverUrl.String,
-		})
+		out = append(out, s.bundleView(ctx, tenantID, r.ID, r.Title, utils.TextFromPg(r.Description), r.CoverUrl, r.IsActive))
 	}
 	return out, nil
 }
 
+func (s *Service) ensureCourseProduct(ctx context.Context, q *db.Queries, tenantID, courseID uuid.UUID) (pgtype.UUID, error) {
+	if p, err := q.GetProductForCourse(ctx, utils.UUIDToPg(courseID)); err == nil {
+		return p.ID, nil
+	}
+	p, err := q.CreateProduct(ctx, db.CreateProductParams{
+		TenantID: utils.UUIDToPg(tenantID), Kind: db.ProductKind("course"), CourseID: utils.UUIDToPg(courseID),
+	})
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	return p.ID, nil
+}
+
 func (s *Service) AdminCreate(ctx context.Context, tenantID uuid.UUID, in AdminBundleInput) (*BundleView, error) {
-	if strings.TrimSpace(in.Title) == "" || in.PricePaise <= 0 {
-		return nil, fmt.Errorf("title and positive price are required")
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if len(in.CourseIDs) < 1 {
-		return nil, fmt.Errorf("at least one course is required")
-	}
-	row, err := s.q.CreateCourseBundle(ctx, db.CreateCourseBundleParams{
-		TenantID:     pgtype.UUID{Bytes: tenantID, Valid: true},
-		Title:        in.Title,
-		Description:  pgtype.Text{String: in.Description, Valid: in.Description != ""},
-		PricePaise:   in.PricePaise,
-		CoverUrl:     pgtype.Text{String: in.CoverURL, Valid: in.CoverURL != ""},
-		DisplayOrder: in.DisplayOrder,
-		Column7:      true,
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	b, err := q.CreateCourseBundle(ctx, db.CreateCourseBundleParams{
+		TenantID: utils.UUIDToPg(tenantID), Title: in.Title,
+		Description: ntext(in.Description), CoverUrl: ntext(in.CoverURL),
+		DisplayOrder: pgtype.Int4{Int32: in.DisplayOrder, Valid: true},
 	})
 	if err != nil {
 		return nil, err
 	}
-	for _, cid := range in.CourseIDs {
-		u, err := uuid.Parse(cid)
-		if err != nil {
+	prod, err := q.CreateProduct(ctx, db.CreateProductParams{
+		TenantID: utils.UUIDToPg(tenantID), Kind: db.ProductKind("bundle"), BundleID: b.ID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if in.price() > 0 {
+		if _, err := q.UpsertActivePrice(ctx, db.UpsertActivePriceParams{
+			TenantID: utils.UUIDToPg(tenantID), ProductID: prod.ID, AmountMinor: in.price(),
+		}); err != nil {
+			return nil, err
+		}
+	}
+	for i, cidStr := range in.CourseIDs {
+		cid, e := uuid.Parse(cidStr)
+		if e != nil {
 			continue
 		}
-		_ = s.q.AddCourseToBundle(ctx, db.AddCourseToBundleParams{
-			BundleID: row.ID,
-			CourseID: pgtype.UUID{Bytes: u, Valid: true},
-		})
+		cp, e := s.ensureCourseProduct(ctx, q, tenantID, cid)
+		if e != nil {
+			return nil, e
+		}
+		if err := q.AddBundleItem(ctx, db.AddBundleItemParams{
+			TenantID: utils.UUIDToPg(tenantID), BundleProductID: prod.ID, ItemProductID: cp, Position: int32(i),
+		}); err != nil {
+			return nil, err
+		}
 	}
-	return &BundleView{
-		ID:          uuid.UUID(row.ID.Bytes).String(),
-		Title:       row.Title,
-		Description: row.Description.String,
-		PricePaise:  row.PricePaise,
-		CoverURL:    row.CoverUrl.String,
-		CourseIDs:   in.CourseIDs,
-	}, nil
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	v := s.bundleView(ctx, tenantID, b.ID, b.Title, utils.TextFromPg(b.Description), b.CoverUrl, b.IsActive)
+	return &v, nil
 }
 
-func (s *Service) AdminSetActive(ctx context.Context, id uuid.UUID, active bool) error {
-	return s.q.SetBundleActive(ctx, db.SetBundleActiveParams{
-		ID:       pgtype.UUID{Bytes: id, Valid: true},
-		IsActive: active,
+func (s *Service) AdminSetActive(ctx context.Context, tenantID, id uuid.UUID, active bool) error {
+	return s.q.SetCourseBundleActive(ctx, db.SetCourseBundleActiveParams{
+		ID: utils.UUIDToPg(id), TenantID: utils.UUIDToPg(tenantID), IsActive: active,
 	})
 }
 
-func (s *Service) AdminDelete(ctx context.Context, id uuid.UUID) error {
-	return s.q.DeleteCourseBundle(ctx, pgtype.UUID{Bytes: id, Valid: true})
+func (s *Service) AdminDelete(ctx context.Context, tenantID, id uuid.UUID) error {
+	return s.q.DeleteCourseBundle(ctx, db.DeleteCourseBundleParams{
+		ID: utils.UUIDToPg(id), TenantID: utils.UUIDToPg(tenantID),
+	})
 }
 
-// Admin handlers --------------------------------------------------------
+// ── admin handlers ──────────────────────────────────────────────────
 
 func (h *Handler) AdminList(c fiber.Ctx) error {
-	rows, err := h.svc.AdminList(c.Context())
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
+	rows, err := h.svc.AdminList(c.Context(), tenantID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -128,6 +142,7 @@ func (h *Handler) AdminCreate(c fiber.Ctx) error {
 }
 
 func (h *Handler) AdminSetActive(c fiber.Ctx) error {
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
@@ -135,21 +150,20 @@ func (h *Handler) AdminSetActive(c fiber.Ctx) error {
 	var body struct {
 		IsActive bool `json:"is_active"`
 	}
-	if err := c.Bind().Body(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
-	}
-	if err := h.svc.AdminSetActive(c.Context(), id, body.IsActive); err != nil {
+	_ = c.Bind().Body(&body)
+	if err := h.svc.AdminSetActive(c.Context(), tenantID, id, body.IsActive); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"updated": true})
 }
 
 func (h *Handler) AdminDelete(c fiber.Ctx) error {
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
 	}
-	if err := h.svc.AdminDelete(c.Context(), id); err != nil {
+	if err := h.svc.AdminDelete(c.Context(), tenantID, id); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"deleted": true})
