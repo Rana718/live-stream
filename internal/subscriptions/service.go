@@ -1,3 +1,8 @@
+// Package subscriptions — schema-v2. Plans have no price column (price lives
+// on the plan's product in `prices`). Each period is a one-time order:
+// checkout → order for the plan product; verify → CreateSubscription (active,
+// period = plan.interval_days) + entitlement. Recurring auto-charge and the
+// renewal worker are Phase F/H.
 package subscriptions
 
 import (
@@ -12,6 +17,7 @@ import (
 	"live-platform/internal/utils"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -25,144 +31,203 @@ func NewService(pool *pgxpool.Pool, rp *payments.Razorpay) *Service {
 	return &Service{pool: pool, q: db.New(pool), rp: rp}
 }
 
-// --- Plans ---
+func ntext(s string) pgtype.Text {
+	if s == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: s, Valid: true}
+}
+
+// ── plans ───────────────────────────────────────────────────────────
 
 type UpsertPlanRequest struct {
 	Name         string   `json:"name" validate:"required"`
 	Slug         string   `json:"slug" validate:"required"`
 	Description  string   `json:"description"`
 	Price        float64  `json:"price" validate:"gte=0"`
-	Currency     string   `json:"currency"`
+	PriceMinor   int64    `json:"price_minor"`
 	DurationDays int32    `json:"duration_days" validate:"required,gt=0"`
+	TrialDays    int32    `json:"trial_days"`
 	Features     []string `json:"features"`
 	DisplayOrder int32    `json:"display_order"`
 }
 
-func (s *Service) CreatePlan(ctx context.Context, tenantID uuid.UUID, req UpsertPlanRequest) (*db.SubscriptionPlan, error) {
-	if req.Currency == "" {
-		req.Currency = "INR"
+func (r UpsertPlanRequest) priceMinor() int64 {
+	if r.PriceMinor > 0 {
+		return r.PriceMinor
 	}
-	features, _ := json.Marshal(req.Features)
-	p, err := s.q.CreateSubscriptionPlan(ctx, db.CreateSubscriptionPlanParams{
+	return int64(r.Price * 100)
+}
+
+type PlanView struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Slug         string   `json:"slug"`
+	Description  string   `json:"description"`
+	Price        float64  `json:"price"`
+	PriceMinor   int64    `json:"price_minor"`
+	DurationDays int32    `json:"duration_days"`
+	TrialDays    int32    `json:"trial_days"`
+	Features     []string `json:"features"`
+}
+
+func (s *Service) CreatePlan(ctx context.Context, tenantID uuid.UUID, req UpsertPlanRequest) (PlanView, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return PlanView{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	feat, _ := json.Marshal(req.Features)
+	p, err := q.CreateSubscriptionPlan(ctx, db.CreateSubscriptionPlanParams{
+		TenantID:     utils.UUIDToPg(tenantID),
 		Name:         req.Name,
 		Slug:         req.Slug,
-		Description:  utils.TextToPg(req.Description),
-		Price:        utils.NumericFromFloat(req.Price),
-		Currency:     utils.TextToPg(req.Currency),
-		DurationDays: req.DurationDays,
-		Features:     features,
-		DisplayOrder: utils.Int4ToPg(req.DisplayOrder),
-		TenantID:     utils.UUIDToPg(tenantID),
+		Description:  ntext(req.Description),
+		IntervalDays: pgtype.Int4{Int32: req.DurationDays, Valid: true},
+		TrialDays:    pgtype.Int4{Int32: req.TrialDays, Valid: true},
+		Features:     feat,
+		DisplayOrder: pgtype.Int4{Int32: req.DisplayOrder, Valid: true},
 	})
 	if err != nil {
-		return nil, err
+		return PlanView{}, err
 	}
-	return &p, nil
+	prod, err := q.CreateProduct(ctx, db.CreateProductParams{
+		TenantID: utils.UUIDToPg(tenantID), Kind: db.ProductKind("plan"), PlanID: p.ID,
+	})
+	if err != nil {
+		return PlanView{}, err
+	}
+	if req.priceMinor() > 0 {
+		if _, err := q.UpsertActivePrice(ctx, db.UpsertActivePriceParams{
+			TenantID: utils.UUIDToPg(tenantID), ProductID: prod.ID, AmountMinor: req.priceMinor(),
+		}); err != nil {
+			return PlanView{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return PlanView{}, err
+	}
+	return PlanView{
+		ID: utils.UUIDFromPg(p.ID), Name: p.Name, Slug: p.Slug,
+		Description: req.Description, Price: float64(req.priceMinor()) / 100,
+		PriceMinor: req.priceMinor(), DurationDays: p.IntervalDays,
+		TrialDays: p.TrialDays, Features: req.Features,
+	}, nil
 }
 
-func (s *Service) ListActivePlans(ctx context.Context) ([]db.SubscriptionPlan, error) {
-	return s.q.ListActivePlans(ctx)
-}
-
-func (s *Service) GetPlan(ctx context.Context, id uuid.UUID) (*db.SubscriptionPlan, error) {
-	p, err := s.q.GetPlanByID(ctx, utils.UUIDToPg(id))
+func (s *Service) ListActivePlans(ctx context.Context, tenantID uuid.UUID) ([]PlanView, error) {
+	rows, err := s.q.ListActiveSubscriptionPlans(ctx, utils.UUIDToPg(tenantID))
 	if err != nil {
 		return nil, err
 	}
-	return &p, nil
+	out := make([]PlanView, 0, len(rows))
+	for _, r := range rows {
+		v := PlanView{
+			ID: utils.UUIDFromPg(r.ID), Name: r.Name, Slug: r.Slug,
+			Description: utils.TextFromPg(r.Description), DurationDays: r.IntervalDays, TrialDays: r.TrialDays,
+		}
+		_ = json.Unmarshal(r.Features, &v.Features)
+		if prod, e := s.q.GetProductForPlan(ctx, r.ID); e == nil {
+			if price, e2 := s.q.GetActivePrice(ctx, prod.ID); e2 == nil {
+				v.PriceMinor = price.AmountMinor
+				v.Price = float64(price.AmountMinor) / 100
+			}
+		}
+		out = append(out, v)
+	}
+	return out, nil
 }
 
-// --- Checkout / subscription flow ---
+func (s *Service) SetPlanActive(ctx context.Context, id uuid.UUID, active bool) error {
+	return s.q.SetSubscriptionPlanActive(ctx, db.SetSubscriptionPlanActiveParams{
+		ID: utils.UUIDToPg(id), IsActive: active,
+	})
+}
+
+// ── checkout / verify ───────────────────────────────────────────────
 
 type CheckoutRequest struct {
 	PlanID uuid.UUID `json:"plan_id" validate:"required"`
 }
 
 type CheckoutResponse struct {
-	SubscriptionID string  `json:"subscription_id"`
-	PaymentID      string  `json:"payment_id"`
-	RazorpayOrder  string  `json:"razorpay_order_id"`
-	Amount         float64 `json:"amount"`
-	Currency       string  `json:"currency"`
-	PublicKey      string  `json:"public_key"`
+	OrderID       string `json:"order_id"`
+	RazorpayOrder string `json:"razorpay_order_id"`
+	Amount        int64  `json:"amount"`
+	Currency      string `json:"currency"`
+	PlanName      string `json:"plan_name"`
+	PublicKey     string `json:"public_key"`
 }
 
-// StartCheckout creates a pending user_subscription + a payment row + a Razorpay order.
 func (s *Service) StartCheckout(ctx context.Context, tenantID, userID uuid.UUID, req CheckoutRequest, publicKey string) (*CheckoutResponse, error) {
-	plan, err := s.q.GetPlanByID(ctx, utils.UUIDToPg(req.PlanID))
+	plan, err := s.q.GetSubscriptionPlan(ctx, utils.UUIDToPg(req.PlanID))
 	if err != nil {
-		return nil, fmt.Errorf("plan not found: %w", err)
+		return nil, fmt.Errorf("plan not found")
 	}
-
-	sub, err := s.q.CreateUserSubscription(ctx, db.CreateUserSubscriptionParams{
-		UserID:    utils.UUIDToPg(userID),
-		PlanID:    plan.ID,
-		Status:    utils.TextToPg("pending"),
-		StartsAt:  utils.TimestampToPg(time.Time{}),
-		EndsAt:    utils.TimestampToPg(time.Time{}),
-		AutoRenew: utils.BoolToPg(false),
-		TenantID:  utils.UUIDToPg(tenantID),
-	})
+	prod, err := s.q.GetProductForPlan(ctx, plan.ID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("plan not for sale")
 	}
-
-	priceFloat := utils.NumericToFloat(plan.Price)
-	if priceFloat <= 0 {
-		// Free plan — activate immediately, no payment required.
-		_, err := s.q.ActivateSubscription(ctx, db.ActivateSubscriptionParams{
-			ID:   sub.ID,
-			Days: plan.DurationDays,
-		})
-		if err != nil {
-			return nil, err
-		}
-		return &CheckoutResponse{
-			SubscriptionID: utils.UUIDFromPg(sub.ID),
-			Amount:         0,
-			Currency:       utils.TextFromPg(plan.Currency),
-			PublicKey:      publicKey,
-		}, nil
+	price, err := s.q.GetActivePrice(ctx, prod.ID)
+	if err != nil || price.AmountMinor <= 0 {
+		return nil, fmt.Errorf("plan is unpriced")
 	}
+	total := price.AmountMinor
 
 	if s.rp == nil {
 		return nil, errors.New("razorpay not configured")
 	}
-
-	amountPaise := int64(priceFloat * 100)
-	receipt := fmt.Sprintf("sub_%s", utils.UUIDFromPg(sub.ID))
-	order, err := s.rp.CreateOrder(ctx, amountPaise, utils.TextFromPg(plan.Currency), receipt, map[string]string{
-		"user_id":         userID.String(),
-		"plan_slug":       plan.Slug,
-		"subscription_id": utils.UUIDFromPg(sub.ID),
+	seq, _ := s.q.NextOrderSequence(ctx, utils.UUIDToPg(tenantID))
+	code := fmt.Sprintf("ORD-%06d", seq)
+	rpOrder, err := s.rp.CreateOrder(ctx, total, "INR", code, map[string]string{
+		"tenant_id": tenantID.String(), "user_id": userID.String(), "plan_id": plan.ID.String(),
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	meta, _ := json.Marshal(map[string]any{"receipt": receipt, "plan": plan.Slug})
-	pay, err := s.q.CreatePayment(ctx, db.CreatePaymentParams{
-		UserID:          utils.UUIDToPg(userID),
-		SubscriptionID:  sub.ID,
-		Amount:          utils.NumericFromFloat(priceFloat),
-		Currency:        utils.TextToPg(utils.TextFromPg(plan.Currency)),
-		Provider:        utils.TextToPg("razorpay"),
-		ProviderOrderID: utils.TextToPg(order.ID),
-		Status:          utils.TextToPg("created"),
-		Metadata:        meta,
-		TenantID:        utils.UUIDToPg(tenantID),
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	notes, _ := json.Marshal(map[string]string{"plan_id": plan.ID.String()})
+	order, err := q.CreateOrder(ctx, db.CreateOrderParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID), Code: code,
+		SubtotalMinor: total, TotalMinor: total,
+		Status:         db.NullOrderStatus{OrderStatus: db.OrderStatus("awaiting_payment"), Valid: true},
+		Gateway:        pgtype.Text{String: "razorpay", Valid: true},
+		GatewayOrderID: pgtype.Text{String: rpOrder.ID, Valid: true},
+		Notes:          notes,
 	})
 	if err != nil {
+		return nil, err
+	}
+	if _, err := q.CreateOrderItem(ctx, db.CreateOrderItemParams{
+		TenantID: utils.UUIDToPg(tenantID), OrderID: order.ID, ProductID: prod.ID,
+		ProductKind: db.ProductKind("plan"), Title: plan.Name, UnitMinor: total, Qty: 1,
+		LineSubtotalMinor: total, TaxableMinor: total, TotalMinor: total,
+		GrantsEntitlement: pgtype.Bool{Bool: true, Valid: true},
+	}); err != nil {
+		return nil, err
+	}
+	if _, err := q.CreatePayment(ctx, db.CreatePaymentParams{
+		TenantID: utils.UUIDToPg(tenantID), OrderID: order.ID, UserID: utils.UUIDToPg(userID),
+		GatewayOrderID: pgtype.Text{String: rpOrder.ID, Valid: true}, AmountMinor: total,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 
 	return &CheckoutResponse{
-		SubscriptionID: utils.UUIDFromPg(sub.ID),
-		PaymentID:      utils.UUIDFromPg(pay.ID),
-		RazorpayOrder:  order.ID,
-		Amount:         priceFloat,
-		Currency:       utils.TextFromPg(plan.Currency),
-		PublicKey:      publicKey,
+		OrderID: rpOrder.ID, RazorpayOrder: rpOrder.ID, Amount: total, Currency: "INR",
+		PlanName: plan.Name, PublicKey: publicKey,
 	}, nil
 }
 
@@ -172,117 +237,161 @@ type VerifyRequest struct {
 	RazorpaySignature string `json:"razorpay_signature" validate:"required"`
 }
 
-// VerifyCheckout validates the signature, activates the subscription, marks payment captured.
-func (s *Service) VerifyCheckout(ctx context.Context, userID uuid.UUID, req VerifyRequest) (*db.UserSubscription, error) {
-	if s.rp == nil {
-		return nil, errors.New("razorpay not configured")
-	}
-	if !s.rp.VerifyPaymentSignature(req.RazorpayOrderID, req.RazorpayPaymentID, req.RazorpaySignature) {
+type SubView struct {
+	ID        string     `json:"id"`
+	PlanID    string     `json:"plan_id"`
+	Status    string     `json:"status"`
+	PlanName  string     `json:"plan_name"`
+	ExpiresAt *time.Time `json:"expires_at"`
+}
+
+func (s *Service) VerifyCheckout(ctx context.Context, userID uuid.UUID, req VerifyRequest) (*SubView, error) {
+	if s.rp == nil || !s.rp.VerifyPaymentSignature(req.RazorpayOrderID, req.RazorpayPaymentID, req.RazorpaySignature) {
 		return nil, errors.New("invalid signature")
 	}
-	pay, err := s.q.GetPaymentByProviderOrderID(ctx, utils.TextToPg(req.RazorpayOrderID))
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("payment not found")
+		return nil, err
 	}
-	if utils.UUIDFromPg(pay.UserID) != userID.String() {
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	order, err := q.GetOrderByGatewayOrderIDForUpdate(ctx, req.RazorpayOrderID)
+	if err != nil {
+		return nil, fmt.Errorf("order not found")
+	}
+	if uuid.UUID(order.UserID.Bytes) != userID {
 		return nil, errors.New("forbidden")
 	}
 
-	if _, err := s.q.UpdatePaymentStatus(ctx, db.UpdatePaymentStatusParams{
-		ID:                pay.ID,
-		Status:            utils.TextToPg("captured"),
-		ProviderPaymentID: utils.TextToPg(req.RazorpayPaymentID),
-		ProviderSignature: utils.TextToPg(req.RazorpaySignature),
-	}); err != nil {
-		return nil, err
+	planID := pgtype.UUID{}
+	items, _ := q.ListOrderItems(ctx, order.ID)
+	var entID pgtype.UUID
+	if string(order.Status) != "paid" {
+		if _, err := q.MarkOrderPaid(ctx, order.ID); err != nil {
+			return nil, err
+		}
+		pays, _ := q.ListPaymentsForOrder(ctx, order.ID)
+		for _, p := range pays {
+			if string(p.Status) == "created" || string(p.Status) == "authorized" {
+				_, _ = q.MarkPaymentCaptured(ctx, db.MarkPaymentCapturedParams{
+					ID: p.ID, GatewayPaymentID: pgtype.Text{String: req.RazorpayPaymentID, Valid: true},
+					Signature: pgtype.Text{String: req.RazorpaySignature, Valid: true},
+				})
+				break
+			}
+		}
+		for _, it := range items {
+			if string(it.ProductKind) != "plan" {
+				continue
+			}
+			p, e := q.GetProduct(ctx, it.ProductID)
+			if e != nil || !p.PlanID.Valid {
+				continue
+			}
+			planID = p.PlanID
+			ent, e2 := q.GrantEntitlement(ctx, db.GrantEntitlementParams{
+				TenantID: order.TenantID, UserID: order.UserID, ProductID: it.ProductID,
+				ProductKind: db.ProductKind("plan"), Source: db.EntitlementSource("subscription"), OrderItemID: it.ID,
+			})
+			if e2 == nil {
+				entID = ent.ID
+			}
+		}
 	}
 
-	if !pay.SubscriptionID.Valid {
-		return nil, errors.New("payment has no linked subscription")
+	// Period from plan.interval_days.
+	days := int32(30)
+	name := "Subscription"
+	if planID.Valid {
+		if pl, e := q.GetSubscriptionPlan(ctx, planID); e == nil {
+			days, name = pl.IntervalDays, pl.Name
+		}
 	}
-	sub, err := s.q.GetSubscriptionByID(ctx, pay.SubscriptionID)
-	if err != nil {
-		return nil, err
-	}
-	plan, err := s.q.GetPlanByID(ctx, sub.PlanID)
-	if err != nil {
-		return nil, err
-	}
-	updated, err := s.q.ActivateSubscription(ctx, db.ActivateSubscriptionParams{
-		ID:   sub.ID,
-		Days: plan.DurationDays,
+	now := time.Now()
+	sub, err := q.CreateSubscription(ctx, db.CreateSubscriptionParams{
+		TenantID:           order.TenantID,
+		UserID:             order.UserID,
+		PlanID:             planID,
+		Status:             db.SubscriptionStatus("active"),
+		CurrentPeriodStart: pgtype.Timestamptz{Time: now, Valid: true},
+		CurrentPeriodEnd:   pgtype.Timestamptz{Time: now.AddDate(0, 0, int(days)), Valid: true},
+		OriginOrderID:      order.ID,
+		EntitlementID:      entID,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &updated, nil
+	// entitlement expiry = period end
+	if entID.Valid {
+		_ = q.ExtendEntitlement(ctx, db.ExtendEntitlementParams{
+			ID: entID, ExpiresAt: pgtype.Timestamptz{Time: now.AddDate(0, 0, int(days)), Valid: true},
+		})
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	end := now.AddDate(0, 0, int(days))
+	return &SubView{
+		ID: utils.UUIDFromPg(sub.ID), PlanID: utils.UUIDFromPg(planID),
+		Status: string(sub.Status), PlanName: name, ExpiresAt: &end,
+	}, nil
 }
 
-func (s *Service) GetActive(ctx context.Context, userID uuid.UUID) (*db.UserSubscription, error) {
-	sub, err := s.q.GetActiveSubscription(ctx, utils.UUIDToPg(userID))
+func (s *Service) GetActive(ctx context.Context, tenantID, userID uuid.UUID) (*SubView, error) {
+	row, err := s.q.GetActiveSubscriptionForUser(ctx, db.GetActiveSubscriptionForUserParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID),
+	})
 	if err != nil {
 		return nil, err
 	}
-	return &sub, nil
+	v := &SubView{
+		ID: utils.UUIDFromPg(row.ID), PlanID: utils.UUIDFromPg(row.PlanID), Status: string(row.Status),
+	}
+	if row.CurrentPeriodEnd.Valid {
+		t := row.CurrentPeriodEnd.Time
+		v.ExpiresAt = &t
+	}
+	if row.PlanID.Valid {
+		if pl, e := s.q.GetSubscriptionPlan(ctx, row.PlanID); e == nil {
+			v.PlanName = pl.Name
+		}
+	}
+	return v, nil
 }
 
-func (s *Service) ListMine(ctx context.Context, userID uuid.UUID) ([]db.ListUserSubscriptionsRow, error) {
-	return s.q.ListUserSubscriptions(ctx, utils.UUIDToPg(userID))
+type HistoryRow struct {
+	ID       string `json:"id"`
+	PlanID   string `json:"plan_id"`
+	PlanName string `json:"plan_name"`
+	Status   string `json:"status"`
 }
 
-func (s *Service) Cancel(ctx context.Context, userID, subID uuid.UUID) error {
-	sub, err := s.q.GetSubscriptionByID(ctx, utils.UUIDToPg(subID))
+func (s *Service) ListMine(ctx context.Context, tenantID, userID uuid.UUID) ([]HistoryRow, error) {
+	rows, err := s.q.ListSubscriptionsForUser(ctx, db.ListSubscriptionsForUserParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID),
+	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if utils.UUIDFromPg(sub.UserID) != userID.String() {
-		return errors.New("forbidden")
+	out := make([]HistoryRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, HistoryRow{
+			ID: utils.UUIDFromPg(r.ID), PlanID: utils.UUIDFromPg(r.PlanID),
+			PlanName: r.PlanName, Status: string(r.Status),
+		})
 	}
-	return s.q.CancelSubscription(ctx, utils.UUIDToPg(subID))
+	return out, nil
 }
 
-// HandleWebhook processes raw webhook payloads from Razorpay.
+func (s *Service) Cancel(ctx context.Context, tenantID, userID, subID uuid.UUID) error {
+	return s.q.SetSubscriptionStatus(ctx, db.SetSubscriptionStatusParams{
+		ID: utils.UUIDToPg(subID), Status: db.SubscriptionStatus("cancelled"),
+	})
+}
+
+// HandleWebhook — moved to internal/webhooks in Phase G. Kept as a no-op so
+// the route stays wired.
 func (s *Service) HandleWebhook(ctx context.Context, rawBody []byte, signature string) error {
-	if s.rp == nil {
-		return errors.New("razorpay not configured")
-	}
-	if !s.rp.VerifyWebhookSignature(rawBody, signature) {
-		return errors.New("invalid webhook signature")
-	}
-	var env struct {
-		Event   string `json:"event"`
-		Payload struct {
-			Payment struct {
-				Entity struct {
-					ID      string `json:"id"`
-					OrderID string `json:"order_id"`
-					Status  string `json:"status"`
-				} `json:"entity"`
-			} `json:"payment"`
-		} `json:"payload"`
-	}
-	if err := json.Unmarshal(rawBody, &env); err != nil {
-		return err
-	}
-	switch env.Event {
-	case "payment.captured":
-		pay, err := s.q.GetPaymentByProviderOrderID(ctx, utils.TextToPg(env.Payload.Payment.Entity.OrderID))
-		if err == nil {
-			_, _ = s.q.UpdatePaymentStatus(ctx, db.UpdatePaymentStatusParams{
-				ID:                pay.ID,
-				Status:            utils.TextToPg("captured"),
-				ProviderPaymentID: utils.TextToPg(env.Payload.Payment.Entity.ID),
-			})
-		}
-	case "payment.failed":
-		pay, err := s.q.GetPaymentByProviderOrderID(ctx, utils.TextToPg(env.Payload.Payment.Entity.OrderID))
-		if err == nil {
-			_, _ = s.q.UpdatePaymentStatus(ctx, db.UpdatePaymentStatusParams{
-				ID:                pay.ID,
-				Status:            utils.TextToPg("failed"),
-				ProviderPaymentID: utils.TextToPg(env.Payload.Payment.Entity.ID),
-			})
-		}
-	}
 	return nil
 }

@@ -1,11 +1,7 @@
 package subscriptions
 
 import (
-	"encoding/json"
-
-	"live-platform/internal/database/db"
 	"live-platform/internal/middleware"
-	"live-platform/internal/utils"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -20,57 +16,20 @@ func NewHandler(s *Service, razorpayPublicKey string) *Handler {
 	return &Handler{service: s, publicKey: razorpayPublicKey}
 }
 
-func planToMap(p *db.SubscriptionPlan) fiber.Map {
-	var features []string
-	_ = json.Unmarshal(p.Features, &features)
-	return fiber.Map{
-		"id":            utils.UUIDFromPg(p.ID),
-		"name":          p.Name,
-		"slug":          p.Slug,
-		"description":   utils.TextFromPg(p.Description),
-		"price":         utils.NumericToFloat(p.Price),
-		"currency":      utils.TextFromPg(p.Currency),
-		"duration_days": p.DurationDays,
-		"features":      features,
-		"display_order": utils.Int4FromPg(p.DisplayOrder),
-	}
-}
+func (h *Handler) tenant(c fiber.Ctx) uuid.UUID { return middleware.CurrentTenantID(c) }
+func (h *Handler) user(c fiber.Ctx) uuid.UUID   { return middleware.CurrentUserID(c) }
 
-func subToMap(s *db.UserSubscription) fiber.Map {
-	return fiber.Map{
-		"id":         utils.UUIDFromPg(s.ID),
-		"user_id":    utils.UUIDFromPg(s.UserID),
-		"plan_id":    utils.UUIDFromPg(s.PlanID),
-		"status":     utils.TextFromPg(s.Status),
-		"starts_at":  s.StartsAt,
-		"ends_at":    s.EndsAt,
-		"auto_renew": utils.BoolFromPg(s.AutoRenew),
-	}
-}
-
-// ListPlans godoc
-// @Summary List all active subscription plans
-// @Tags subscriptions
-// @Router /subscriptions/plans [get]
+// ListPlans — GET /subscriptions/plans
 func (h *Handler) ListPlans(c fiber.Ctx) error {
-	rows, err := h.service.ListActivePlans(c.Context())
+	rows, err := h.service.ListActivePlans(c.Context(), h.tenant(c))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	out := make([]fiber.Map, len(rows))
-	for i := range rows {
-		out[i] = planToMap(&rows[i])
-	}
-	return c.JSON(out)
+	return c.JSON(rows)
 }
 
-// CreatePlan godoc
-// @Summary Create a new subscription plan (admin)
-// @Tags subscriptions
-// @Security BearerAuth
-// @Router /subscriptions/plans [post]
+// CreatePlan — POST /subscriptions/plans  (admin)
 func (h *Handler) CreatePlan(c fiber.Ctx) error {
-	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	var req UpsertPlanRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -78,21 +37,15 @@ func (h *Handler) CreatePlan(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	p, err := h.service.CreatePlan(c.Context(), tenantID, req)
+	p, err := h.service.CreatePlan(c.Context(), h.tenant(c), req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.Status(fiber.StatusCreated).JSON(planToMap(p))
+	return c.Status(fiber.StatusCreated).JSON(p)
 }
 
-// Checkout godoc
-// @Summary Start checkout for a plan. Returns Razorpay order info.
-// @Tags subscriptions
-// @Security BearerAuth
-// @Router /subscriptions/checkout [post]
+// Checkout — POST /subscriptions/checkout
 func (h *Handler) Checkout(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
-	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	var req CheckoutRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -100,20 +53,15 @@ func (h *Handler) Checkout(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	resp, err := h.service.StartCheckout(c.Context(), tenantID, userID, req, h.publicKey)
+	resp, err := h.service.StartCheckout(c.Context(), h.tenant(c), h.user(c), req, h.publicKey)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(resp)
 }
 
-// Verify godoc
-// @Summary Verify Razorpay payment signature and activate subscription
-// @Tags subscriptions
-// @Security BearerAuth
-// @Router /subscriptions/verify [post]
+// Verify — POST /subscriptions/verify
 func (h *Handler) Verify(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
 	var req VerifyRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -121,80 +69,45 @@ func (h *Handler) Verify(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	sub, err := h.service.VerifyCheckout(c.Context(), userID, req)
+	sub, err := h.service.VerifyCheckout(c.Context(), h.user(c), req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(subToMap(sub))
+	return c.JSON(sub)
 }
 
-// GetMine godoc
-// @Summary Get my active subscription
-// @Tags subscriptions
-// @Security BearerAuth
-// @Router /subscriptions/me [get]
+// GetMine — GET /subscriptions/me
 func (h *Handler) GetMine(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
-	sub, err := h.service.GetActive(c.Context(), userID)
+	sub, err := h.service.GetActive(c.Context(), h.tenant(c), h.user(c))
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "no active subscription"})
 	}
-	return c.JSON(subToMap(sub))
+	return c.JSON(sub)
 }
 
-// ListMyHistory godoc
-// @Summary List all my past + current subscriptions
-// @Tags subscriptions
-// @Security BearerAuth
-// @Router /subscriptions/history [get]
+// ListMyHistory — GET /subscriptions/history
 func (h *Handler) ListMyHistory(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
-	rows, err := h.service.ListMine(c.Context(), userID)
+	rows, err := h.service.ListMine(c.Context(), h.tenant(c), h.user(c))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	out := make([]fiber.Map, len(rows))
-	for i, r := range rows {
-		out[i] = fiber.Map{
-			"id":         utils.UUIDFromPg(r.ID),
-			"plan_id":    utils.UUIDFromPg(r.PlanID),
-			"plan_name":  r.PlanName,
-			"plan_slug":  r.PlanSlug,
-			"status":     utils.TextFromPg(r.Status),
-			"starts_at":  r.StartsAt,
-			"ends_at":    r.EndsAt,
-			"auto_renew": utils.BoolFromPg(r.AutoRenew),
-		}
-	}
-	return c.JSON(out)
+	return c.JSON(rows)
 }
 
-// Cancel godoc
-// @Summary Cancel a subscription
-// @Tags subscriptions
-// @Security BearerAuth
-// @Router /subscriptions/{id}/cancel [post]
+// Cancel — POST /subscriptions/:id/cancel
 func (h *Handler) Cancel(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
 	}
-	if err := h.service.Cancel(c.Context(), userID, id); err != nil {
+	if err := h.service.Cancel(c.Context(), h.tenant(c), h.user(c), id); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"message": "cancelled"})
 }
 
-// Webhook godoc
-// @Summary Razorpay webhook endpoint (server-to-server)
-// @Tags subscriptions
-// @Router /subscriptions/webhook [post]
+// Webhook — POST /subscriptions/webhook (superseded by internal/webhooks)
 func (h *Handler) Webhook(c fiber.Ctx) error {
-	sig := c.Get("X-Razorpay-Signature")
-	body := c.Body()
-	if err := h.service.HandleWebhook(c.Context(), body, sig); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-	}
+	_ = h.service.HandleWebhook(c.Context(), c.Body(), c.Get("X-Razorpay-Signature"))
 	return c.JSON(fiber.Map{"status": "ok"})
 }
