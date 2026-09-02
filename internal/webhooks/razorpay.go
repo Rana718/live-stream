@@ -114,47 +114,25 @@ func (h *Handler) Razorpay(c fiber.Ctx) error {
 	// razorpay_subscription_id we stored at create time. Missing rows
 	// are logged but not fatal; the subscription might belong to a flow
 	// we haven't mapped yet (legacy data, manual setup).
-	case "subscription.activated", "subscription.charged":
+	case "subscription.activated", "subscription.charged",
+		"subscription.cancelled", "subscription.completed", "subscription.halted":
 		subID := env.Payload.Subscription.Entity.ID
-		if subID != "" {
-			if _, err := h.q.SetUserSubStatusByProviderID(ctx,
-				db.SetUserSubStatusByProviderIDParams{
-					RazorpaySubscriptionID: pgtype.Text{String: subID, Valid: true},
-					Status:                 pgtype.Text{String: "active", Valid: true},
-				}); err != nil {
-				h.log.Warn("subscription status patch failed",
-					slog.String("subscription_id", subID),
-					slog.String("err", err.Error()))
-			}
-		}
-		h.log.Info("razorpay subscription active", slog.String("subscription_id", subID))
-	case "subscription.cancelled", "subscription.completed", "subscription.halted":
-		subID := env.Payload.Subscription.Entity.ID
-		// Map razorpay status to our internal labels:
-		//   cancelled — user-initiated, still has access till period end
-		//   completed — fixed-term subscription ran its course
-		//   halted    — provider-initiated after retry exhaustion
-		status := "cancelled"
+		status := db.SubscriptionStatus("active")
 		switch env.Event {
+		case "subscription.cancelled":
+			status = db.SubscriptionStatus("cancelled")
 		case "subscription.completed":
-			status = "completed"
+			status = db.SubscriptionStatus("expired")
 		case "subscription.halted":
-			status = "halted"
+			status = db.SubscriptionStatus("past_due")
 		}
 		if subID != "" {
-			if _, err := h.q.SetUserSubStatusByProviderID(ctx,
-				db.SetUserSubStatusByProviderIDParams{
-					RazorpaySubscriptionID: pgtype.Text{String: subID, Valid: true},
-					Status:                 pgtype.Text{String: status, Valid: true},
-				}); err != nil {
-				h.log.Warn("subscription status patch failed",
-					slog.String("subscription_id", subID),
-					slog.String("err", err.Error()))
+			if row, err := h.q.GetSubscriptionByGatewayID(ctx, subID); err == nil {
+				_ = h.q.SetSubscriptionStatus(ctx, db.SetSubscriptionStatusParams{ID: row.ID, Status: status})
+			} else {
+				h.log.Warn("subscription not found for gateway id", slog.String("subscription_id", subID))
 			}
 		}
-		h.log.Info("razorpay subscription ended",
-			slog.String("subscription_id", subID),
-			slog.String("event", env.Event))
 	case "refund.created", "refund.processed":
 		h.log.Info("razorpay refund",
 			slog.String("payment_id", env.Payload.Payment.Entity.ID))
@@ -176,48 +154,65 @@ func (h *Handler) applyPaymentSuccess(ctx context.Context, env rzpEnvelope) erro
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := h.q.WithTx(tx)
 
-	row, err := qtx.GetCourseOrderByProviderOrderIDForUpdate(ctx, pgtype.Text{String: orderID, Valid: true})
+	order, err := qtx.GetOrderByGatewayOrderIDForUpdate(ctx, orderID)
 	if err != nil {
-		// Not all webhooks are course orders — could be a subscription or
-		// a fee installment. Silently skip (not an error).
+		// Not all webhooks map to an order we recognise. Skip (not an error).
 		return nil
+	}
+	if string(order.Status) == "paid" || string(order.Status) == "refunded" {
+		return nil // already settled
 	}
 
-	// Idempotency — already processed by the client-side verify path or a
-	// prior webhook delivery.
-	if row.Status.String == "paid" {
-		return nil
-	}
-	if row.Status.String == "refunded" {
-		return nil
-	}
-
-	updated, err := qtx.MarkCourseOrderPaid(ctx, db.MarkCourseOrderPaidParams{
-		ID:                row.ID,
-		ProviderPaymentID: pgtype.Text{String: env.Payload.Payment.Entity.ID, Valid: true},
-		ProviderSignature: pgtype.Text{String: "webhook", Valid: true},
-	})
+	paid, err := qtx.MarkOrderPaid(ctx, order.ID)
 	if err != nil {
 		return err
 	}
+	pays, _ := qtx.ListPaymentsForOrder(ctx, order.ID)
+	for _, p := range pays {
+		if string(p.Status) == "created" || string(p.Status) == "authorized" {
+			_, _ = qtx.MarkPaymentCaptured(ctx, db.MarkPaymentCapturedParams{
+				ID:               p.ID,
+				GatewayPaymentID: pgtype.Text{String: env.Payload.Payment.Entity.ID, Valid: true},
+				Signature:        pgtype.Text{String: "webhook", Valid: true},
+			})
+			break
+		}
+	}
 
-	// Enrollment is in the same transaction — if it fails the payment stays
-	// unsettled and Razorpay's webhook retry (or the client verify) will
-	// re-attempt the whole unit.
-	if _, err := qtx.CreateEnrollment(ctx, db.CreateEnrollmentParams{
-		UserID:   updated.UserID,
-		CourseID: updated.CourseID,
-		TenantID: updated.TenantID,
-	}); err != nil {
-		return fmt.Errorf("enroll on webhook: %w", err)
+	items, err := qtx.ListOrderItems(ctx, order.ID)
+	if err != nil {
+		return err
+	}
+	for _, it := range items {
+		if !it.GrantsEntitlement {
+			continue
+		}
+		src := db.EntitlementSource("purchase")
+		if string(it.ProductKind) == "plan" {
+			src = db.EntitlementSource("subscription")
+		}
+		if _, err := qtx.GrantEntitlement(ctx, db.GrantEntitlementParams{
+			TenantID: paid.TenantID, UserID: paid.UserID, ProductID: it.ProductID,
+			ProductKind: it.ProductKind, Source: src, OrderItemID: it.ID,
+		}); err != nil {
+			return fmt.Errorf("grant on webhook: %w", err)
+		}
+		if string(it.ProductKind) == "course" {
+			if pr, e := qtx.GetProduct(ctx, it.ProductID); e == nil && pr.CourseID.Valid {
+				if _, err := qtx.UpsertEnrollment(ctx, db.UpsertEnrollmentParams{
+					TenantID: paid.TenantID, UserID: paid.UserID, CourseID: pr.CourseID,
+				}); err != nil {
+					return fmt.Errorf("enroll on webhook: %w", err)
+				}
+			}
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-
 	h.log.Info("razorpay webhook settled order",
 		slog.String("order_id", orderID),
-		slog.String("user_id", uuid.UUID(updated.UserID.Bytes).String()))
+		slog.String("user_id", uuid.UUID(paid.UserID.Bytes).String()))
 	return nil
 }
