@@ -14,10 +14,11 @@ import (
 )
 
 type Service struct {
-	q *db.Queries
+	pool *pgxpool.Pool
+	q    *db.Queries
 }
 
-func NewService(pool *pgxpool.Pool) *Service { return &Service{q: db.New(pool)} }
+func NewService(pool *pgxpool.Pool) *Service { return &Service{pool: pool, q: db.New(pool)} }
 
 // --- Test CRUD ---
 

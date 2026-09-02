@@ -16,12 +16,13 @@ import (
 )
 
 type Service struct {
-	q  *db.Queries
-	rp *payments.Razorpay
+	pool *pgxpool.Pool
+	q    *db.Queries
+	rp   *payments.Razorpay
 }
 
 func NewService(pool *pgxpool.Pool, rp *payments.Razorpay) *Service {
-	return &Service{q: db.New(pool), rp: rp}
+	return &Service{pool: pool, q: db.New(pool), rp: rp}
 }
 
 // --- Fee structure (admin-defined template per course/batch) ---
@@ -73,15 +74,15 @@ func (s *Service) DeactivateStructure(ctx context.Context, id uuid.UUID) error {
 // --- Assign fees to a student ---
 
 type AssignFeeRequest struct {
-	UserID          uuid.UUID  `json:"user_id" validate:"required"`
-	FeeStructureID  *uuid.UUID `json:"fee_structure_id"`
-	CourseID        *uuid.UUID `json:"course_id"`
-	BatchID         *uuid.UUID `json:"batch_id"`
-	TotalAmount     float64    `json:"total_amount" validate:"required,gt=0"`
-	Currency        string     `json:"currency"`
-	DueDate         *time.Time `json:"due_date"`
-	InstallmentsN   int32      `json:"installments_count"`
-	InstallmentGap  int32      `json:"installment_gap_days"`
+	UserID         uuid.UUID  `json:"user_id" validate:"required"`
+	FeeStructureID *uuid.UUID `json:"fee_structure_id"`
+	CourseID       *uuid.UUID `json:"course_id"`
+	BatchID        *uuid.UUID `json:"batch_id"`
+	TotalAmount    float64    `json:"total_amount" validate:"required,gt=0"`
+	Currency       string     `json:"currency"`
+	DueDate        *time.Time `json:"due_date"`
+	InstallmentsN  int32      `json:"installments_count"`
+	InstallmentGap int32      `json:"installment_gap_days"`
 }
 
 // Assign creates a student_fees row + installment rows based on params.

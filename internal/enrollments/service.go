@@ -10,9 +10,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type Service struct{ q *db.Queries }
+type Service struct {
+	pool *pgxpool.Pool
+	q    *db.Queries
+}
 
-func NewService(pool *pgxpool.Pool) *Service { return &Service{q: db.New(pool)} }
+func NewService(pool *pgxpool.Pool) *Service { return &Service{pool: pool, q: db.New(pool)} }
 
 type EnrollRequest struct {
 	CourseID uuid.UUID  `json:"course_id" validate:"required"`

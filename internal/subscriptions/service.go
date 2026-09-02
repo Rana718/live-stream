@@ -16,12 +16,13 @@ import (
 )
 
 type Service struct {
-	q  *db.Queries
-	rp *payments.Razorpay
+	pool *pgxpool.Pool
+	q    *db.Queries
+	rp   *payments.Razorpay
 }
 
 func NewService(pool *pgxpool.Pool, rp *payments.Razorpay) *Service {
-	return &Service{q: db.New(pool), rp: rp}
+	return &Service{pool: pool, q: db.New(pool), rp: rp}
 }
 
 // --- Plans ---
@@ -110,7 +111,7 @@ func (s *Service) StartCheckout(ctx context.Context, tenantID, userID uuid.UUID,
 	if priceFloat <= 0 {
 		// Free plan — activate immediately, no payment required.
 		_, err := s.q.ActivateSubscription(ctx, db.ActivateSubscriptionParams{
-			ID:         sub.ID,
+			ID:   sub.ID,
 			Days: plan.DurationDays,
 		})
 		if err != nil {
@@ -188,10 +189,10 @@ func (s *Service) VerifyCheckout(ctx context.Context, userID uuid.UUID, req Veri
 	}
 
 	if _, err := s.q.UpdatePaymentStatus(ctx, db.UpdatePaymentStatusParams{
-		ID:                 pay.ID,
-		Status:             utils.TextToPg("captured"),
-		ProviderPaymentID:  utils.TextToPg(req.RazorpayPaymentID),
-		ProviderSignature:  utils.TextToPg(req.RazorpaySignature),
+		ID:                pay.ID,
+		Status:            utils.TextToPg("captured"),
+		ProviderPaymentID: utils.TextToPg(req.RazorpayPaymentID),
+		ProviderSignature: utils.TextToPg(req.RazorpaySignature),
 	}); err != nil {
 		return nil, err
 	}
@@ -208,7 +209,7 @@ func (s *Service) VerifyCheckout(ctx context.Context, userID uuid.UUID, req Veri
 		return nil, err
 	}
 	updated, err := s.q.ActivateSubscription(ctx, db.ActivateSubscriptionParams{
-		ID:           sub.ID,
+		ID:   sub.ID,
 		Days: plan.DurationDays,
 	})
 	if err != nil {
