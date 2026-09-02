@@ -1,26 +1,26 @@
-// Package courseorders implements direct course purchase. Lifecycle:
-//  1. POST /courses/:id/buy → creates a Razorpay order + a "payments" row
-//     with status=created.
-//  2. The mobile/web client opens Razorpay checkout with that order_id.
-//  3. POST /payments/verify → server verifies the signature, marks the
-//     payment paid, creates an enrollment row.
-//  4. POST /webhooks/razorpay (idempotent) — backstop for clients that
-//     never POST verify.
+// Package courseorders implements direct course purchase on the schema-v2
+// commerce model: products → prices → orders → order_items → payments →
+// entitlements → enrollments. GST is left at zero here — Phase E adds the
+// real CGST/SGST/IGST split + invoices.
 //
-// We pile this on top of the existing payments table rather than introducing
-// a new orders table; the schema already had everything we need (provider
-// IDs, status, metadata) once we tacked on a course_id.
+// Lifecycle:
+//  1. POST /courses/:id/buy → ensure product+price, create an `orders` row +
+//     `order_items` + a Razorpay order + a `payments` row (status=created).
+//  2. Client opens Razorpay checkout with the gateway order id.
+//  3. POST /payments/verify → verify signature, in one tx: MarkOrderPaid +
+//     MarkPaymentCaptured + GrantEntitlement (per item) + UpsertEnrollment.
+//  4. Webhook backstop lives in internal/webhooks.
 package courseorders
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 
 	"live-platform/internal/database/db"
 	"live-platform/internal/events"
 	"live-platform/internal/payments"
+	"live-platform/internal/utils"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -32,6 +32,7 @@ type Service struct {
 	q         *db.Queries
 	rp        *payments.Razorpay
 	producer  *events.Producer
+	coupons   CouponRedeemer
 	referrals ReferralRewarder
 }
 
@@ -39,125 +40,198 @@ func NewService(pool *pgxpool.Pool, rp *payments.Razorpay) *Service {
 	return &Service{pool: pool, q: db.New(pool), rp: rp}
 }
 
-// WithProducer wires the Kafka producer so successful purchases emit
-// payment.succeeded + course.purchased events. Optional.
 func (s *Service) WithProducer(p *events.Producer) *Service { s.producer = p; return s }
 
-// ReferralRewarder is the slice of internal/referrals that courseorders
-// depends on. Defined here (rather than imported) so the package stays
-// import-cycle-free: referrals doesn't know about courseorders, courseorders
-// just needs "credit a referrer when this user makes a purchase".
 type ReferralRewarder interface {
 	RewardOnPurchase(ctx context.Context, referredUser uuid.UUID) (int64, error)
 }
 
-// WithReferrals wires the reward-on-first-purchase hook. Optional —
-// leaving it nil simply skips the reward step (the purchase still
-// completes normally).
 func (s *Service) WithReferrals(r ReferralRewarder) *Service { s.referrals = r; return s }
 
-// CreateOrderResult is what the buy endpoint hands back to the client.
-// Mirrors what razorpay_flutter / Razorpay JS expects on its checkout call.
+// CouponRedeemer is the slice of internal/coupons courseorders needs.
+type CouponRedeemer interface {
+	Apply(ctx context.Context, tenantID, userID uuid.UUID, code string, amountMinor int, courseID *uuid.UUID, isSubscription bool) (*couponApply, error)
+	Redeem(ctx context.Context, tenantID, couponID, userID uuid.UUID, orderID *uuid.UUID, amountOffMinor int) error
+}
+
+// couponApply mirrors coupons.ApplyResult without importing it (cycle-free).
+type couponApply struct {
+	CouponID  uuid.UUID
+	Code      string
+	AmountOff int
+	Final     int
+}
+
+func (s *Service) WithCoupons(c CouponRedeemer) *Service { s.coupons = c; return s }
+
 type CreateOrderResult struct {
 	OrderID   string `json:"order_id"`
 	Amount    int64  `json:"amount"`
 	Currency  string `json:"currency"`
-	PaymentID string `json:"payment_record_id"` // our internal id
+	PaymentID string `json:"payment_record_id"`
 	KeyID     string `json:"key_id,omitempty"`
 }
 
-// Buy creates a Razorpay order for the given course + records a pending
-// payment row keyed off the order ID.
-func (s *Service) Buy(ctx context.Context, tenantID, userID, courseID uuid.UUID, keyID string) (*CreateOrderResult, error) {
-	// Already bought? Idempotency for a button-spamming user.
-	bought, err := s.q.HasUserBoughtCourse(ctx, db.HasUserBoughtCourseParams{
-		UserID:   pgtype.UUID{Bytes: userID, Valid: true},
-		CourseID: pgtype.UUID{Bytes: courseID, Valid: true},
-	})
-	if err == nil && bought {
-		return nil, fmt.Errorf("already enrolled")
-	}
+type BuyRequest struct {
+	CouponCode  string `json:"coupon_code"`
+	AmountMinor int64  `json:"amount_minor"` // fallback if the product has no active price
+}
 
-	course, err := s.q.GetCourseByID(ctx, pgtype.UUID{Bytes: courseID, Valid: true})
+// ensureProduct returns the course's product id + kind, creating the product
+// row on first sale.
+func (s *Service) ensureProduct(ctx context.Context, q *db.Queries, tenantID, courseID uuid.UUID, taxRateBps int32) (pgtype.UUID, error) {
+	if p, err := q.GetProductForCourse(ctx, utils.UUIDToPg(courseID)); err == nil {
+		return p.ID, nil
+	}
+	p, err := q.CreateProduct(ctx, db.CreateProductParams{
+		TenantID:   utils.UUIDToPg(tenantID),
+		Kind:       db.ProductKind("course"),
+		CourseID:   utils.UUIDToPg(courseID),
+		TaxRateBps: pgtype.Int4{Int32: taxRateBps, Valid: true},
+	})
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	return p.ID, nil
+}
+
+func (s *Service) Buy(ctx context.Context, tenantID, userID, courseID uuid.UUID, keyID string, req BuyRequest) (*CreateOrderResult, error) {
+	course, err := s.q.GetCourse(ctx, utils.UUIDToPg(courseID))
 	if err != nil {
 		return nil, fmt.Errorf("course not found")
 	}
-	priceRupees, _ := course.Price.Float64Value()
-	amountPaise := int64(priceRupees.Float64 * 100)
-	if amountPaise <= 0 {
-		return nil, fmt.Errorf("course is free or unpriced — no order to create")
-	}
 
-	receipt := fmt.Sprintf("course-%s-%d", courseID.String()[:8], userID.ID())
-	notes := map[string]string{
-		"tenant_id": tenantID.String(),
-		"user_id":   userID.String(),
-		"course_id": courseID.String(),
-	}
-
-	// Razorpay Route split. We only attempt the transfer if the tenant has
-	// finished Linked-Account KYC AND is on a paid plan. Free tier (starter)
-	// keeps everything on the platform account; tenant payouts there happen
-	// out-of-band via manual settlement.
-	tenant, tErr := s.q.GetTenantByID(ctx, pgtype.UUID{Bytes: tenantID, Valid: true})
-	var transfers []payments.Transfer
-	if tErr == nil && tenant.RazorpayAccountID.Valid && tenant.RazorpayAccountID.String != "" {
-		_, tenantShare := payments.SplitForTenant(amountPaise, tenant.Plan)
-		if tenantShare > 0 {
-			transfers = []payments.Transfer{{
-				Account:  tenant.RazorpayAccountID.String,
-				Amount:   tenantShare,
-				Currency: "INR",
-				Notes:    notes,
-			}}
-		}
-	}
-
-	order, err := s.rp.CreateOrderWithTransfers(ctx, amountPaise, "INR", receipt, notes, transfers)
+	productID, err := s.ensureProduct(ctx, s.q, tenantID, courseID, course.TaxRateBps)
 	if err != nil {
 		return nil, err
 	}
 
-	meta, _ := json.Marshal(map[string]string{
-		"course_title": course.Title,
-		"receipt":      receipt,
+	// Already own it?
+	owns, _ := s.q.CheckEntitlement(ctx, db.CheckEntitlementParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID), ProductID: productID,
 	})
-	row, err := s.q.CreateCourseOrder(ctx, db.CreateCourseOrderParams{
-		TenantID:        pgtype.UUID{Bytes: tenantID, Valid: true},
-		UserID:          pgtype.UUID{Bytes: userID, Valid: true},
-		CourseID:        pgtype.UUID{Bytes: courseID, Valid: true},
-		Amount:          course.Price, // rupees, matches payments.amount NUMERIC(10,2)
-		Column5:         "INR",
-		ProviderOrderID: pgtype.Text{String: order.ID, Valid: true},
-		Metadata:        meta,
+	if owns {
+		return nil, fmt.Errorf("already enrolled")
+	}
+
+	// Price.
+	var amountMinor int64
+	if p, e := s.q.GetActivePrice(ctx, productID); e == nil {
+		amountMinor = p.AmountMinor
+	} else if req.AmountMinor > 0 {
+		np, e := s.q.UpsertActivePrice(ctx, db.UpsertActivePriceParams{
+			TenantID: utils.UUIDToPg(tenantID), ProductID: productID, AmountMinor: req.AmountMinor,
+		})
+		if e != nil {
+			return nil, e
+		}
+		amountMinor = np.AmountMinor
+	}
+	if amountMinor <= 0 {
+		return nil, fmt.Errorf("course is free or unpriced — no order to create")
+	}
+
+	// Coupon.
+	var discount int64
+	var couponID pgtype.UUID
+	if req.CouponCode != "" && s.coupons != nil {
+		ar, e := s.coupons.Apply(ctx, tenantID, userID, req.CouponCode, int(amountMinor), &courseID, false)
+		if e != nil {
+			return nil, e
+		}
+		discount = int64(ar.AmountOff)
+		couponID = utils.UUIDToPg(ar.CouponID)
+	}
+
+	total := amountMinor - discount
+	seq, _ := s.q.NextOrderSequence(ctx, utils.UUIDToPg(tenantID))
+	code := fmt.Sprintf("ORD-%06d", seq)
+
+	notes, _ := json.Marshal(map[string]string{
+		"course_id": courseID.String(), "user_id": userID.String(), "course_title": course.Title,
+	})
+
+	rpOrder, err := s.rp.CreateOrder(ctx, total, "INR", code, map[string]string{
+		"tenant_id": tenantID.String(), "user_id": userID.String(), "course_id": courseID.String(),
 	})
 	if err != nil {
+		return nil, err
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	order, err := q.CreateOrder(ctx, db.CreateOrderParams{
+		TenantID:       utils.UUIDToPg(tenantID),
+		UserID:         utils.UUIDToPg(userID),
+		Code:           code,
+		SubtotalMinor:  amountMinor,
+		DiscountMinor:  discount,
+		TaxMinor:       0,
+		TotalMinor:     total,
+		Status:         db.NullOrderStatus{OrderStatus: db.OrderStatus("awaiting_payment"), Valid: true},
+		CouponID:       couponID,
+		Gateway:        pgtype.Text{String: "razorpay", Valid: true},
+		GatewayOrderID: pgtype.Text{String: rpOrder.ID, Valid: true},
+		Notes:          notes,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := q.CreateOrderItem(ctx, db.CreateOrderItemParams{
+		TenantID:          utils.UUIDToPg(tenantID),
+		OrderID:           order.ID,
+		ProductID:         productID,
+		ProductKind:       db.ProductKind("course"),
+		Title:             course.Title,
+		UnitMinor:         amountMinor,
+		Qty:               1,
+		LineSubtotalMinor: amountMinor,
+		DiscountMinor:     discount,
+		TaxableMinor:      total,
+		TotalMinor:        total,
+		GrantsEntitlement: pgtype.Bool{Bool: true, Valid: true},
+	}); err != nil {
+		return nil, err
+	}
+
+	pay, err := q.CreatePayment(ctx, db.CreatePaymentParams{
+		TenantID:       utils.UUIDToPg(tenantID),
+		OrderID:        order.ID,
+		UserID:         utils.UUIDToPg(userID),
+		GatewayOrderID: pgtype.Text{String: rpOrder.ID, Valid: true},
+		AmountMinor:    total,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 
 	return &CreateOrderResult{
-		OrderID:   order.ID,
-		Amount:    amountPaise,
-		Currency:  "INR",
-		PaymentID: uuid.UUID(row.ID.Bytes).String(),
-		KeyID:     keyID,
+		OrderID: rpOrder.ID, Amount: total, Currency: "INR",
+		PaymentID: utils.UUIDFromPg(pay.ID), KeyID: keyID,
 	}, nil
 }
 
-// VerifyRequest is the payload Razorpay's checkout returns to the client,
-// which the client then forwards to /payments/verify.
 type VerifyRequest struct {
 	RazorpayOrderID   string `json:"razorpay_order_id"`
 	RazorpayPaymentID string `json:"razorpay_payment_id"`
 	RazorpaySignature string `json:"razorpay_signature"`
 }
 
-// Verify validates the signature, marks the payment paid, and enrolls the
-// student — atomically. Safe to call multiple times: the row is locked
-// FOR UPDATE inside the transaction so concurrent calls serialise, and a
-// second call after settlement returns the paid row without re-enrolling
-// or re-rewarding.
-func (s *Service) Verify(ctx context.Context, req VerifyRequest, userID uuid.UUID) (*db.Payment, error) {
+type VerifyResult struct {
+	Status  string `json:"status"`
+	OrderID string `json:"order_id"`
+}
+
+func (s *Service) Verify(ctx context.Context, req VerifyRequest, userID uuid.UUID) (*VerifyResult, error) {
 	if !s.rp.VerifyPaymentSignature(req.RazorpayOrderID, req.RazorpayPaymentID, req.RazorpaySignature) {
 		return nil, fmt.Errorf("signature mismatch")
 	}
@@ -167,84 +241,87 @@ func (s *Service) Verify(ctx context.Context, req VerifyRequest, userID uuid.UUI
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	qtx := s.q.WithTx(tx)
+	q := s.q.WithTx(tx)
 
-	row, err := qtx.GetCourseOrderByProviderOrderIDForUpdate(ctx,
-		pgtype.Text{String: req.RazorpayOrderID, Valid: true})
+	order, err := q.GetOrderByGatewayOrderIDForUpdate(ctx, req.RazorpayOrderID)
 	if err != nil {
 		return nil, fmt.Errorf("order not found")
 	}
-	if uuid.UUID(row.UserID.Bytes) != userID {
+	if uuid.UUID(order.UserID.Bytes) != userID {
 		return nil, fmt.Errorf("not your order")
 	}
-	if row.Status.String == "paid" {
-		return &row, nil // already settled — idempotent no-op
-	}
-	if row.Status.String == "refunded" {
-		return nil, fmt.Errorf("order was refunded")
+	if string(order.Status) == "paid" {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return &VerifyResult{Status: "paid", OrderID: utils.UUIDFromPg(order.ID)}, nil
 	}
 
-	updated, err := qtx.MarkCourseOrderPaid(ctx, db.MarkCourseOrderPaidParams{
-		ID:                row.ID,
-		ProviderPaymentID: pgtype.Text{String: req.RazorpayPaymentID, Valid: true},
-		ProviderSignature: pgtype.Text{String: req.RazorpaySignature, Valid: true},
-	})
+	paid, err := q.MarkOrderPaid(ctx, order.ID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Enrollment is part of the same transaction — a failure here rolls the
-	// payment back to unsettled so a retry (client verify or webhook) can
-	// complete it. No more "paid but not enrolled" silent gap.
-	if _, err := qtx.CreateEnrollment(ctx, db.CreateEnrollmentParams{
-		UserID:   row.UserID,
-		CourseID: row.CourseID,
-		TenantID: row.TenantID,
-	}); err != nil {
-		return nil, fmt.Errorf("enrollment failed: %w", err)
+	pays, _ := q.ListPaymentsForOrder(ctx, order.ID)
+	for _, p := range pays {
+		if string(p.Status) == "created" || string(p.Status) == "authorized" {
+			if _, err := q.MarkPaymentCaptured(ctx, db.MarkPaymentCapturedParams{
+				ID:               p.ID,
+				GatewayPaymentID: pgtype.Text{String: req.RazorpayPaymentID, Valid: true},
+				Signature:        pgtype.Text{String: req.RazorpaySignature, Valid: true},
+			}); err != nil {
+				return nil, err
+			}
+			break
+		}
+	}
+
+	items, err := q.ListOrderItems(ctx, order.ID)
+	if err != nil {
+		return nil, err
+	}
+	tenantID := uuid.UUID(paid.TenantID.Bytes)
+	for _, it := range items {
+		if !it.GrantsEntitlement {
+			continue
+		}
+		if _, err := q.GrantEntitlement(ctx, db.GrantEntitlementParams{
+			TenantID:    paid.TenantID,
+			UserID:      paid.UserID,
+			ProductID:   it.ProductID,
+			ProductKind: it.ProductKind,
+			Source:      db.EntitlementSource("purchase"),
+			OrderItemID: it.ID,
+		}); err != nil {
+			return nil, fmt.Errorf("entitlement grant failed: %w", err)
+		}
+		if string(it.ProductKind) == "course" {
+			if p, e := q.GetProduct(ctx, it.ProductID); e == nil && p.CourseID.Valid {
+				if _, err := q.UpsertEnrollment(ctx, db.UpsertEnrollmentParams{
+					TenantID: paid.TenantID, UserID: paid.UserID, CourseID: p.CourseID,
+				}); err != nil {
+					return nil, fmt.Errorf("enrollment failed: %w", err)
+				}
+			}
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 
-	// --- post-commit, best-effort side effects ---
-	tenantID := uuid.UUID(row.TenantID.Bytes)
-	courseID := uuid.UUID(row.CourseID.Bytes)
-	s.emit(ctx, events.TypePaymentSucceeded, tenantID, userID, map[string]any{
-		"order_id":    req.RazorpayOrderID,
-		"payment_id":  req.RazorpayPaymentID,
-		"course_id":   courseID,
-		"amount_paid": row.Amount,
-	})
-	s.emit(ctx, events.TypeCoursePurchased, tenantID, userID, map[string]any{
-		"course_id": courseID,
-	})
-
+	// best-effort post-commit
+	s.emit(ctx, events.TypeCoursePurchased, tenantID, userID, map[string]any{"order_id": utils.UUIDFromPg(order.ID)})
 	if s.referrals != nil {
-		if amt, err := s.referrals.RewardOnPurchase(ctx, userID); err == nil && amt > 0 {
-			s.emit(ctx, "referral.rewarded", tenantID, userID, map[string]any{
-				"reward_paise": amt,
-				"course_id":    courseID,
-			})
-		}
+		_, _ = s.referrals.RewardOnPurchase(ctx, userID)
 	}
 
-	return &updated, nil
+	return &VerifyResult{Status: "paid", OrderID: utils.UUIDFromPg(order.ID)}, nil
 }
 
-// emit publishes an event if a producer is wired; a nil producer is a
-// no-op rather than a panic.
 func (s *Service) emit(ctx context.Context, t string, tenantID, userID uuid.UUID, payload map[string]any) {
 	if s.producer == nil {
 		return
 	}
 	s.producer.Emit(ctx, t, tenantID, userID, payload)
 }
-
-// helper: format a uint user ID portion for receipt
-//
-// Receipt slot in Razorpay is bounded; we keep it short by using the
-// trailing 6 chars of the user UUID. This is presentational only — the
-// idempotency comes from order_id.
-var _ = strconv.Itoa

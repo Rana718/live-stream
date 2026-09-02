@@ -30,7 +30,9 @@ func (h *Handler) Buy(c fiber.Ctx) error {
 	userID, _ := c.Locals("userID").(uuid.UUID)
 	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 
-	res, err := h.svc.Buy(c.Context(), tenantID, userID, courseID, h.keyID)
+	var req BuyRequest
+	_ = c.Bind().Body(&req)
+	res, err := h.svc.Buy(c.Context(), tenantID, userID, courseID, h.keyID, req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -55,5 +57,5 @@ func (h *Handler) Verify(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"status": row.Status.String, "payment": row})
+	return c.JSON(fiber.Map{"status": row.Status, "order_id": row.OrderID})
 }
