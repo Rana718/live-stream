@@ -173,3 +173,31 @@ ON CONFLICT (tenant_id, user_id) DO UPDATE SET
     meta                 = COALESCE(sqlc.narg(meta)::jsonb, user_profiles.meta)
 RETURNING id, tenant_id, user_id, class_level, board, exam_goal,
           onboarding_completed, guardian_name, guardian_phone, address, meta;
+
+-- ─────────────────────────────────────────────────────────────── app_builds
+
+-- name: CreateAppBuild :one
+INSERT INTO app_builds (tenant_id, platform, package_id, version_name)
+VALUES ($1, $2, sqlc.narg(package_id)::text, sqlc.narg(version_name)::text)
+RETURNING id, tenant_id, platform, status, package_id, version_name, created_at;
+
+-- name: SetAppBuildStatus :one
+UPDATE app_builds SET
+    status      = $2,
+    build_url   = COALESCE(nullif(sqlc.narg(build_url)::text, ''), build_url),
+    store_url   = COALESCE(nullif(sqlc.narg(store_url)::text, ''), store_url),
+    error_log   = COALESCE(nullif(sqlc.narg(error_log)::text, ''), error_log),
+    completed_at = CASE WHEN $2 IN ('succeeded'::build_status, 'published'::build_status, 'failed'::build_status)
+                        THEN now() ELSE completed_at END
+WHERE id = $1
+RETURNING id, tenant_id, platform, status, build_url, store_url, version_name, completed_at;
+
+-- name: ListAppBuilds :many
+SELECT b.id, b.tenant_id, b.platform, b.status, b.package_id, b.version_name,
+       b.build_url, b.store_url, b.created_at, b.completed_at,
+       t.name AS tenant_name, t.org_code
+FROM app_builds b
+JOIN tenants t ON t.id = b.tenant_id
+WHERE (sqlc.narg(status)::build_status IS NULL OR b.status = sqlc.narg(status)::build_status)
+ORDER BY b.created_at DESC
+LIMIT $1 OFFSET $2;

@@ -60,13 +60,13 @@ type TriggerInput struct {
 // Trigger creates a queued build row and (if Codemagic is configured)
 // dispatches the build. The DB row is the source of truth — we record it
 // even if the dispatch fails so support can re-trigger from the UI later.
-func (s *Service) Trigger(ctx context.Context, tenantID uuid.UUID, in TriggerInput) (*db.AppBuild, error) {
+func (s *Service) Trigger(ctx context.Context, tenantID uuid.UUID, in TriggerInput) (*db.CreateAppBuildRow, error) {
 	if in.VersionName == "" {
 		in.VersionName = time.Now().Format("2006.01.02")
 	}
 	row, err := s.q.CreateAppBuild(ctx, db.CreateAppBuildParams{
 		TenantID:    utils.UUIDToPg(tenantID),
-		Platform:    in.Platform,
+		Platform:    db.BuildPlatform(in.Platform),
 		PackageID:   pgtype.Text{String: in.PackageID, Valid: true},
 		VersionName: pgtype.Text{String: in.VersionName, Valid: true},
 	})
@@ -86,10 +86,8 @@ func (s *Service) Trigger(ctx context.Context, tenantID uuid.UUID, in TriggerInp
 		// show the error_log and a Retry button.
 		_, _ = s.q.SetAppBuildStatus(ctx, db.SetAppBuildStatusParams{
 			ID:       row.ID,
-			Status:   "failed",
-			Column3:  "",
-			Column4:  "",
-			Column5:  err.Error(),
+			Status:   db.BuildStatus("failed"),
+			ErrorLog: pgtype.Text{String: err.Error(), Valid: true},
 		})
 		s.log.Error("codemagic dispatch failed",
 			slog.String("build_id", uuid.UUID(row.ID.Bytes).String()),
@@ -105,7 +103,7 @@ type codemagicReq struct {
 	EnvironmentVars  map[string]string `json:"environment,omitempty"`
 }
 
-func (s *Service) dispatchToCodemagic(ctx context.Context, row db.AppBuild, tenantID uuid.UUID, in TriggerInput) error {
+func (s *Service) dispatchToCodemagic(ctx context.Context, row db.CreateAppBuildRow, tenantID uuid.UUID, in TriggerInput) error {
 	envs := map[string]string{
 		"TENANT_ID":     tenantID.String(),
 		"BUILD_ID":      uuid.UUID(row.ID.Bytes).String(),
@@ -144,28 +142,42 @@ func (s *Service) dispatchToCodemagic(ctx context.Context, row db.AppBuild, tena
 }
 
 func (s *Service) List(ctx context.Context, status string, limit, offset int32) ([]db.ListAppBuildsRow, error) {
+	var st db.NullBuildStatus
+	if status != "" {
+		st = db.NullBuildStatus{BuildStatus: db.BuildStatus(status), Valid: true}
+	}
 	return s.q.ListAppBuilds(ctx, db.ListAppBuildsParams{
-		Column1: status,
-		Limit:   limit,
-		Offset:  offset,
+		Status: st, Limit: limit, Offset: offset,
 	})
 }
 
 // SetStatus is invoked by the Codemagic webhook (or manually by support).
 type SetStatusInput struct {
-	Status   string `json:"status" validate:"required,oneof=queued building published failed"`
+	Status   string `json:"status" validate:"required,oneof=queued building succeeded published failed"`
 	BuildURL string `json:"build_url"`
 	PlayURL  string `json:"play_url"`
+	StoreURL string `json:"store_url"`
 	ErrorLog string `json:"error_log"`
 }
 
-func (s *Service) SetStatus(ctx context.Context, id uuid.UUID, in SetStatusInput) (*db.AppBuild, error) {
+func text(s string) pgtype.Text {
+	if s == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: s, Valid: true}
+}
+
+func (s *Service) SetStatus(ctx context.Context, id uuid.UUID, in SetStatusInput) (*db.SetAppBuildStatusRow, error) {
+	store := in.StoreURL
+	if store == "" {
+		store = in.PlayURL
+	}
 	row, err := s.q.SetAppBuildStatus(ctx, db.SetAppBuildStatusParams{
-		ID:      utils.UUIDToPg(id),
-		Status:  in.Status,
-		Column3: in.BuildURL,
-		Column4: in.PlayURL,
-		Column5: in.ErrorLog,
+		ID:       utils.UUIDToPg(id),
+		Status:   db.BuildStatus(in.Status),
+		BuildUrl: text(in.BuildURL),
+		StoreUrl: text(store),
+		ErrorLog: text(in.ErrorLog),
 	})
 	if err != nil {
 		return nil, err
