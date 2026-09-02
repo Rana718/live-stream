@@ -245,6 +245,71 @@ func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 	return s.q.DeleteCourseLesson(ctx, utils.UUIDToPg(id))
 }
 
+// ── course sections ─────────────────────────────────────────────────
+
+type Section struct {
+	ID            string `json:"id"`
+	CourseID      string `json:"course_id"`
+	Title         string `json:"title"`
+	DisplayOrder  int32  `json:"display_order"`
+	DripAfterDays int32  `json:"drip_after_days"`
+}
+
+type SectionRequest struct {
+	CourseID      *uuid.UUID `json:"course_id"`
+	Title         string     `json:"title" validate:"required,min=1"`
+	DisplayOrder  int32      `json:"display_order"`
+	DripAfterDays int32      `json:"drip_after_days"`
+}
+
+func (s *Service) ListSections(ctx context.Context, courseID uuid.UUID) ([]Section, error) {
+	rows, err := s.q.ListCourseSections(ctx, utils.UUIDToPg(courseID))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Section, len(rows))
+	for i, r := range rows {
+		out[i] = Section{
+			ID: utils.UUIDFromPg(r.ID), CourseID: courseID.String(), Title: r.Title,
+			DisplayOrder: r.DisplayOrder, DripAfterDays: r.DripAfterDays,
+		}
+	}
+	return out, nil
+}
+
+func (s *Service) CreateSection(ctx context.Context, tenantID uuid.UUID, req SectionRequest) (Section, error) {
+	if req.CourseID == nil {
+		return Section{}, errNoCourse
+	}
+	row, err := s.q.CreateCourseSection(ctx, db.CreateCourseSectionParams{
+		TenantID:      utils.UUIDToPg(tenantID),
+		CourseID:      utils.UUIDToPg(*req.CourseID),
+		Title:         req.Title,
+		DisplayOrder:  utils.Int4ToPg(req.DisplayOrder),
+		DripAfterDays: utils.Int4ToPg(req.DripAfterDays),
+	})
+	if err != nil {
+		return Section{}, err
+	}
+	return Section{
+		ID: utils.UUIDFromPg(row.ID), CourseID: utils.UUIDFromPg(row.CourseID),
+		Title: row.Title, DisplayOrder: row.DisplayOrder, DripAfterDays: row.DripAfterDays,
+	}, nil
+}
+
+func (s *Service) UpdateSection(ctx context.Context, id uuid.UUID, req SectionRequest) error {
+	return s.q.UpdateCourseSection(ctx, db.UpdateCourseSectionParams{
+		ID:            utils.UUIDToPg(id),
+		Title:         pgtype.Text{String: req.Title, Valid: req.Title != ""},
+		DisplayOrder:  utils.Int4ToPg(req.DisplayOrder),
+		DripAfterDays: utils.Int4ToPg(req.DripAfterDays),
+	})
+}
+
+func (s *Service) DeleteSection(ctx context.Context, id uuid.UUID) error {
+	return s.q.DeleteCourseSection(ctx, utils.UUIDToPg(id))
+}
+
 type RecordWatchRequest struct {
 	LessonID       *uuid.UUID `json:"lesson_id"`
 	LectureID      *uuid.UUID `json:"lecture_id"` // legacy alias

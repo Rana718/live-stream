@@ -807,6 +807,12 @@ func main() {
 	lg.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), lectureHandler.Update)
 	lg.Delete("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), lectureHandler.Delete)
 	lg.Post("/watch", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), lectureHandler.RecordWatch)
+	// Course sections (chapters within a course; lessons hang off them).
+	api.Get("/courses/:course_id/sections", catalogAuth, catalogCtx, lectureHandler.ListSections)
+	csx := api.Group("/course-sections", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin())
+	csx.Post("/", lectureHandler.CreateSection)
+	csx.Put("/:id", lectureHandler.UpdateSection)
+	csx.Delete("/:id", lectureHandler.DeleteSection)
 	lg.Get("/history/my", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), lectureHandler.History)
 
 	// Generic file uploads (logos, thumbnails, banner images, lecture

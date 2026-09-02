@@ -116,6 +116,62 @@ func (h *Handler) Delete(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": "deleted"})
 }
 
+// ── course sections ─────────────────────────────────────────────────
+
+// ListSections — GET /courses/:course_id/sections
+func (h *Handler) ListSections(c fiber.Ctx) error {
+	cid, err := uuid.Parse(c.Params("course_id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course id"})
+	}
+	rows, err := h.service.ListSections(c.Context(), cid)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(rows)
+}
+
+// CreateSection — POST /course-sections
+func (h *Handler) CreateSection(c fiber.Ctx) error {
+	var req SectionRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
+	}
+	s, err := h.service.CreateSection(c.Context(), h.tenant(c), req)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.Status(fiber.StatusCreated).JSON(s)
+}
+
+// UpdateSection — PUT /course-sections/:id
+func (h *Handler) UpdateSection(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	var req SectionRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
+	}
+	if err := h.service.UpdateSection(c.Context(), id, req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"updated": true})
+}
+
+// DeleteSection — DELETE /course-sections/:id
+func (h *Handler) DeleteSection(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	if err := h.service.DeleteSection(c.Context(), id); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"message": "deleted"})
+}
+
 // RecordWatch — POST /lectures/watch
 func (h *Handler) RecordWatch(c fiber.Ctx) error {
 	var req RecordWatchRequest
