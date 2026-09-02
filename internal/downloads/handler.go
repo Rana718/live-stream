@@ -1,9 +1,7 @@
 package downloads
 
 import (
-	"live-platform/internal/database/db"
 	"live-platform/internal/middleware"
-	"live-platform/internal/utils"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -12,21 +10,6 @@ import (
 type Handler struct{ service *Service }
 
 func NewHandler(s *Service) *Handler { return &Handler{service: s} }
-
-func variantToMap(v *db.VideoVariant) fiber.Map {
-	return fiber.Map{
-		"id":           utils.UUIDFromPg(v.ID),
-		"recording_id": utils.UUIDFromPg(v.RecordingID),
-		"lecture_id":   utils.UUIDFromPg(v.LectureID),
-		"quality":      v.Quality,
-		"file_path":    v.FilePath,
-		"file_size":    utils.Int8FromPg(v.FileSize),
-		"bitrate_kbps": utils.Int4FromPg(v.BitrateKbps),
-		"width":        utils.Int4FromPg(v.Width),
-		"height":       utils.Int4FromPg(v.Height),
-		"codec":        utils.TextFromPg(v.Codec),
-	}
-}
 
 // CreateVariant godoc
 // @Summary Register a transcoded video variant (admin/instructor)
@@ -46,7 +29,7 @@ func (h *Handler) CreateVariant(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.Status(fiber.StatusCreated).JSON(variantToMap(v))
+	return c.Status(fiber.StatusCreated).JSON(v)
 }
 
 // ListVariantsForLecture godoc
@@ -62,11 +45,7 @@ func (h *Handler) ListVariantsForLecture(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	out := make([]fiber.Map, len(rows))
-	for i := range rows {
-		out[i] = variantToMap(&rows[i])
-	}
-	return c.JSON(out)
+	return c.JSON(rows)
 }
 
 // IssueToken godoc
