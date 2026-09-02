@@ -439,3 +439,10 @@ JOIN users u ON u.id = m.user_id
 WHERE m.tenant_id = $1 AND m.session_id = $2
 ORDER BY m.created_at DESC
 LIMIT $3 OFFSET $4;
+
+-- name: SessionExistsForSchedule :one
+SELECT EXISTS (
+    SELECT 1 FROM live_sessions
+    WHERE schedule_id = $1 AND scheduled_start = sqlc.arg(scheduled_start)::timestamptz
+      AND deleted_at IS NULL
+);

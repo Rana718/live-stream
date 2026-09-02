@@ -6,13 +6,13 @@
 // replicas.
 //
 // Algorithm:
-//   1. Load every schedule that's active, in-window, and either un-
-//      materialised or last-touched >12h ago.
-//   2. For each, compute the next 14 days of occurrences in the
-//      schedule's local timezone.
-//   3. Insert a `streams` row per occurrence (idempotent — the
-//      `(schedule_id, scheduled_at)` uniqueness check skips dupes).
-//   4. Touch `last_materialised_at` so we don't re-process for 12h.
+//  1. Load every schedule that's active, in-window, and either un-
+//     materialised or last-touched >12h ago.
+//  2. For each, compute the next 14 days of occurrences in the
+//     schedule's local timezone.
+//  3. Insert a `streams` row per occurrence (idempotent — the
+//     `(schedule_id, scheduled_at)` uniqueness check skips dupes).
+//  4. Touch `last_materialised_at` so we don't re-process for 12h.
 //
 // We intentionally don't run as a long-lived process — the work is
 // fundamentally periodic and any state we'd hold in memory we'd just
@@ -87,7 +87,7 @@ func run(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
 	}
 
 	q := db.New(conn)
-	schedules, err := q.ListActiveSchedulesNeedingMaterialisation(ctx, batchSize)
+	schedules, err := q.ListActiveSchedulesForMaterialisation(ctx)
 	if err != nil {
 		return fmt.Errorf("list: %w", err)
 	}
@@ -109,7 +109,7 @@ func run(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
 	return nil
 }
 
-func materialise(ctx context.Context, q *db.Queries, s db.ClassSchedule, log *slog.Logger) (created, skipped, errs int) {
+func materialise(ctx context.Context, q *db.Queries, s db.ListActiveSchedulesForMaterialisationRow, log *slog.Logger) (created, skipped, errs int) {
 	loc, err := time.LoadLocation(s.Timezone)
 	if err != nil {
 		log.Warn("bad tz on schedule",
@@ -154,10 +154,10 @@ func materialise(ctx context.Context, q *db.Queries, s db.ClassSchedule, log *sl
 			continue
 		}
 
-		whenPg := pgtype.Timestamp{Time: when, Valid: true}
-		exists, err := q.StreamExistsForSchedule(ctx, db.StreamExistsForScheduleParams{
-			ScheduleID:  s.ID,
-			ScheduledAt: whenPg,
+		whenPg := pgtype.Timestamptz{Time: when, Valid: true}
+		exists, err := q.SessionExistsForSchedule(ctx, db.SessionExistsForScheduleParams{
+			ScheduleID:     s.ID,
+			ScheduledStart: whenPg,
 		})
 		if err != nil {
 			errs++
@@ -168,13 +168,16 @@ func materialise(ctx context.Context, q *db.Queries, s db.ClassSchedule, log *sl
 			continue
 		}
 
-		_, err = q.CreateScheduledStream(ctx, db.CreateScheduledStreamParams{
-			TenantID:     s.TenantID,
-			InstructorID: s.InstructorID,
-			Title:        s.Title,
-			Description:  s.Description,
-			ScheduledAt:  whenPg,
-			ScheduleID:   s.ID,
+		ingestKey := uuid.New().String()
+		_, err = q.CreateLiveSession(ctx, db.CreateLiveSessionParams{
+			TenantID:       s.TenantID,
+			CourseID:       s.CourseID,
+			BatchID:        s.BatchID,
+			InstructorID:   s.InstructorID,
+			ScheduleID:     s.ID,
+			Title:          s.Title,
+			IngestKey:      ingestKey,
+			ScheduledStart: whenPg,
 		})
 		if err != nil {
 			log.Warn("create stream failed",
