@@ -104,6 +104,29 @@ func (h *Handler) List(c fiber.Ctx) error {
 	return c.JSON(out)
 }
 
+// ListForAdmin — GET /admin/courses  (every course incl. drafts + pending)
+func (h *Handler) ListForAdmin(c fiber.Ctx) error {
+	limit, offset := parsePagination(c)
+	rows, err := h.service.ListForAdmin(c.Context(), middleware.CurrentTenantID(c), limit, offset)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	out := make([]fiber.Map, len(rows))
+	for i, r := range rows {
+		out[i] = fiber.Map{
+			"id": utils.UUIDFromPg(r.ID), "title": r.Title, "slug": r.Slug,
+			"summary": utils.TextFromPg(r.Summary), "description": utils.TextFromPg(r.Summary),
+			"thumbnail_url": utils.TextFromPg(r.ThumbnailUrl),
+			"language":      r.Language, "level": r.Level,
+			"status": string(r.Status), "approval_status": string(r.ApprovalStatus),
+			"is_published":   r.Status == db.PublishStatusPublished,
+			"enrolled_count": r.EnrolledCount,
+			"created_at":     r.CreatedAt.Time,
+		}
+	}
+	return c.JSON(out)
+}
+
 // Get — GET /courses/:id  (id or slug)
 func (h *Handler) Get(c fiber.Ctx) error {
 	idParam := c.Params("id")

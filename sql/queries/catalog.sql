@@ -39,9 +39,11 @@ WHERE tenant_id = $1 AND status = 'published' AND deleted_at IS NULL
 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
 
 -- name: ListCoursesForAdmin :many
-SELECT id, title, slug, status, approval_status, created_at
-FROM courses WHERE tenant_id = $1 AND deleted_at IS NULL
-ORDER BY created_at DESC LIMIT $2 OFFSET $3;
+SELECT c.id, c.title, c.slug, c.summary, c.thumbnail_url, c.language, c.level,
+       c.status, c.approval_status, c.created_at,
+       (SELECT count(*) FROM enrollments e WHERE e.course_id = c.id) AS enrolled_count
+FROM courses c WHERE c.tenant_id = $1 AND c.deleted_at IS NULL
+ORDER BY c.created_at DESC LIMIT $2 OFFSET $3;
 
 -- name: SearchCourses :many
 SELECT id, title, slug, summary, thumbnail_url

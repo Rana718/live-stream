@@ -201,13 +201,20 @@ func (h *Handler) SetUserActive(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
 	}
 	var req struct {
-		Active bool `json:"active"`
+		Active   *bool `json:"active"`
+		IsActive *bool `json:"is_active"`
 	}
 	_ = c.Bind().JSON(&req)
-	if err := h.service.SetUserActive(c.Context(), h.tenant(c), id, req.Active); err != nil {
+	active := true
+	if req.Active != nil {
+		active = *req.Active
+	} else if req.IsActive != nil {
+		active = *req.IsActive
+	}
+	if err := h.service.SetUserActive(c.Context(), h.tenant(c), id, active); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"id": id, "is_active": req.Active})
+	return c.JSON(fiber.Map{"id": id, "is_active": active})
 }
 
 // ResetUserPassword — POST /admin/users/:id/password

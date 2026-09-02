@@ -712,6 +712,7 @@ func main() {
 	// Courses
 	cg := api.Group("/courses")
 	cg.Get("/", courseHandler.List)
+	cg.Get("/manage", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), courseHandler.ListForAdmin)
 	cg.Get("/:id", courseHandler.Get)
 	cg.Post("/", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), courseHandler.Create)
 	cg.Put("/:id", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.InstructorOrAdmin(), courseHandler.Update)

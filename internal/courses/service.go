@@ -2,6 +2,8 @@ package courses
 
 import (
 	"context"
+	"regexp"
+	"strings"
 
 	"live-platform/internal/database/db"
 	"live-platform/internal/utils"
@@ -22,7 +24,7 @@ func NewService(pool *pgxpool.Pool) *Service { return &Service{q: db.New(pool)} 
 type CreateCourseRequest struct {
 	ExamCategoryID   *uuid.UUID `json:"exam_category_id"`
 	Title            string     `json:"title" validate:"required,min=3"`
-	Slug             string     `json:"slug" validate:"required,min=3"`
+	Slug             string     `json:"slug"` // auto-derived from title when omitted
 	Summary          string     `json:"summary"`
 	Description      string     `json:"description"` // legacy alias for summary
 	ThumbnailURL     string     `json:"thumbnail_url"`
@@ -43,12 +45,28 @@ func (r CreateCourseRequest) summary() string {
 	return r.Description
 }
 
+var nonSlugChars = regexp.MustCompile(`[^a-z0-9]+`)
+
+func slugify(s string) string {
+	return strings.Trim(nonSlugChars.ReplaceAllString(strings.ToLower(s), "-"), "-")
+}
+
 func (s *Service) Create(ctx context.Context, tenantID, creator uuid.UUID, req CreateCourseRequest) (db.CreateCourseRow, error) {
 	if req.Language == "" {
 		req.Language = "en"
 	}
 	if req.Level == "" {
 		req.Level = "foundation"
+	}
+	if req.Slug == "" {
+		req.Slug = slugify(req.Title)
+	}
+	// Keep it unique per tenant — a colliding slug fails the partial unique
+	// index; suffix a short random token.
+	if _, err := s.q.GetCourseBySlug(ctx, db.GetCourseBySlugParams{
+		TenantID: utils.UUIDToPg(tenantID), Slug: req.Slug,
+	}); err == nil {
+		req.Slug = req.Slug + "-" + uuid.NewString()[:6]
 	}
 	return s.q.CreateCourse(ctx, db.CreateCourseParams{
 		TenantID:         utils.UUIDToPg(tenantID),
