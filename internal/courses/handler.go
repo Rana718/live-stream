@@ -108,6 +108,7 @@ func (h *Handler) List(c fiber.Ctx) error {
 			"language":      r.Language, "level": r.Level,
 			"class_level": utils.TextFromPg(r.ClassLevel), "exam_goal": utils.TextFromPg(r.ExamGoal),
 			"is_published": true,
+			"price_minor":  r.PriceMinor, "price": float64(r.PriceMinor) / 100,
 		}
 	}
 	return c.JSON(out)
@@ -130,7 +131,8 @@ func (h *Handler) ListForAdmin(c fiber.Ctx) error {
 			"status": string(r.Status), "approval_status": string(r.ApprovalStatus),
 			"is_published":   r.Status == db.PublishStatusPublished,
 			"enrolled_count": r.EnrolledCount,
-			"created_at":     r.CreatedAt.Time,
+			"price_minor":    r.PriceMinor, "price": float64(r.PriceMinor) / 100,
+			"created_at": r.CreatedAt.Time,
 		}
 	}
 	return c.JSON(out)

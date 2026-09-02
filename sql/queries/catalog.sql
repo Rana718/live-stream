@@ -33,16 +33,24 @@ SELECT id, tenant_id, title, slug, summary, thumbnail_url, status, tax_rate_bps,
 FROM courses WHERE tenant_id = $1 AND slug = sqlc.arg(slug)::citext AND deleted_at IS NULL;
 
 -- name: ListPublishedCourses :many
-SELECT id, title, slug, summary, thumbnail_url, language, level, class_level, exam_goal
-FROM courses
-WHERE tenant_id = $1 AND status = 'published' AND deleted_at IS NULL
-ORDER BY created_at DESC LIMIT $2 OFFSET $3;
+SELECT c.id, c.title, c.slug, c.summary, c.thumbnail_url, c.language, c.level,
+       c.class_level, c.exam_goal,
+       COALESCE(pr.amount_minor, 0)::bigint AS price_minor
+FROM courses c
+LEFT JOIN products p ON p.course_id = c.id AND p.deleted_at IS NULL
+LEFT JOIN prices pr ON pr.product_id = p.id AND pr.is_active AND pr.deleted_at IS NULL
+WHERE c.tenant_id = $1 AND c.status = 'published' AND c.deleted_at IS NULL
+ORDER BY c.created_at DESC LIMIT $2 OFFSET $3;
 
 -- name: ListCoursesForAdmin :many
 SELECT c.id, c.title, c.slug, c.summary, c.thumbnail_url, c.language, c.level,
        c.status, c.approval_status, c.created_at,
+       COALESCE(pr.amount_minor, 0)::bigint AS price_minor,
        (SELECT count(*) FROM enrollments e WHERE e.course_id = c.id) AS enrolled_count
-FROM courses c WHERE c.tenant_id = $1 AND c.deleted_at IS NULL
+FROM courses c
+LEFT JOIN products p ON p.course_id = c.id AND p.deleted_at IS NULL
+LEFT JOIN prices pr ON pr.product_id = p.id AND pr.is_active AND pr.deleted_at IS NULL
+WHERE c.tenant_id = $1 AND c.deleted_at IS NULL
 ORDER BY c.created_at DESC LIMIT $2 OFFSET $3;
 
 -- name: SearchCourses :many
