@@ -124,6 +124,14 @@ SELECT id, name, description, instructor_id, starts_on, ends_on, max_students, i
 FROM batches WHERE tenant_id = $1 AND course_id = $2 AND deleted_at IS NULL
 ORDER BY starts_on DESC NULLS LAST;
 
+-- name: ListBatchesForTenant :many
+SELECT id, course_id, name, description, instructor_id, starts_on, ends_on, max_students, is_active
+FROM batches
+WHERE tenant_id = $1 AND deleted_at IS NULL
+  AND (sqlc.narg(instructor_id)::uuid IS NULL OR instructor_id = sqlc.narg(instructor_id)::uuid)
+ORDER BY starts_on DESC NULLS LAST
+LIMIT $2 OFFSET $3;
+
 -- name: UpdateBatch :one
 UPDATE batches SET
     name = COALESCE(sqlc.narg(name)::text, name),

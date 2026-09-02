@@ -1,9 +1,9 @@
 package batches
 
 import (
-	"live-platform/internal/database/db"
+	"strconv"
+
 	"live-platform/internal/middleware"
-	"live-platform/internal/utils"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -13,21 +13,7 @@ type Handler struct{ service *Service }
 
 func NewHandler(s *Service) *Handler { return &Handler{service: s} }
 
-func batchToMap(b *db.Batch) fiber.Map {
-	return fiber.Map{
-		"id":               utils.UUIDFromPg(b.ID),
-		"course_id":        utils.UUIDFromPg(b.CourseID),
-		"name":             b.Name,
-		"description":      utils.TextFromPg(b.Description),
-		"instructor_id":    utils.UUIDFromPg(b.InstructorID),
-		"start_date":       b.StartDate,
-		"end_date":         b.EndDate,
-		"max_students":     utils.Int4FromPg(b.MaxStudents),
-		"current_students": utils.Int4FromPg(b.CurrentStudents),
-		"is_active":        utils.BoolFromPg(b.IsActive),
-		"created_at":       b.CreatedAt,
-	}
-}
+func (h *Handler) tenant(c fiber.Ctx) uuid.UUID { return middleware.CurrentTenantID(c) }
 
 func (h *Handler) Create(c fiber.Ctx) error {
 	var req CreateBatchRequest
@@ -37,11 +23,11 @@ func (h *Handler) Create(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	b, err := h.service.Create(c.Context(), req)
+	b, err := h.service.Create(c.Context(), h.tenant(c), req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.Status(fiber.StatusCreated).JSON(batchToMap(b))
+	return c.Status(fiber.StatusCreated).JSON(b)
 }
 
 func (h *Handler) Get(c fiber.Ctx) error {
@@ -53,7 +39,7 @@ func (h *Handler) Get(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found"})
 	}
-	return c.JSON(batchToMap(b))
+	return c.JSON(b)
 }
 
 func (h *Handler) ListByCourse(c fiber.Ctx) error {
@@ -61,28 +47,25 @@ func (h *Handler) ListByCourse(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course id"})
 	}
-	rows, err := h.service.ListByCourse(c.Context(), courseID)
+	rows, err := h.service.ListByCourse(c.Context(), h.tenant(c), courseID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	out := make([]fiber.Map, len(rows))
-	for i := range rows {
-		out[i] = batchToMap(&rows[i])
-	}
-	return c.JSON(out)
+	return c.JSON(rows)
 }
 
+// ListMine — GET /batches/my  (instructor: my batches)
 func (h *Handler) ListMine(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
-	rows, err := h.service.ListByInstructor(c.Context(), userID)
+	uid := middleware.CurrentUserID(c)
+	limit := int32(100)
+	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 500 {
+		limit = int32(l)
+	}
+	rows, err := h.service.ListForTenant(c.Context(), h.tenant(c), &uid, limit, 0)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	out := make([]fiber.Map, len(rows))
-	for i := range rows {
-		out[i] = batchToMap(&rows[i])
-	}
-	return c.JSON(out)
+	return c.JSON(rows)
 }
 
 func (h *Handler) Update(c fiber.Ctx) error {
@@ -98,7 +81,7 @@ func (h *Handler) Update(c fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(batchToMap(b))
+	return c.JSON(b)
 }
 
 func (h *Handler) Delete(c fiber.Ctx) error {
