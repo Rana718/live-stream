@@ -19,6 +19,36 @@ CREATE POLICY users_visible ON users
     )
     WITH CHECK (id = current_app_user() OR is_super_admin());
 
+-- ─────────────────────────────────── auto-index unindexed FK columns
+-- Postgres does not index FK columns. Any FK column that appears in no
+-- index gets idx_<table>_<column> so referenced-row deletes don't seq-scan
+-- the child. Composite-covered FK columns are left alone.
+DO $$
+DECLARE
+    r    record;
+    tn   text;
+BEGIN
+    FOR r IN
+        SELECT c.conrelid,
+               c.conrelid::regclass AS tbl,
+               a.attname            AS col,
+               c.conkey[1]          AS attnum
+        FROM pg_constraint c
+        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
+        WHERE c.contype = 'f' AND c.connamespace = 'public'::regnamespace
+          AND NOT c.conrelid::regclass::text LIKE '%\_2%'   -- skip dated partitions
+    LOOP
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_index i
+            WHERE i.indrelid = r.conrelid AND r.attnum = ANY (i.indkey::int2[])
+        ) THEN
+            tn := regexp_replace(r.tbl::text, '^.*\.', '');
+            EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %s (%I)',
+                'idx_' || tn || '_' || r.col, r.tbl, r.col);
+        END IF;
+    END LOOP;
+END $$;
+
 -- ─────────────────────────────────── assertion: standard tenant RLS
 DO $$
 DECLARE

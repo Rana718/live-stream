@@ -147,13 +147,16 @@ END $$;
 -- call it; grants app_user on the new partition explicitly.
 CREATE OR REPLACE FUNCTION create_month_partition(parent regclass, month date)
     RETURNS void LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path = public AS
+    SET search_path = public
+    SET client_min_messages = warning AS
 $$
 DECLARE
     p_short   text := trim(both '"' from regexp_replace(parent::text, '^.*\.', ''));
     from_ts   date := date_trunc('month', month)::date;
     to_ts     date := (date_trunc('month', month) + interval '1 month')::date;
     part_name text := format('%s_%s', p_short, to_char(from_ts, 'YYYYMM'));
+    part      regclass;
+    pol       record;
 BEGIN
     IF to_regclass('public.' || part_name) IS NOT NULL THEN
         RETURN;
@@ -162,6 +165,31 @@ BEGIN
         'CREATE TABLE public.%I PARTITION OF %s FOR VALUES FROM (%L) TO (%L)',
         part_name, parent, from_ts, to_ts);
     EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON public.%I TO app_user', part_name);
+    part := ('public.' || part_name)::regclass;
+
+    -- Mirror the parent's row security onto the new partition so a direct
+    -- partition query is gated identically (parent policies don't cascade).
+    IF (SELECT relrowsecurity FROM pg_class WHERE oid = parent) THEN
+        EXECUTE format('ALTER TABLE %s ENABLE ROW LEVEL SECURITY', part);
+        EXECUTE format('ALTER TABLE %s FORCE ROW LEVEL SECURITY', part);
+        FOR pol IN
+            SELECT p.polname,
+                   CASE p.polcmd WHEN '*' THEN 'ALL' WHEN 'r' THEN 'SELECT'
+                                 WHEN 'a' THEN 'INSERT' WHEN 'w' THEN 'UPDATE'
+                                 WHEN 'd' THEN 'DELETE' END AS cmd,
+                   pg_get_expr(p.polqual, p.polrelid)      AS using_expr,
+                   pg_get_expr(p.polwithcheck, p.polrelid) AS check_expr
+            FROM pg_policy p WHERE p.polrelid = parent
+        LOOP
+            EXECUTE format('DROP POLICY IF EXISTS %I ON %s',
+                regexp_replace(pol.polname, '_' || p_short || '$', '_' || part_name), part);
+            EXECUTE format('CREATE POLICY %I ON %s FOR %s%s%s',
+                regexp_replace(pol.polname, '_' || p_short || '$', '_' || part_name),
+                part, pol.cmd,
+                CASE WHEN pol.using_expr IS NOT NULL THEN ' USING (' || pol.using_expr || ')' ELSE '' END,
+                CASE WHEN pol.check_expr IS NOT NULL THEN ' WITH CHECK (' || pol.check_expr || ')' ELSE '' END);
+        END LOOP;
+    END IF;
 END $$;
 
 REVOKE ALL ON FUNCTION create_month_partition(regclass, date) FROM PUBLIC;
