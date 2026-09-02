@@ -21,7 +21,14 @@ SELECT
     count(*) FILTER (WHERE status = 'trial')              AS trial_tenants,
     count(*) FILTER (WHERE status = 'suspended')          AS suspended_tenants,
     (SELECT count(*) FROM users WHERE deleted_at IS NULL) AS total_users,
-    (SELECT count(*) FROM tenant_users WHERE deleted_at IS NULL) AS total_memberships
+    (SELECT count(*) FROM tenant_users WHERE deleted_at IS NULL) AS total_memberships,
+    (SELECT count(*) FROM courses WHERE deleted_at IS NULL) AS total_courses,
+    (SELECT count(*) FROM live_sessions WHERE status = 'live') AS live_sessions_now,
+    (SELECT COALESCE(sum(pr.amount_minor), 0)::bigint
+       FROM subscriptions s
+       JOIN products p ON p.plan_id = s.plan_id
+       JOIN prices pr ON pr.product_id = p.id AND pr.is_active
+      WHERE s.status = 'active') AS mrr_minor
 FROM tenants
 WHERE deleted_at IS NULL;
 
