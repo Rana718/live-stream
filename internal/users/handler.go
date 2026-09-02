@@ -2,144 +2,87 @@ package users
 
 import (
 	"strconv"
-	
+
+	"live-platform/internal/middleware"
+
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
 
-type Handler struct {
-	service *Service
-}
+type Handler struct{ svc *Service }
 
-func NewHandler(service *Service) *Handler {
-	return &Handler{service: service}
-}
+func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 
-// GetProfile godoc
-// @Summary Get user profile
-// @Description Get the profile of the authenticated user
-// @Tags users
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Success 200 {object} UserProfile "User profile"
-// @Failure 401 {object} map[string]interface{} "Unauthorized"
-// @Failure 404 {object} map[string]interface{} "User not found"
-// @Router /users/profile [get]
+// GET /users/profile
 func (h *Handler) GetProfile(c fiber.Ctx) error {
-	userID := c.Locals("userID").(uuid.UUID)
-
-	profile, err := h.service.GetUserProfile(c.Context(), userID)
+	role, _ := c.Locals(middleware.LocalRole).(string)
+	p, err := h.svc.GetProfile(c.Context(), middleware.CurrentTenantID(c), middleware.CurrentUserID(c), role)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
 	}
-
-	return c.JSON(profile)
+	return c.JSON(p)
 }
 
-// UpdateProfile godoc
-// @Summary Update user profile
-// @Description Update the profile of the authenticated user
-// @Tags users
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Param request body map[string]string true "Profile update data"
-// @Success 200 {object} map[string]interface{} "Profile updated"
-// @Failure 400 {object} map[string]interface{} "Invalid request"
-// @Failure 401 {object} map[string]interface{} "Unauthorized"
-// @Router /users/profile [put]
+// PUT /users/profile
 func (h *Handler) UpdateProfile(c fiber.Ctx) error {
-	userID := c.Locals("userID").(uuid.UUID)
-
 	var req struct {
-		FullName string `json:"full_name"`
+		FullName  string `json:"full_name"`
+		AvatarURL string `json:"avatar_url"`
 	}
-
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
-
-	user, err := h.service.UpdateUser(c.Context(), userID, req.FullName)
-	if err != nil {
+	if err := h.svc.UpdateBasics(c.Context(), middleware.CurrentUserID(c), req.FullName, req.AvatarURL); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-
-	return c.JSON(user)
+	return h.GetProfile(c)
 }
 
-// CompleteOnboarding sets the learner's class_level / board / exam_goal and
-// flips onboarding_completed so the mobile router stops redirecting them
-// back to the onboarding screen.
-// @Router /users/me/onboarding [post]
+// POST /users/me/onboarding
 func (h *Handler) CompleteOnboarding(c fiber.Ctx) error {
-	userID := c.Locals("userID").(uuid.UUID)
-
 	var req struct {
-		FullName   string `json:"full_name"`
-		ClassLevel string `json:"class_level"`
-		Board      string `json:"board"`
-		ExamGoal   string `json:"exam_goal"`
+		FullName      string `json:"full_name"`
+		ClassLevel    string `json:"class_level"`
+		Board         string `json:"board"`
+		ExamGoal      string `json:"exam_goal"`
+		GuardianName  string `json:"guardian_name"`
+		GuardianPhone string `json:"guardian_phone"`
 	}
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
 	if req.ClassLevel == "" && req.ExamGoal == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "pick at least one of class_level or exam_goal",
-		})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "pick at least one of class_level or exam_goal"})
 	}
-
-	if _, err := h.service.CompleteOnboarding(c.Context(), userID, OnboardingInput{
-		FullName:   req.FullName,
-		ClassLevel: req.ClassLevel,
-		Board:      req.Board,
-		ExamGoal:   req.ExamGoal,
+	if err := h.svc.CompleteOnboarding(c.Context(), middleware.CurrentTenantID(c), middleware.CurrentUserID(c), OnboardingInput{
+		FullName: req.FullName, ClassLevel: req.ClassLevel, Board: req.Board,
+		ExamGoal: req.ExamGoal, GuardianName: req.GuardianName, GuardianPhone: req.GuardianPhone,
 	}); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-
-	profile, err := h.service.GetUserProfile(c.Context(), userID)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-	}
-	return c.JSON(profile)
+	return h.GetProfile(c)
 }
 
-// ListUsers godoc
-// @Summary List all users
-// @Description Get a list of all users (Admin only)
-// @Tags users
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Param limit query int false "Limit" default(10)
-// @Param offset query int false "Offset" default(0)
-// @Success 200 {array} map[string]interface{} "List of users"
-// @Failure 401 {object} map[string]interface{} "Unauthorized"
-// @Failure 403 {object} map[string]interface{} "Forbidden"
-// @Failure 500 {object} map[string]interface{} "Internal server error"
-// @Router /users [get]
-func (h *Handler) ListUsers(c fiber.Ctx) error {
-	limit := 10
-	offset := 0
-	
-	if l := c.Query("limit"); l != "" {
-		if val, err := strconv.Atoi(l); err == nil {
-			limit = val
-		}
+// GET /users  (admin) — tenant member roster
+func (h *Handler) ListMembers(c fiber.Ctx) error {
+	limit, offset := 25, 0
+	if v, err := strconv.Atoi(c.Query("limit")); err == nil && v > 0 && v <= 200 {
+		limit = v
 	}
-	
-	if o := c.Query("offset"); o != "" {
-		if val, err := strconv.Atoi(o); err == nil {
-			offset = val
-		}
+	if v, err := strconv.Atoi(c.Query("offset")); err == nil && v >= 0 {
+		offset = v
 	}
-
-	users, err := h.service.ListUsers(c.Context(), int32(limit), int32(offset))
+	rows, err := h.svc.ListMembers(c.Context(), middleware.CurrentTenantID(c), c.Query("role"), int32(limit), int32(offset))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-
-	return c.JSON(users)
+	out := make([]fiber.Map, len(rows))
+	for i, r := range rows {
+		out[i] = fiber.Map{
+			"id": uuid.UUID(r.UserID.Bytes), "full_name": r.FullName.String,
+			"email": r.Email.String, "phone": r.Phone.String,
+			"role": string(r.Role), "status": string(r.Status), "joined_at": r.JoinedAt.Time,
+		}
+	}
+	return c.JSON(out)
 }

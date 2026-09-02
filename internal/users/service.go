@@ -1,145 +1,122 @@
+// Package users serves the authenticated user's own profile (global `users`
+// row + per-tenant `user_profiles`) and the tenant-admin member roster.
 package users
 
 import (
 	"context"
+
 	"live-platform/internal/database/db"
+	"live-platform/internal/utils"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Service struct {
-	queries *db.Queries
+	q *db.Queries
 }
 
-func NewService(pool *pgxpool.Pool) *Service {
-	return &Service{
-		queries: db.New(pool),
-	}
+func NewService(pool *pgxpool.Pool) *Service { return &Service{q: db.New(pool)} }
+
+// Profile is the merged view returned by GET /users/profile.
+type Profile struct {
+	ID                  uuid.UUID `json:"id"`
+	Email               string    `json:"email,omitempty"`
+	Phone               string    `json:"phone,omitempty"`
+	FullName            string    `json:"full_name"`
+	AvatarURL           string    `json:"avatar_url,omitempty"`
+	Role                string    `json:"role"`
+	TenantID            uuid.UUID `json:"tenant_id"`
+	ClassLevel          *string   `json:"class_level"`
+	Board               *string   `json:"board"`
+	ExamGoal            *string   `json:"exam_goal"`
+	GuardianName        *string   `json:"guardian_name"`
+	GuardianPhone       *string   `json:"guardian_phone"`
+	OnboardingCompleted bool      `json:"onboarding_completed"`
 }
 
-func (s *Service) GetUserByID(ctx context.Context, userID uuid.UUID) (*db.User, error) {
-	pgUUID := pgtype.UUID{Bytes: userID, Valid: true}
-	user, err := s.queries.GetUserByID(ctx, pgUUID)
+func (s *Service) GetProfile(ctx context.Context, tenantID, userID uuid.UUID, role string) (*Profile, error) {
+	u, err := s.q.GetUserByID(ctx, utils.UUIDToPg(userID))
 	if err != nil {
 		return nil, err
 	}
-	return &user, nil
+	p := &Profile{
+		ID: userID, TenantID: tenantID, Role: role,
+		Email: utils.TextFromPg(u.Email), Phone: utils.TextFromPg(u.Phone),
+		FullName: utils.TextFromPg(u.FullName), AvatarURL: utils.TextFromPg(u.AvatarUrl),
+	}
+	if prof, err := s.q.GetUserProfile(ctx, db.GetUserProfileParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID),
+	}); err == nil {
+		p.OnboardingCompleted = prof.OnboardingCompleted
+		p.ClassLevel = textPtr(prof.ClassLevel)
+		p.Board = textPtr(prof.Board)
+		p.ExamGoal = textPtr(prof.ExamGoal)
+		p.GuardianName = textPtr(prof.GuardianName)
+		p.GuardianPhone = textPtr(prof.GuardianPhone)
+	}
+	return p, nil
 }
 
-func (s *Service) GetUserProfile(ctx context.Context, userID uuid.UUID) (*UserProfile, error) {
-	pgUUID := pgtype.UUID{Bytes: userID, Valid: true}
-	user, err := s.queries.GetUserByID(ctx, pgUUID)
-	if err != nil {
-		return nil, err
-	}
+// UpdateBasics changes the global user's name / avatar.
+func (s *Service) UpdateBasics(ctx context.Context, userID uuid.UUID, fullName, avatarURL string) error {
+	_, err := s.q.UpdateUserProfileFields(ctx, db.UpdateUserProfileFieldsParams{
+		ID:        utils.UUIDToPg(userID),
+		FullName:  utils.TextToPg(fullName),
+		AvatarUrl: utils.TextToPg(avatarURL),
+	})
+	return err
+}
 
-	role := "student"
-	if user.Role.Valid {
-		role = user.Role.String
-	}
+type OnboardingInput struct {
+	FullName      string
+	ClassLevel    string
+	Board         string
+	ExamGoal      string
+	GuardianName  string
+	GuardianPhone string
+}
 
-	fullName := ""
-	if user.FullName.Valid {
-		fullName = user.FullName.String
+func (s *Service) CompleteOnboarding(ctx context.Context, tenantID, userID uuid.UUID, in OnboardingInput) error {
+	if in.FullName != "" {
+		if _, err := s.q.UpdateUserProfileFields(ctx, db.UpdateUserProfileFieldsParams{
+			ID: utils.UUIDToPg(userID), FullName: utils.TextToPg(in.FullName),
+		}); err != nil {
+			return err
+		}
 	}
+	_, err := s.q.UpsertUserProfile(ctx, db.UpsertUserProfileParams{
+		TenantID:            utils.UUIDToPg(tenantID),
+		UserID:              utils.UUIDToPg(userID),
+		ClassLevel:          utils.TextToPg(in.ClassLevel),
+		Board:               utils.TextToPg(in.Board),
+		ExamGoal:            utils.TextToPg(in.ExamGoal),
+		GuardianName:        utils.TextToPg(in.GuardianName),
+		GuardianPhone:       utils.TextToPg(in.GuardianPhone),
+		OnboardingCompleted: pgtype.Bool{Bool: true, Valid: true},
+	})
+	return err
+}
 
-	email := ""
-	if user.Email.Valid {
-		email = user.Email.String
+// ListMembers is the tenant-admin roster.
+func (s *Service) ListMembers(ctx context.Context, tenantID uuid.UUID, role string, limit, offset int32) ([]db.ListTenantMembersRow, error) {
+	var rolePtr db.NullTenantRole
+	if role != "" {
+		rolePtr = db.NullTenantRole{TenantRole: db.TenantRole(role), Valid: true}
 	}
-	phone := ""
-	if user.PhoneNumber.Valid {
-		phone = user.PhoneNumber.String
-	}
-
-	return &UserProfile{
-		ID:                  uuid.UUID(user.ID.Bytes),
-		Email:               email,
-		Phone:               phone,
-		FullName:            fullName,
-		Role:                role,
-		IsActive:            user.IsActive.Bool,
-		ClassLevel:          textPtr(user.ClassLevel),
-		Board:               textPtr(user.Board),
-		ExamGoal:            textPtr(user.ExamGoal),
-		OnboardingCompleted: user.OnboardingCompleted.Bool,
-	}, nil
+	return s.q.ListTenantMembers(ctx, db.ListTenantMembersParams{
+		TenantID: utils.UUIDToPg(tenantID),
+		Role:     rolePtr,
+		Limit:    limit,
+		Offset:   offset,
+	})
 }
 
 func textPtr(t pgtype.Text) *string {
-	if !t.Valid {
+	if !t.Valid || t.String == "" {
 		return nil
 	}
 	v := t.String
 	return &v
-}
-
-func (s *Service) UpdateUser(ctx context.Context, userID uuid.UUID, fullName string) (*db.User, error) {
-	pgUUID := pgtype.UUID{Bytes: userID, Valid: true}
-	pgFullName := pgtype.Text{String: fullName, Valid: true}
-
-	user, err := s.queries.UpdateUser(ctx, db.UpdateUserParams{
-		ID:       pgUUID,
-		FullName: pgFullName,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &user, nil
-}
-
-// OnboardingInput mirrors the fields collected by the mobile onboarding flow.
-// Any field may be empty — class_level / exam_goal are allowed to be null so
-// a learner can opt out of a dimension (e.g. a pure competitive-exam student
-// without a school class).
-type OnboardingInput struct {
-	FullName   string
-	ClassLevel string
-	Board      string
-	ExamGoal   string
-}
-
-func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in OnboardingInput) (*db.User, error) {
-	pgUUID := pgtype.UUID{Bytes: userID, Valid: true}
-
-	user, err := s.queries.UpdateOnboardingProfile(ctx, db.UpdateOnboardingProfileParams{
-		ID:         pgUUID,
-		Column2:    in.FullName,
-		ClassLevel: textOrNull(in.ClassLevel),
-		Board:      textOrNull(in.Board),
-		ExamGoal:   textOrNull(in.ExamGoal),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &user, nil
-}
-
-func textOrNull(s string) pgtype.Text {
-	if s == "" {
-		return pgtype.Text{Valid: false}
-	}
-	return pgtype.Text{String: s, Valid: true}
-}
-
-func (s *Service) ListUsers(ctx context.Context, limit, offset int32) ([]db.User, error) {
-	return s.queries.ListUsers(ctx, db.ListUsersParams{
-		Limit:  limit,
-		Offset: offset,
-	})
-}
-
-type UserProfile struct {
-	ID                  uuid.UUID `json:"id"`
-	Phone               string    `json:"phone"`
-	Email               string    `json:"email,omitempty"`
-	FullName            string    `json:"full_name"`
-	Role                string    `json:"role"`
-	IsActive            bool      `json:"is_active"`
-	ClassLevel          *string   `json:"class_level"`
-	Board               *string   `json:"board"`
-	ExamGoal            *string   `json:"exam_goal"`
-	OnboardingCompleted bool      `json:"onboarding_completed"`
 }
