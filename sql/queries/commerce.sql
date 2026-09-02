@@ -383,3 +383,26 @@ JOIN products ip ON ip.id = bi.item_product_id AND ip.course_id IS NOT NULL
 JOIN courses c ON c.id = ip.course_id
 WHERE bi.bundle_product_id = $1
 ORDER BY bi.position;
+
+-- name: AdminListPayments :many
+SELECT p.id, p.order_id, p.user_id, p.gateway, p.gateway_payment_id, p.gateway_order_id,
+       p.method, p.status, p.amount_minor, p.currency, p.captured_at, p.created_at,
+       o.code AS order_code,
+       u.full_name, u.email, u.phone,
+       (SELECT COALESCE(sum(r.amount_minor),0)::bigint FROM refunds r
+          WHERE r.payment_id = p.id AND r.status IN ('pending','processing','processed')) AS refunded_minor
+FROM payments p
+JOIN orders o ON o.id = p.order_id
+JOIN users u ON u.id = p.user_id
+WHERE p.tenant_id = $1
+  AND (sqlc.narg(status)::payment_status IS NULL OR p.status = sqlc.narg(status)::payment_status)
+ORDER BY p.created_at DESC
+LIMIT $2 OFFSET $3;
+
+-- name: GetPaymentByIDForTenant :one
+SELECT p.id, p.tenant_id, p.order_id, p.user_id, p.gateway_payment_id, p.status, p.amount_minor
+FROM payments p WHERE p.id = $1 AND p.tenant_id = $2;
+
+-- name: FirstGrantsEntitlementOrderItem :one
+SELECT id, product_id, product_kind FROM order_items
+WHERE order_id = $1 AND grants_entitlement ORDER BY created_at LIMIT 1;

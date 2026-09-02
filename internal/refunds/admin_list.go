@@ -1,79 +1,62 @@
 package refunds
 
 import (
-	"context"
-
 	"live-platform/internal/database/db"
+	"live-platform/internal/middleware"
+	"live-platform/internal/utils"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
 
-// PaymentRow is what the admin /refunds page renders. We keep it
-// snake_case to match the rest of the API.
 type PaymentRow struct {
-	ID                string                 `json:"id"`
-	UserID            string                 `json:"user_id"`
-	FullName          string                 `json:"full_name,omitempty"`
-	PhoneNumber       string                 `json:"phone_number,omitempty"`
-	CourseID          string                 `json:"course_id,omitempty"`
-	CourseTitle       string                 `json:"course_title,omitempty"`
-	Amount            int64                  `json:"amount"`
-	Currency          string                 `json:"currency"`
-	Status            string                 `json:"status"`
-	ProviderPaymentID string                 `json:"provider_payment_id,omitempty"`
-	CreatedAt         string                 `json:"created_at"`
-	Metadata          map[string]interface{} `json:"metadata,omitempty"`
+	ID             string `json:"id"`
+	OrderID        string `json:"order_id"`
+	OrderCode      string `json:"order_code"`
+	UserID         string `json:"user_id"`
+	FullName       string `json:"full_name,omitempty"`
+	Phone          string `json:"phone,omitempty"`
+	Email          string `json:"email,omitempty"`
+	Amount         int64  `json:"amount"`
+	AmountMinor    int64  `json:"amount_minor"`
+	RefundedMinor  int64  `json:"refunded_minor"`
+	Currency       string `json:"currency"`
+	Status         string `json:"status"`
+	GatewayPayment string `json:"provider_payment_id,omitempty"`
+	CreatedAt      string `json:"created_at"`
 }
 
-func (s *Service) ListPayments(ctx context.Context, limit, offset int32) ([]PaymentRow, error) {
+func (s *Service) ListPayments(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]PaymentRow, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	rows, err := s.q.AdminListPayments(ctx, db.AdminListPaymentsParams{Limit: limit, Offset: offset})
+	rows, err := s.q.AdminListPayments(ctx, db.AdminListPaymentsParams{
+		TenantID: utils.UUIDToPg(tenantID), Limit: limit, Offset: offset,
+	})
 	if err != nil {
 		return nil, err
 	}
 	out := make([]PaymentRow, 0, len(rows))
 	for _, r := range rows {
-		// amount is NUMERIC(10,2) (rupees). The admin UI divides by 100
-		// because `payments` rows from courseorders / coursebundles store
-		// paise via the Razorpay flow. We convert to paise here so all
-		// rows expose a consistent unit regardless of insert path.
-		amountPaise := int64(0)
-		if rupees, err := r.Amount.Float64Value(); err == nil && rupees.Valid {
-			amountPaise = int64(rupees.Float64 * 100)
+		created := ""
+		if r.CreatedAt.Valid {
+			created = r.CreatedAt.Time.Format("2006-01-02T15:04:05Z07:00")
 		}
-
-		var meta map[string]interface{}
-		if len(r.Metadata) > 0 {
-			meta = decodeJSON(r.Metadata)
-		}
-
 		out = append(out, PaymentRow{
-			ID:                uuid.UUID(r.ID.Bytes).String(),
-			UserID:            uuid.UUID(r.UserID.Bytes).String(),
-			FullName:          r.FullName.String,
-			PhoneNumber:       r.PhoneNumber.String,
-			CourseID:          uuidStringOrEmpty(r.CourseID),
-			CourseTitle:       r.CourseTitle.String,
-			Amount:            amountPaise,
-			Currency:          r.Currency.String,
-			Status:            r.Status.String,
-			ProviderPaymentID: r.ProviderPaymentID.String,
-			CreatedAt:         r.CreatedAt.Time.Format("2006-01-02T15:04:05Z07:00"),
-			Metadata:          meta,
+			ID: utils.UUIDFromPg(r.ID), OrderID: utils.UUIDFromPg(r.OrderID), OrderCode: r.OrderCode,
+			UserID: utils.UUIDFromPg(r.UserID), FullName: utils.TextFromPg(r.FullName),
+			Phone: utils.TextFromPg(r.Phone), Email: utils.TextFromPg(r.Email),
+			Amount: r.AmountMinor, AmountMinor: r.AmountMinor, RefundedMinor: r.RefundedMinor,
+			Currency: r.Currency, Status: string(r.Status),
+			GatewayPayment: utils.TextFromPg(r.GatewayPaymentID), CreatedAt: created,
 		})
 	}
 	return out, nil
 }
 
-// AdminListPayments — GET /admin/payments. The refunds UI uses this to
-// render both the refundable list (status='paid') and the history tab
-// (status='refunded'); filtering happens client-side because the result
-// set per tenant is small.
+// AdminListPayments — GET /admin/payments
 func (h *Handler) AdminListPayments(c fiber.Ctx) error {
-	rows, err := h.svc.ListPayments(c.Context(), 500, 0)
+	rows, err := h.svc.ListPayments(c.Context(), middleware.CurrentTenantID(c), 500, 0)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
