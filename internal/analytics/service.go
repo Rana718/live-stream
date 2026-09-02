@@ -1,3 +1,5 @@
+// Package analytics — schema-v2. Learner progress from test_attempts /
+// test_responses / content_progress; tenant dashboards from orders/order_items.
 package analytics
 
 import (
@@ -17,27 +19,25 @@ type Service struct {
 func NewService(pool *pgxpool.Pool) *Service { return &Service{q: db.New(pool)} }
 
 type UserStats struct {
-	TotalAttempts       int64   `json:"total_attempts"`
-	CompletedAttempts   int64   `json:"completed_attempts"`
-	AverageScore        float64 `json:"average_score"`
-	BestScore           float64 `json:"best_score"`
-	TotalTimeSeconds    int64   `json:"total_time_seconds"`
-	AvgTimePerQuestion  float64 `json:"avg_time_per_question_seconds"`
-	WatchedSeconds      int64   `json:"watched_seconds"`
-	CompletedLectures   int64   `json:"completed_lectures"`
+	TotalAttempts      int64   `json:"total_attempts"`
+	CompletedAttempts  int64   `json:"completed_attempts"`
+	AverageScore       float64 `json:"average_score"`
+	BestScore          float64 `json:"best_score"`
+	TotalTimeSeconds   int64   `json:"total_time_seconds"`
+	AvgTimePerQuestion float64 `json:"avg_time_per_question_seconds"`
+	WatchedSeconds     int64   `json:"watched_seconds"`
+	CompletedLectures  int64   `json:"completed_lectures"`
 }
 
-func (s *Service) GetUserStats(ctx context.Context, userID uuid.UUID) (*UserStats, error) {
-	u := utils.UUIDToPg(userID)
-
-	ast, err := s.q.UserAttemptStats(ctx, u)
+func (s *Service) GetUserStats(ctx context.Context, tenantID, userID uuid.UUID) (*UserStats, error) {
+	t, u := utils.UUIDToPg(tenantID), utils.UUIDToPg(userID)
+	ast, err := s.q.UserAttemptStats(ctx, db.UserAttemptStatsParams{TenantID: t, UserID: u})
 	if err != nil {
 		return nil, err
 	}
-	avgSec, _ := s.q.UserAvgTimePerQuestion(ctx, u)
-	watched, _ := s.q.UserWatchedSeconds(ctx, u)
-	lectures, _ := s.q.UserCompletedLectureCount(ctx, u)
-
+	avgSec, _ := s.q.UserAvgTimePerQuestion(ctx, db.UserAvgTimePerQuestionParams{TenantID: t, UserID: u})
+	watched, _ := s.q.UserWatchedSeconds(ctx, db.UserWatchedSecondsParams{TenantID: t, UserID: u})
+	lessons, _ := s.q.UserCompletedLessonCount(ctx, db.UserCompletedLessonCountParams{TenantID: t, UserID: u})
 	return &UserStats{
 		TotalAttempts:      ast.TotalAttempts,
 		CompletedAttempts:  ast.CompletedAttempts,
@@ -46,7 +46,7 @@ func (s *Service) GetUserStats(ctx context.Context, userID uuid.UUID) (*UserStat
 		TotalTimeSeconds:   ast.TotalTimeSeconds,
 		AvgTimePerQuestion: utils.NumericToFloat(avgSec),
 		WatchedSeconds:     watched,
-		CompletedLectures:  lectures,
+		CompletedLectures:  lessons,
 	}, nil
 }
 
@@ -57,18 +57,18 @@ type TopicAccuracy struct {
 	AccuracyPercent float64 `json:"accuracy_percent"`
 }
 
-func (s *Service) GetWeakTopics(ctx context.Context, userID uuid.UUID, limit int) ([]TopicAccuracy, error) {
-	rows, err := s.q.UserTopicAccuracy(ctx, utils.UUIDToPg(userID))
+func (s *Service) GetWeakTopics(ctx context.Context, tenantID, userID uuid.UUID, limit int) ([]TopicAccuracy, error) {
+	rows, err := s.q.UserTopicAccuracy(ctx, db.UserTopicAccuracyParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID),
+	})
 	if err != nil {
 		return nil, err
 	}
 	out := make([]TopicAccuracy, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, TopicAccuracy{
-			TopicID:         utils.UUIDFromPg(r.TopicID),
-			TotalAnswers:    r.TotalAnswers,
-			CorrectAnswers:  r.CorrectAnswers,
-			AccuracyPercent: float64(r.AccuracyPercent),
+			TopicID: utils.UUIDFromPg(r.TopicID), TotalAnswers: r.TotalAnswers,
+			CorrectAnswers: r.CorrectAnswers, AccuracyPercent: r.AccuracyPercent,
 		})
 	}
 	if limit > 0 && len(out) > limit {
@@ -83,55 +83,36 @@ type DifficultyBreakdown struct {
 	CorrectAnswers int64  `json:"correct_answers"`
 }
 
-func (s *Service) GetDifficultyBreakdown(ctx context.Context, userID uuid.UUID) ([]DifficultyBreakdown, error) {
-	rows, err := s.q.UserDifficultyAccuracy(ctx, utils.UUIDToPg(userID))
+func (s *Service) GetDifficultyBreakdown(ctx context.Context, tenantID, userID uuid.UUID) ([]DifficultyBreakdown, error) {
+	rows, err := s.q.UserDifficultyAccuracy(ctx, db.UserDifficultyAccuracyParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID),
+	})
 	if err != nil {
 		return nil, err
 	}
 	out := make([]DifficultyBreakdown, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, DifficultyBreakdown{
-			Difficulty:     utils.TextFromPg(r.Difficulty),
-			TotalAnswers:   r.TotalAnswers,
-			CorrectAnswers: r.CorrectAnswers,
+			Difficulty: r.Difficulty, TotalAnswers: r.TotalAnswers, CorrectAnswers: r.CorrectAnswers,
 		})
 	}
 	return out, nil
 }
 
 type RecentAttempt struct {
-	ID                string  `json:"id"`
-	TestID            string  `json:"test_id"`
-	TestTitle         string  `json:"test_title"`
-	Score             float64 `json:"score"`
-	CorrectCount      int32   `json:"correct_count"`
-	WrongCount        int32   `json:"wrong_count"`
-	TimeTakenSeconds  int32   `json:"time_taken_seconds"`
+	ID               string  `json:"id"`
+	TestID           string  `json:"test_id"`
+	TestTitle        string  `json:"test_title"`
+	Score            float64 `json:"score"`
+	CorrectCount     int32   `json:"correct_count"`
+	WrongCount       int32   `json:"wrong_count"`
+	TimeTakenSeconds int32   `json:"time_taken_seconds"`
+	Status           string  `json:"status"`
 }
 
-// TenantDashboard returns the headline numbers shown on the tenant_admin
-// dashboard. Tenant scoping comes from RLS — the call must run inside
-// TenantContext middleware which has set app.tenant_id.
-func (s *Service) TenantDashboard(ctx context.Context) (*db.TenantDashboardStatsRow, error) {
-	row, err := s.q.TenantDashboardStats(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &row, nil
-}
-
-func (s *Service) TenantRevenueDaily(ctx context.Context) ([]db.TenantRevenueDailyRow, error) {
-	return s.q.TenantRevenueDaily(ctx)
-}
-
-func (s *Service) TenantTopCourses(ctx context.Context, limit int32) ([]db.TenantTopCoursesRow, error) {
-	return s.q.TenantTopCourses(ctx, limit)
-}
-
-func (s *Service) GetRecentAttempts(ctx context.Context, userID uuid.UUID, limit int32) ([]RecentAttempt, error) {
+func (s *Service) GetRecentAttempts(ctx context.Context, tenantID, userID uuid.UUID, limit int32) ([]RecentAttempt, error) {
 	rows, err := s.q.UserRecentAttempts(ctx, db.UserRecentAttemptsParams{
-		UserID: utils.UUIDToPg(userID),
-		Limit:  limit,
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID), Limit: limit,
 	})
 	if err != nil {
 		return nil, err
@@ -139,14 +120,24 @@ func (s *Service) GetRecentAttempts(ctx context.Context, userID uuid.UUID, limit
 	out := make([]RecentAttempt, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, RecentAttempt{
-			ID:               utils.UUIDFromPg(r.ID),
-			TestID:           utils.UUIDFromPg(r.TestID),
-			TestTitle:        r.TestTitle,
-			Score:            utils.NumericToFloat(r.Score),
-			CorrectCount:     utils.Int4FromPg(r.CorrectCount),
-			WrongCount:       utils.Int4FromPg(r.WrongCount),
-			TimeTakenSeconds: utils.Int4FromPg(r.TimeTakenSeconds),
+			ID: utils.UUIDFromPg(r.ID), TestID: utils.UUIDFromPg(r.TestID), TestTitle: r.TestTitle,
+			Score: utils.NumericToFloat(r.Score), CorrectCount: r.CorrectCount,
+			WrongCount: r.WrongCount, TimeTakenSeconds: r.DurationSec, Status: string(r.Status),
 		})
 	}
 	return out, nil
+}
+
+func (s *Service) TenantDashboard(ctx context.Context, tenantID uuid.UUID) (db.TenantDashboardStatsRow, error) {
+	return s.q.TenantDashboardStats(ctx, utils.UUIDToPg(tenantID))
+}
+
+func (s *Service) TenantRevenueDaily(ctx context.Context, tenantID uuid.UUID) ([]db.TenantRevenueDailyRow, error) {
+	return s.q.TenantRevenueDaily(ctx, utils.UUIDToPg(tenantID))
+}
+
+func (s *Service) TenantTopCourses(ctx context.Context, tenantID uuid.UUID, limit int32) ([]db.TenantTopCoursesRow, error) {
+	return s.q.TenantTopCourses(ctx, db.TenantTopCoursesParams{
+		TenantID: utils.UUIDToPg(tenantID), Limit: limit,
+	})
 }

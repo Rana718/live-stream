@@ -18,7 +18,8 @@ func NewHandler(s *Service) *Handler { return &Handler{service: s} }
 // @Router /analytics/me [get]
 func (h *Handler) GetMyStats(c fiber.Ctx) error {
 	userID, _ := c.Locals("userID").(uuid.UUID)
-	stats, err := h.service.GetUserStats(c.Context(), userID)
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
+	stats, err := h.service.GetUserStats(c.Context(), tenantID, userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -32,11 +33,12 @@ func (h *Handler) GetMyStats(c fiber.Ctx) error {
 // @Router /analytics/weak-topics [get]
 func (h *Handler) GetWeakTopics(c fiber.Ctx) error {
 	userID, _ := c.Locals("userID").(uuid.UUID)
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	limit := 10
 	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 {
 		limit = l
 	}
-	topics, err := h.service.GetWeakTopics(c.Context(), userID, limit)
+	topics, err := h.service.GetWeakTopics(c.Context(), tenantID, userID, limit)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -50,7 +52,8 @@ func (h *Handler) GetWeakTopics(c fiber.Ctx) error {
 // @Router /analytics/difficulty [get]
 func (h *Handler) GetDifficultyBreakdown(c fiber.Ctx) error {
 	userID, _ := c.Locals("userID").(uuid.UUID)
-	rows, err := h.service.GetDifficultyBreakdown(c.Context(), userID)
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
+	rows, err := h.service.GetDifficultyBreakdown(c.Context(), tenantID, userID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -68,12 +71,13 @@ func (h *Handler) GetDifficultyBreakdown(c fiber.Ctx) error {
 //	@Security BearerAuth
 //	@Router   /analytics/tenant/dashboard [get]
 func (h *Handler) TenantDashboard(c fiber.Ctx) error {
-	stats, err := h.service.TenantDashboard(c.Context())
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
+	stats, err := h.service.TenantDashboard(c.Context(), tenantID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	revenue, _ := h.service.TenantRevenueDaily(c.Context())
-	top, _ := h.service.TenantTopCourses(c.Context(), 5)
+	revenue, _ := h.service.TenantRevenueDaily(c.Context(), tenantID)
+	top, _ := h.service.TenantTopCourses(c.Context(), tenantID, 5)
 	return c.JSON(fiber.Map{
 		"stats":         stats,
 		"revenue_daily": revenue,
@@ -88,11 +92,12 @@ func (h *Handler) TenantDashboard(c fiber.Ctx) error {
 // @Router /analytics/recent-attempts [get]
 func (h *Handler) GetRecentAttempts(c fiber.Ctx) error {
 	userID, _ := c.Locals("userID").(uuid.UUID)
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	limit := int32(10)
 	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 {
 		limit = int32(l)
 	}
-	rows, err := h.service.GetRecentAttempts(c.Context(), userID, limit)
+	rows, err := h.service.GetRecentAttempts(c.Context(), tenantID, userID, limit)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
