@@ -55,6 +55,49 @@ func (h *Handler) ListPayments(c fiber.Ctx) error {
 	return c.JSON(rows)
 }
 
+// SetUserActive — POST /api/v1/admin/platform/users/:id/active  { "is_active": bool }
+func (h *Handler) SetUserActive(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	var body struct {
+		IsActive bool `json:"is_active"`
+	}
+	if err := c.Bind().Body(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
+	}
+	if err := h.svc.SetUserActive(c.Context(), id, body.IsActive); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"updated": true})
+}
+
+// SetUserRole — POST /api/v1/admin/platform/users/:id/role
+// Body: { "role": "instructor", "tenant_id": "..." }  (tenant_id required —
+// role is per-tenant).
+func (h *Handler) SetUserRole(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	var body struct {
+		Role     string `json:"role"`
+		TenantID string `json:"tenant_id"`
+	}
+	if err := c.Bind().Body(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
+	}
+	tid, err := uuid.Parse(body.TenantID)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "tenant_id required"})
+	}
+	if err := h.svc.SetMembershipRole(c.Context(), tid, id, body.Role); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"updated": true})
+}
+
 // ListTenants — GET /api/v1/admin/platform/tenants?status=active
 //
 //	@Summary  Super-admin: list every tenant on the platform

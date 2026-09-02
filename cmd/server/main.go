@@ -601,6 +601,8 @@ func main() {
 	platformGroup.Get("/stats", platformHandler.Stats)
 	platformGroup.Get("/audit", platformHandler.AuditLogs)
 	platformGroup.Get("/users", platformHandler.ListUsers)
+	platformGroup.Post("/users/:id/active", platformHandler.SetUserActive)
+	platformGroup.Post("/users/:id/role", platformHandler.SetUserRole)
 	platformGroup.Get("/payments", platformHandler.ListPayments)
 
 	platformGroup.Get("/tenants", platformHandler.ListTenants)

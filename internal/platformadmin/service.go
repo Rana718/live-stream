@@ -174,6 +174,26 @@ func (s *Service) ListUsers(ctx context.Context, f UserFilter, limit, offset int
 	return rows, total, nil
 }
 
+// SetUserActive flips users.status (active|disabled) platform-wide and bumps
+// the token version so existing sessions die.
+func (s *Service) SetUserActive(ctx context.Context, userID uuid.UUID, active bool) error {
+	status := "disabled"
+	if active {
+		status = "active"
+	}
+	return s.q.SetUserStatus(ctx, db.SetUserStatusParams{
+		ID: utils.UUIDToPg(userID), Status: status,
+	})
+}
+
+// SetMembershipRole changes a user's role within one tenant.
+func (s *Service) SetMembershipRole(ctx context.Context, tenantID, userID uuid.UUID, role string) error {
+	return s.q.SetTenantUserRole(ctx, db.SetTenantUserRoleParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID),
+		Role: db.TenantRole(role),
+	})
+}
+
 // ─────────────────────────────────────────────────────── features / domain
 
 // GetFeatures returns a tenant's feature-flag JSON. Empty `{}` if no row.
