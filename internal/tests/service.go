@@ -1,8 +1,15 @@
+// Package tests — schema-v2. Questions live in a reusable question_bank;
+// tests are assembled from it via test_questions. Attempts carry attempt_no;
+// responses are append-only (test_responses) and the latest row per question
+// is authoritative. Scoring: SubmitAnswer scores each response as it lands;
+// SubmitAttempt aggregates via ScoreAttemptResponses and finalises.
 package tests
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"math"
 	"time"
 
 	"live-platform/internal/database/db"
@@ -20,7 +27,79 @@ type Service struct {
 
 func NewService(pool *pgxpool.Pool) *Service { return &Service{pool: pool, q: db.New(pool)} }
 
-// --- Test CRUD ---
+// ── enum mapping between the frontend vocab and question_kind/test_kind ──
+
+func toQuestionKind(s string) db.QuestionKind {
+	switch s {
+	case "mcq", "mcq_single":
+		return db.QuestionKind("mcq_single")
+	case "mcq_multi":
+		return db.QuestionKind("mcq_multi")
+	case "numerical", "numeric":
+		return db.QuestionKind("numeric")
+	case "match":
+		return db.QuestionKind("match")
+	default:
+		return db.QuestionKind("subjective")
+	}
+}
+
+func fromQuestionKind(k db.QuestionKind) string {
+	switch string(k) {
+	case "mcq_single", "mcq_multi", "match":
+		return "mcq"
+	case "numeric":
+		return "numerical"
+	default:
+		return "subjective"
+	}
+}
+
+func toTestKind(s string) db.TestKind {
+	switch s {
+	case "dpp", "chapter_test", "subject_test", "mock", "pyq", "live_quiz":
+		return db.TestKind(s)
+	case "chapter":
+		return db.TestKind("chapter_test")
+	case "subject":
+		return db.TestKind("subject_test")
+	default:
+		return db.TestKind("chapter_test")
+	}
+}
+
+func stemText(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal(b, &m) == nil {
+		if v, ok := m["text"].(string); ok {
+			return v
+		}
+	}
+	return string(b)
+}
+
+func stemJSON(text string) []byte {
+	b, _ := json.Marshal(map[string]string{"text": text})
+	return b
+}
+
+func nnum(f float64) pgtype.Numeric {
+	if f == 0 {
+		return pgtype.Numeric{}
+	}
+	return utils.NumericFromFloat(f)
+}
+func ntext(s string) pgtype.Text {
+	if s == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: s, Valid: true}
+}
+
+// ── tests ───────────────────────────────────────────────────────────
 
 type CreateTestRequest struct {
 	CourseID         *uuid.UUID `json:"course_id"`
@@ -30,9 +109,11 @@ type CreateTestRequest struct {
 	ExamCategoryID   *uuid.UUID `json:"exam_category_id"`
 	Title            string     `json:"title" validate:"required,min=3"`
 	Description      string     `json:"description"`
-	TestType         string     `json:"test_type" validate:"required,oneof=dpp chapter subject mock pyq"`
+	TestType         string     `json:"test_type"`
+	Kind             string     `json:"kind"`
 	ExamYear         int32      `json:"exam_year"`
 	DurationMinutes  int32      `json:"duration_minutes"`
+	DurationMin      int32      `json:"duration_min"`
 	TotalMarks       float64    `json:"total_marks"`
 	PassingMarks     float64    `json:"passing_marks"`
 	NegativeMarking  bool       `json:"negative_marking"`
@@ -40,204 +121,273 @@ type CreateTestRequest struct {
 	Language         string     `json:"language"`
 	IsFree           bool       `json:"is_free"`
 	IsPublished      bool       `json:"is_published"`
-	ScheduledAt      *time.Time `json:"scheduled_at"`
 }
 
-func (s *Service) CreateTest(ctx context.Context, tenantID, creator uuid.UUID, req CreateTestRequest) (*db.Test, error) {
-	if req.Language == "" {
-		req.Language = "en"
+func (r CreateTestRequest) kind() string {
+	if r.Kind != "" {
+		return r.Kind
 	}
-	examYear := utils.Int4ToPg(req.ExamYear)
-	if req.ExamYear == 0 {
-		examYear = pgtype.Int4{Valid: false}
+	return r.TestType
+}
+func (r CreateTestRequest) duration() int32 {
+	if r.DurationMin > 0 {
+		return r.DurationMin
 	}
-	t, err := s.q.CreateTest(ctx, db.CreateTestParams{
+	return r.DurationMinutes
+}
+
+func statusFor(pub bool) db.PublishStatus {
+	if pub {
+		return db.PublishStatusPublished
+	}
+	return db.PublishStatusDraft
+}
+
+func (s *Service) CreateTest(ctx context.Context, tenantID, creator uuid.UUID, req CreateTestRequest) (db.CreateTestRow, error) {
+	return s.q.CreateTest(ctx, db.CreateTestParams{
+		TenantID:         utils.UUIDToPg(tenantID),
+		Title:            req.Title,
 		CourseID:         utils.UUIDPtrToPg(req.CourseID),
 		SubjectID:        utils.UUIDPtrToPg(req.SubjectID),
 		ChapterID:        utils.UUIDPtrToPg(req.ChapterID),
 		TopicID:          utils.UUIDPtrToPg(req.TopicID),
 		ExamCategoryID:   utils.UUIDPtrToPg(req.ExamCategoryID),
-		Title:            req.Title,
-		Description:      utils.TextToPg(req.Description),
-		TestType:         req.TestType,
-		ExamYear:         examYear,
-		DurationMinutes:  utils.Int4ToPg(req.DurationMinutes),
-		TotalMarks:       utils.NumericFromFloat(req.TotalMarks),
-		PassingMarks:     utils.NumericFromFloat(req.PassingMarks),
-		NegativeMarking:  utils.BoolToPg(req.NegativeMarking),
-		ShuffleQuestions: utils.BoolToPg(req.ShuffleQuestions),
-		Language:         utils.TextToPg(req.Language),
-		IsFree:           utils.BoolToPg(req.IsFree),
-		IsPublished:      utils.BoolToPg(req.IsPublished),
-		ScheduledAt:      utils.TimestampPtrToPg(req.ScheduledAt),
+		Description:      ntext(req.Description),
+		Kind:             db.NullTestKind{TestKind: toTestKind(req.kind()), Valid: true},
+		ExamYear:         pgtype.Int4{Int32: req.ExamYear, Valid: req.ExamYear > 0},
+		DurationMin:      pgtype.Int4{Int32: req.duration(), Valid: true},
+		TotalMarks:       nnum(req.TotalMarks),
+		PassMarks:        nnum(req.PassingMarks),
+		NegativeMarking:  pgtype.Bool{Bool: req.NegativeMarking, Valid: true},
+		ShuffleQuestions: pgtype.Bool{Bool: req.ShuffleQuestions, Valid: true},
+		IsFree:           pgtype.Bool{Bool: req.IsFree, Valid: true},
+		Status:           db.NullPublishStatus{PublishStatus: statusFor(req.IsPublished), Valid: true},
 		CreatedBy:        utils.UUIDToPg(creator),
-		TenantID:         utils.UUIDToPg(tenantID),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &t, nil
-}
-
-func (s *Service) GetTest(ctx context.Context, id uuid.UUID) (*db.Test, error) {
-	t, err := s.q.GetTestByID(ctx, utils.UUIDToPg(id))
-	if err != nil {
-		return nil, err
-	}
-	return &t, nil
-}
-
-func (s *Service) ListByType(ctx context.Context, testType string, limit, offset int32) ([]db.Test, error) {
-	return s.q.ListTestsByType(ctx, db.ListTestsByTypeParams{
-		TestType: testType, Limit: limit, Offset: offset,
 	})
 }
 
-func (s *Service) ListByChapter(ctx context.Context, chapterID uuid.UUID) ([]db.Test, error) {
-	return s.q.ListTestsByChapter(ctx, utils.UUIDToPg(chapterID))
+// TestView is the frontend-facing shape for a test + its questions.
+type TestView struct {
+	ID              string     `json:"id"`
+	Title           string     `json:"title"`
+	Description     string     `json:"description"`
+	Kind            string     `json:"kind"`
+	Type            string     `json:"type"`
+	TestType        string     `json:"test_type"`
+	DurationMinutes int32      `json:"duration_minutes"`
+	TotalMarks      float64    `json:"total_marks"`
+	NegativeMarking bool       `json:"negative_marking"`
+	IsPublished     bool       `json:"is_published"`
+	Status          string     `json:"status"`
+	QuestionCount   int        `json:"question_count"`
+	Questions       []Question `json:"questions"`
 }
 
-func (s *Service) ListBySubject(ctx context.Context, subjectID uuid.UUID) ([]db.Test, error) {
-	return s.q.ListTestsBySubject(ctx, utils.UUIDToPg(subjectID))
+type Question struct {
+	ID           string   `json:"id"`
+	QuestionText string   `json:"question_text"`
+	QuestionType string   `json:"question_type"`
+	ImageURL     string   `json:"image_url,omitempty"`
+	Marks        float64  `json:"marks"`
+	Options      []Option `json:"options"`
 }
 
-func (s *Service) ListByCourse(ctx context.Context, courseID uuid.UUID) ([]db.Test, error) {
-	return s.q.ListTestsByCourse(ctx, utils.UUIDToPg(courseID))
+type Option struct {
+	ID         string `json:"id"`
+	OptionText string `json:"option_text"`
+	ImageURL   string `json:"image_url,omitempty"`
 }
 
-func (s *Service) ListPYQsByYear(ctx context.Context, year int32) ([]db.Test, error) {
-	return s.q.ListPYQsByExamYear(ctx, utils.Int4ToPg(year))
-}
-
-func (s *Service) ListPYQsByCategory(ctx context.Context, examID uuid.UUID) ([]db.Test, error) {
-	return s.q.ListPYQsByExamCategory(ctx, utils.UUIDToPg(examID))
-}
-
-func (s *Service) UpdateTest(ctx context.Context, id uuid.UUID, req CreateTestRequest) (*db.Test, error) {
-	t, err := s.q.UpdateTest(ctx, db.UpdateTestParams{
-		ID:               utils.UUIDToPg(id),
-		Title:            req.Title,
-		Description:      utils.TextToPg(req.Description),
-		DurationMinutes:  utils.Int4ToPg(req.DurationMinutes),
-		TotalMarks:       utils.NumericFromFloat(req.TotalMarks),
-		PassingMarks:     utils.NumericFromFloat(req.PassingMarks),
-		NegativeMarking:  utils.BoolToPg(req.NegativeMarking),
-		ShuffleQuestions: utils.BoolToPg(req.ShuffleQuestions),
-		Language:         utils.TextToPg(req.Language),
-		IsFree:           utils.BoolToPg(req.IsFree),
-		IsPublished:      utils.BoolToPg(req.IsPublished),
-		ScheduledAt:      utils.TimestampPtrToPg(req.ScheduledAt),
-	})
+func (s *Service) GetTest(ctx context.Context, id uuid.UUID, withQuestions bool) (TestView, error) {
+	t, err := s.q.GetTest(ctx, utils.UUIDToPg(id))
 	if err != nil {
-		return nil, err
+		return TestView{}, err
 	}
-	return &t, nil
+	v := TestView{
+		ID: utils.UUIDFromPg(t.ID), Title: t.Title, Description: utils.TextFromPg(t.Description),
+		Kind: string(t.Kind), Type: fromTestKindLabel(t.Kind), TestType: fromTestKindLabel(t.Kind),
+		DurationMinutes: t.DurationMin, TotalMarks: utils.NumericToFloat(t.TotalMarks),
+		NegativeMarking: t.NegativeMarking, Status: string(t.Status),
+		IsPublished: t.Status == db.PublishStatusPublished,
+	}
+	tqs, err := s.q.ListTestQuestions(ctx, utils.UUIDToPg(id))
+	if err != nil {
+		return v, err
+	}
+	v.QuestionCount = len(tqs)
+	if !withQuestions {
+		return v, nil
+	}
+	for _, tq := range tqs {
+		q := Question{
+			ID: utils.UUIDFromPg(tq.QuestionID), QuestionText: stemText(tq.StemRich),
+			QuestionType: fromQuestionKind(tq.Kind), ImageURL: utils.TextFromPg(tq.ImageUrl),
+			Marks: utils.NumericToFloat(tq.Marks),
+		}
+		opts, _ := s.q.ListQuestionOptions(ctx, tq.QuestionID)
+		for _, o := range opts {
+			q.Options = append(q.Options, Option{
+				ID: utils.UUIDFromPg(o.ID), OptionText: stemText(o.BodyRich),
+				ImageURL: utils.TextFromPg(o.ImageUrl),
+			})
+			if q.Options[len(q.Options)-1].OptionText == "" {
+				q.Options[len(q.Options)-1].OptionText = utils.TextFromPg(o.Label)
+			}
+		}
+		v.Questions = append(v.Questions, q)
+	}
+	return v, nil
+}
+
+func fromTestKindLabel(k db.TestKind) string {
+	switch string(k) {
+	case "chapter_test":
+		return "chapter"
+	case "subject_test":
+		return "subject"
+	default:
+		return string(k)
+	}
+}
+
+func (s *Service) ListTests(ctx context.Context, tenantID uuid.UUID, courseID *uuid.UUID, limit, offset int32) ([]db.ListTestsRow, error) {
+	return s.q.ListTests(ctx, db.ListTestsParams{
+		TenantID: utils.UUIDToPg(tenantID), CourseID: utils.UUIDPtrToPg(courseID),
+		Limit: limit, Offset: offset,
+	})
+}
+
+func (s *Service) UpdateTest(ctx context.Context, id uuid.UUID, req CreateTestRequest) error {
+	if req.IsPublished {
+		return s.SetPublished(ctx, id, true)
+	}
+	return s.SetPublished(ctx, id, false)
+}
+
+func (s *Service) SetPublished(ctx context.Context, id uuid.UUID, published bool) error {
+	return s.q.SetTestStatus(ctx, db.SetTestStatusParams{ID: utils.UUIDToPg(id), Status: statusFor(published)})
 }
 
 func (s *Service) DeleteTest(ctx context.Context, id uuid.UUID) error {
 	return s.q.DeleteTest(ctx, utils.UUIDToPg(id))
 }
 
-// --- Questions & options ---
+// ── question bank ───────────────────────────────────────────────────
 
 type QuestionOptionRequest struct {
-	OptionText   string `json:"option_text" validate:"required"`
+	OptionText   string `json:"option_text"`
 	ImageURL     string `json:"image_url"`
 	IsCorrect    bool   `json:"is_correct"`
 	DisplayOrder int32  `json:"display_order"`
 }
 
 type CreateQuestionRequest struct {
-	TestID                 uuid.UUID               `json:"test_id" validate:"required"`
+	TestID                 *uuid.UUID              `json:"test_id"`
+	SubjectID              *uuid.UUID              `json:"subject_id"`
 	TopicID                *uuid.UUID              `json:"topic_id"`
 	QuestionText           string                  `json:"question_text" validate:"required"`
-	QuestionType           string                  `json:"question_type" validate:"required,oneof=mcq numerical subjective"`
+	QuestionType           string                  `json:"question_type"`
 	ImageURL               string                  `json:"image_url"`
 	Marks                  float64                 `json:"marks"`
 	NegativeMarks          float64                 `json:"negative_marks"`
-	Difficulty             string                  `json:"difficulty" validate:"required,oneof=easy medium hard"`
+	Difficulty             string                  `json:"difficulty"`
 	Explanation            string                  `json:"explanation"`
 	CorrectNumericalAnswer *float64                `json:"correct_numerical_answer"`
+	NumericTolerance       *float64                `json:"numeric_tolerance"`
 	DisplayOrder           int32                   `json:"display_order"`
 	Options                []QuestionOptionRequest `json:"options"`
 }
 
-func optionalNumeric(p *float64) pgtype.Numeric {
+func (s *Service) CreateQuestion(ctx context.Context, tenantID, creator uuid.UUID, req CreateQuestionRequest) (map[string]any, error) {
+	diff := req.Difficulty
+	if diff == "" {
+		diff = "medium"
+	}
+	marks := req.Marks
+	if marks == 0 {
+		marks = 1
+	}
+	q, err := s.q.CreateQuestion(ctx, db.CreateQuestionParams{
+		TenantID:         utils.UUIDToPg(tenantID),
+		Kind:             toQuestionKind(req.QuestionType),
+		SubjectID:        utils.UUIDPtrToPg(req.SubjectID),
+		TopicID:          utils.UUIDPtrToPg(req.TopicID),
+		StemRich:         stemJSON(req.QuestionText),
+		SolutionRich:     stemJSON(req.Explanation),
+		ImageUrl:         ntext(req.ImageURL),
+		Difficulty:       ntext(diff),
+		DefaultMarks:     nnum(marks),
+		NegativeMarks:    nnum(req.NegativeMarks),
+		NumericAnswer:    numPtr(req.CorrectNumericalAnswer),
+		NumericTolerance: numPtr(req.NumericTolerance),
+		CreatedBy:        utils.UUIDToPg(creator),
+	})
+	if err != nil {
+		return nil, err
+	}
+	qid := uuid.UUID(q.ID.Bytes)
+	for i, o := range req.Options {
+		_, _ = s.q.AddQuestionOption(ctx, db.AddQuestionOptionParams{
+			TenantID:     utils.UUIDToPg(tenantID),
+			QuestionID:   q.ID,
+			Label:        ntext(string(rune('A' + i))),
+			BodyRich:     stemJSON(o.OptionText),
+			ImageUrl:     ntext(o.ImageURL),
+			IsCorrect:    pgtype.Bool{Bool: o.IsCorrect, Valid: true},
+			DisplayOrder: pgtype.Int4{Int32: int32(i), Valid: true},
+		})
+	}
+	if req.TestID != nil {
+		_ = s.q.AddTestQuestion(ctx, db.AddTestQuestionParams{
+			TenantID:     utils.UUIDToPg(tenantID),
+			TestID:       utils.UUIDToPg(*req.TestID),
+			QuestionID:   q.ID,
+			DisplayOrder: pgtype.Int4{Int32: req.DisplayOrder, Valid: true},
+			Marks:        nnum(marks),
+			Negative:     nnum(req.NegativeMarks),
+		})
+	}
+	return map[string]any{
+		"id": qid.String(), "question_text": req.QuestionText,
+		"question_type": fromQuestionKind(q.Kind), "difficulty": q.Difficulty,
+		"marks": marks,
+	}, nil
+}
+
+func numPtr(p *float64) pgtype.Numeric {
 	if p == nil {
-		return pgtype.Numeric{Valid: false}
+		return pgtype.Numeric{}
 	}
 	return utils.NumericFromFloat(*p)
 }
 
-func (s *Service) CreateQuestion(ctx context.Context, req CreateQuestionRequest) (*db.Question, []db.QuestionOption, error) {
-	q, err := s.q.CreateQuestion(ctx, db.CreateQuestionParams{
-		TestID:                 utils.UUIDToPg(req.TestID),
-		TopicID:                utils.UUIDPtrToPg(req.TopicID),
-		QuestionText:           req.QuestionText,
-		QuestionType:           utils.TextToPg(req.QuestionType),
-		ImageUrl:               utils.TextToPg(req.ImageURL),
-		Marks:                  utils.NumericFromFloat(req.Marks),
-		NegativeMarks:          utils.NumericFromFloat(req.NegativeMarks),
-		Difficulty:             utils.TextToPg(req.Difficulty),
-		Explanation:            utils.TextToPg(req.Explanation),
-		CorrectNumericalAnswer: optionalNumeric(req.CorrectNumericalAnswer),
-		DisplayOrder:           utils.Int4ToPg(req.DisplayOrder),
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	opts := make([]db.QuestionOption, 0, len(req.Options))
-	for _, o := range req.Options {
-		created, err := s.q.CreateQuestionOption(ctx, db.CreateQuestionOptionParams{
-			QuestionID:   q.ID,
-			OptionText:   o.OptionText,
-			ImageUrl:     utils.TextToPg(o.ImageURL),
-			IsCorrect:    utils.BoolToPg(o.IsCorrect),
-			DisplayOrder: utils.Int4ToPg(o.DisplayOrder),
-		})
-		if err != nil {
-			return nil, nil, err
-		}
-		opts = append(opts, created)
-	}
-	return &q, opts, nil
-}
-
-func (s *Service) ListQuestions(ctx context.Context, testID uuid.UUID) ([]db.Question, error) {
-	return s.q.ListQuestionsByTest(ctx, utils.UUIDToPg(testID))
-}
-
-func (s *Service) ListOptions(ctx context.Context, questionID uuid.UUID) ([]db.QuestionOption, error) {
-	return s.q.ListOptionsByQuestion(ctx, utils.UUIDToPg(questionID))
-}
-
 func (s *Service) DeleteQuestion(ctx context.Context, id uuid.UUID) error {
+	_ = s.q.DeleteQuestionOptions(ctx, utils.UUIDToPg(id))
 	return s.q.DeleteQuestion(ctx, utils.UUIDToPg(id))
 }
 
-// --- Attempts ---
+// ── attempts ────────────────────────────────────────────────────────
 
-func (s *Service) StartAttempt(ctx context.Context, userID, testID uuid.UUID) (*db.TestAttempt, error) {
-	if cur, err := s.q.GetActiveAttempt(ctx, db.GetActiveAttemptParams{
-		UserID: utils.UUIDToPg(userID),
-		TestID: utils.UUIDToPg(testID),
-	}); err == nil {
-		return &cur, nil
-	}
-	cnt, err := s.q.CountQuestionsByTest(ctx, utils.UUIDToPg(testID))
-	if err != nil {
-		return nil, err
-	}
-	att, err := s.q.CreateTestAttempt(ctx, db.CreateTestAttemptParams{
-		UserID:         utils.UUIDToPg(userID),
-		TestID:         utils.UUIDToPg(testID),
-		TotalQuestions: utils.Int4ToPg(int32(cnt)),
+func (s *Service) StartAttempt(ctx context.Context, tenantID, userID, testID uuid.UUID) (map[string]any, error) {
+	no, err := s.q.NextAttemptNumber(ctx, db.NextAttemptNumberParams{
+		TestID: utils.UUIDToPg(testID), UserID: utils.UUIDToPg(userID),
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &att, nil
+	cnt, _ := s.q.CountTestQuestions(ctx, utils.UUIDToPg(testID))
+	a, err := s.q.CreateTestAttempt(ctx, db.CreateTestAttemptParams{
+		TenantID: utils.UUIDToPg(tenantID), TestID: utils.UUIDToPg(testID), UserID: utils.UUIDToPg(userID),
+		AttemptNo: int32(no), MaxScore: cnt.TotalMarks,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"id": utils.UUIDFromPg(a.ID), "attempt_id": utils.UUIDFromPg(a.ID),
+		"attempt_no": a.AttemptNo, "status": string(a.Status),
+		"max_score": utils.NumericToFloat(a.MaxScore), "started_at": a.StartedAt.Time,
+	}, nil
 }
 
 type SubmitAnswerRequest struct {
@@ -249,126 +399,174 @@ type SubmitAnswerRequest struct {
 	TimeTakenSeconds int32      `json:"time_taken_seconds"`
 }
 
-func (s *Service) SubmitAnswer(ctx context.Context, userID uuid.UUID, req SubmitAnswerRequest) (*db.TestAnswer, error) {
-	att, err := s.q.GetTestAttemptByID(ctx, utils.UUIDToPg(req.AttemptID))
+func (s *Service) SubmitAnswer(ctx context.Context, tenantID, userID uuid.UUID, req SubmitAnswerRequest) error {
+	att, err := s.q.GetTestAttempt(ctx, utils.UUIDToPg(req.AttemptID))
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if utils.UUIDFromPg(att.UserID) != userID.String() {
-		return nil, errors.New("forbidden")
+	if uuid.UUID(att.UserID.Bytes) != userID {
+		return errors.New("forbidden")
 	}
-	if utils.TextFromPg(att.Status) != "in_progress" {
-		return nil, errors.New("attempt not in progress")
+	if string(att.Status) != "in_progress" {
+		return errors.New("attempt not in progress")
 	}
 
-	q, err := s.q.GetQuestionByID(ctx, utils.UUIDToPg(req.QuestionID))
+	q, err := s.q.GetQuestion(ctx, utils.UUIDToPg(req.QuestionID))
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	isCorrect := false
-	marksAwarded := 0.0
-	switch utils.TextFromPg(q.QuestionType) {
+	var isCorrect pgtype.Bool
+	var marks pgtype.Numeric
+	var selected []pgtype.UUID
+
+	switch fromQuestionKind(q.Kind) {
 	case "mcq":
 		if req.SelectedOptionID != nil {
-			opt, err := s.q.GetQuestionOptionByID(ctx, utils.UUIDToPg(*req.SelectedOptionID))
-			if err == nil && utils.BoolFromPg(opt.IsCorrect) {
-				isCorrect = true
+			selected = []pgtype.UUID{utils.UUIDToPg(*req.SelectedOptionID)}
+			correct, _ := s.q.ListCorrectOptionIDs(ctx, utils.UUIDToPg(req.QuestionID))
+			ok := false
+			for _, cid := range correct {
+				if uuid.UUID(cid.Bytes) == *req.SelectedOptionID {
+					ok = true
+					break
+				}
+			}
+			isCorrect = pgtype.Bool{Bool: ok, Valid: true}
+			if ok {
+				marks = q.DefaultMarks
+			} else {
+				marks = negate(q.NegativeMarks)
 			}
 		}
 	case "numerical":
 		if req.NumericalAnswer != nil {
-			expected := utils.NumericToFloat(q.CorrectNumericalAnswer)
-			if almostEqual(*req.NumericalAnswer, expected, 1e-4) {
-				isCorrect = true
+			want := utils.NumericToFloat(q.NumericAnswer)
+			tol := utils.NumericToFloat(q.NumericTolerance)
+			ok := math.Abs(*req.NumericalAnswer-want) <= math.Max(tol, 1e-9)
+			isCorrect = pgtype.Bool{Bool: ok, Valid: true}
+			if ok {
+				marks = q.DefaultMarks
+			} else {
+				marks = negate(q.NegativeMarks)
 			}
 		}
-	case "subjective":
-		// Subjective answers are graded manually; skip auto-scoring.
-	}
-	if isCorrect {
-		marksAwarded = utils.NumericToFloat(q.Marks)
-	} else if req.SelectedOptionID != nil || req.NumericalAnswer != nil {
-		marksAwarded = -utils.NumericToFloat(q.NegativeMarks)
+	default:
+		// subjective — needs manual grading
 	}
 
-	ans, err := s.q.UpsertTestAnswer(ctx, db.UpsertTestAnswerParams{
-		AttemptID:        utils.UUIDToPg(req.AttemptID),
-		QuestionID:       utils.UUIDToPg(req.QuestionID),
-		SelectedOptionID: utils.UUIDPtrToPg(req.SelectedOptionID),
-		NumericalAnswer:  optionalNumeric(req.NumericalAnswer),
-		SubjectiveAnswer: utils.TextToPg(req.SubjectiveAnswer),
-		IsCorrect:        utils.BoolToPg(isCorrect),
-		MarksObtained:    utils.NumericFromFloat(marksAwarded),
-		TimeTakenSeconds: utils.Int4ToPg(req.TimeTakenSeconds),
+	return s.q.SaveTestResponse(ctx, db.SaveTestResponseParams{
+		TenantID:          utils.UUIDToPg(tenantID),
+		AttemptID:         utils.UUIDToPg(req.AttemptID),
+		QuestionID:        utils.UUIDToPg(req.QuestionID),
+		SelectedOptionIds: selected,
+		NumericAnswer:     numPtr(req.NumericalAnswer),
+		TextAnswer:        ntext(req.SubjectiveAnswer),
+		IsCorrect:         isCorrect,
+		Marks:             marks,
+		TimeSec:           pgtype.Int4{Int32: req.TimeTakenSeconds, Valid: true},
 	})
+}
+
+func negate(n pgtype.Numeric) pgtype.Numeric {
+	f := utils.NumericToFloat(n)
+	if f == 0 {
+		return pgtype.Numeric{}
+	}
+	return utils.NumericFromFloat(-f)
+}
+
+func (s *Service) SubmitAttempt(ctx context.Context, userID, attemptID uuid.UUID) (map[string]any, error) {
+	att, err := s.q.GetTestAttempt(ctx, utils.UUIDToPg(attemptID))
 	if err != nil {
 		return nil, err
 	}
-	return &ans, nil
-}
-
-func almostEqual(a, b, eps float64) bool {
-	d := a - b
-	if d < 0 {
-		d = -d
-	}
-	return d < eps
-}
-
-func (s *Service) SubmitAttempt(ctx context.Context, userID, attemptID uuid.UUID) (*db.TestAttempt, error) {
-	att, err := s.q.GetTestAttemptByID(ctx, utils.UUIDToPg(attemptID))
-	if err != nil {
-		return nil, err
-	}
-	if utils.UUIDFromPg(att.UserID) != userID.String() {
+	if uuid.UUID(att.UserID.Bytes) != userID {
 		return nil, errors.New("forbidden")
 	}
-	correct, _ := s.q.CountCorrectAnswers(ctx, utils.UUIDToPg(attemptID))
-	wrong, _ := s.q.CountWrongAnswers(ctx, utils.UUIDToPg(attemptID))
-	totalMarks, _ := s.q.SumMarksForAttempt(ctx, utils.UUIDToPg(attemptID))
-
-	totalQs := utils.Int4FromPg(att.TotalQuestions)
-	skipped := totalQs - int32(correct) - int32(wrong)
+	sc, err := s.q.ScoreAttemptResponses(ctx, utils.UUIDToPg(attemptID))
+	if err != nil {
+		return nil, err
+	}
+	total := s.qCount(ctx, uuid.UUID(att.TestID.Bytes))
+	skipped := int32(total) - int32(sc.CorrectCount) - int32(sc.WrongCount)
 	if skipped < 0 {
 		skipped = 0
 	}
-	startedAt := utils.TimestampFromPg(att.StartedAt)
-	var timeTaken int32
-	if startedAt != nil {
-		timeTaken = int32(time.Since(*startedAt).Seconds())
-	}
-
-	updated, err := s.q.SubmitTestAttempt(ctx, db.SubmitTestAttemptParams{
-		ID:               utils.UUIDToPg(attemptID),
-		Score:            totalMarks,
-		CorrectCount:     utils.Int4ToPg(int32(correct)),
-		WrongCount:       utils.Int4ToPg(int32(wrong)),
-		SkippedCount:     utils.Int4ToPg(skipped),
-		TimeTakenSeconds: utils.Int4ToPg(timeTaken),
+	dur := int32(time.Since(att.StartedAt.Time).Seconds())
+	fin, err := s.q.FinalizeTestAttempt(ctx, db.FinalizeTestAttemptParams{
+		ID:           utils.UUIDToPg(attemptID),
+		Score:        sc.Score,
+		CorrectCount: int32(sc.CorrectCount),
+		WrongCount:   int32(sc.WrongCount),
+		SkippedCount: skipped,
+		DurationSec:  dur,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &updated, nil
+	return map[string]any{
+		"id": utils.UUIDFromPg(fin.ID), "score": utils.NumericToFloat(fin.Score),
+		"max_score": utils.NumericToFloat(fin.MaxScore), "correct_count": fin.CorrectCount,
+		"wrong_count": fin.WrongCount, "skipped_count": fin.SkippedCount,
+	}, nil
 }
 
-func (s *Service) GetAttempt(ctx context.Context, id uuid.UUID) (*db.TestAttempt, error) {
-	a, err := s.q.GetTestAttemptByID(ctx, utils.UUIDToPg(id))
+func (s *Service) qCount(ctx context.Context, testID uuid.UUID) int64 {
+	c, _ := s.q.CountTestQuestions(ctx, utils.UUIDToPg(testID))
+	return c.Count
+}
+
+func (s *Service) GetAttempt(ctx context.Context, id uuid.UUID) (map[string]any, error) {
+	a, err := s.q.GetTestAttempt(ctx, utils.UUIDToPg(id))
 	if err != nil {
 		return nil, err
 	}
-	return &a, nil
+	resp, _ := s.q.ListLatestResponses(ctx, utils.UUIDToPg(id))
+	answers := make([]map[string]any, 0, len(resp))
+	for _, r := range resp {
+		sel := make([]string, 0, len(r.SelectedOptionIds))
+		for _, o := range r.SelectedOptionIds {
+			sel = append(sel, utils.UUIDFromPg(o))
+		}
+		answers = append(answers, map[string]any{
+			"question_id": utils.UUIDFromPg(r.QuestionID), "selected_option_ids": sel,
+			"numerical_answer":  utils.NumericToFloat(r.NumericAnswer),
+			"subjective_answer": utils.TextFromPg(r.TextAnswer),
+			"is_correct":        r.IsCorrect.Bool, "marks": utils.NumericToFloat(r.Marks),
+		})
+	}
+	return map[string]any{
+		"id": utils.UUIDFromPg(a.ID), "test_id": utils.UUIDFromPg(a.TestID),
+		"status": string(a.Status), "score": utils.NumericToFloat(a.Score),
+		"max_score": utils.NumericToFloat(a.MaxScore), "correct_count": a.CorrectCount,
+		"wrong_count": a.WrongCount, "answers": answers,
+	}, nil
 }
 
-func (s *Service) ListMyAttempts(ctx context.Context, userID uuid.UUID, limit, offset int32) ([]db.ListUserAttemptsRow, error) {
-	return s.q.ListUserAttempts(ctx, db.ListUserAttemptsParams{
-		UserID: utils.UUIDToPg(userID),
-		Limit:  limit,
-		Offset: offset,
+func (s *Service) ListMyAttempts(ctx context.Context, tenantID, userID uuid.UUID, limit, offset int32) ([]map[string]any, error) {
+	rows, err := s.q.ListAttemptsForUser(ctx, db.ListAttemptsForUserParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID), Limit: limit, Offset: offset,
 	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, map[string]any{
+			"id": utils.UUIDFromPg(r.ID), "test_id": utils.UUIDFromPg(r.TestID),
+			"test_title": r.Title, "attempt_no": r.AttemptNo, "status": string(r.Status),
+			"score": utils.NumericToFloat(r.Score), "max_score": utils.NumericToFloat(r.MaxScore),
+			"correct_count": r.CorrectCount, "wrong_count": r.WrongCount,
+			"submitted_at": tval(r.SubmittedAt),
+		})
+	}
+	return out, nil
 }
 
-func (s *Service) ListAttemptAnswers(ctx context.Context, attemptID uuid.UUID) ([]db.TestAnswer, error) {
-	return s.q.ListAnswersByAttempt(ctx, utils.UUIDToPg(attemptID))
+func tval(t pgtype.Timestamptz) any {
+	if !t.Valid {
+		return nil
+	}
+	return t.Time
 }
