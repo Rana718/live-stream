@@ -4,64 +4,44 @@ import (
 	"strconv"
 	"time"
 
-	"live-platform/internal/database/db"
 	"live-platform/internal/middleware"
 	"live-platform/internal/utils"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
-type Handler struct{ service *Service }
+type Handler struct {
+	service   *Service
+	publicKey string
+}
 
 func NewHandler(s *Service) *Handler { return &Handler{service: s} }
 
-func structureToMap(s *db.FeeStructure) fiber.Map {
-	return fiber.Map{
-		"id":                   utils.UUIDFromPg(s.ID),
-		"course_id":            utils.UUIDFromPg(s.CourseID),
-		"batch_id":             utils.UUIDFromPg(s.BatchID),
-		"name":                 s.Name,
-		"total_amount":         utils.NumericToFloat(s.TotalAmount),
-		"currency":             utils.TextFromPg(s.Currency),
-		"installments_count":   utils.Int4FromPg(s.InstallmentsCount),
-		"installment_gap_days": utils.Int4FromPg(s.InstallmentGapDays),
-		"is_active":            utils.BoolFromPg(s.IsActive),
-	}
-}
+// WithPublicKey wires the Razorpay key id returned to the checkout client.
+func (h *Handler) WithPublicKey(k string) *Handler { h.publicKey = k; return h }
 
-func feeToMap(f *db.StudentFee) fiber.Map {
-	return fiber.Map{
-		"id":              utils.UUIDFromPg(f.ID),
-		"user_id":         utils.UUIDFromPg(f.UserID),
-		"course_id":       utils.UUIDFromPg(f.CourseID),
-		"batch_id":        utils.UUIDFromPg(f.BatchID),
-		"total_amount":    utils.NumericToFloat(f.TotalAmount),
-		"paid_amount":     utils.NumericToFloat(f.PaidAmount),
-		"currency":        utils.TextFromPg(f.Currency),
-		"status":          utils.TextFromPg(f.Status),
-		"due_date":        f.DueDate,
-		"created_at":      f.CreatedAt,
-	}
-}
+func (h *Handler) tenant(c fiber.Ctx) uuid.UUID { return middleware.CurrentTenantID(c) }
+func (h *Handler) user(c fiber.Ctx) uuid.UUID   { return middleware.CurrentUserID(c) }
 
-func instToMap(i *db.FeeInstallment) fiber.Map {
-	return fiber.Map{
-		"id":                 utils.UUIDFromPg(i.ID),
-		"student_fee_id":     utils.UUIDFromPg(i.StudentFeeID),
-		"installment_number": i.InstallmentNumber,
-		"amount":             utils.NumericToFloat(i.Amount),
-		"due_date":           i.DueDate,
-		"paid_at":            i.PaidAt,
-		"payment_id":         utils.UUIDFromPg(i.PaymentID),
-		"status":             utils.TextFromPg(i.Status),
+func money(m int64) float64 { return float64(m) / 100 }
+func dval(d pgtype.Date) any {
+	if !d.Valid {
+		return nil
 	}
+	return d.Time.Format("2006-01-02")
+}
+func tval(t pgtype.Timestamptz) any {
+	if !t.Valid {
+		return nil
+	}
+	return t.Time
 }
 
 func parsePagination(c fiber.Ctx) (int32, int32) {
-	limit := int32(20)
-	offset := int32(0)
-	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 100 {
+	limit, offset := int32(50), int32(0)
+	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 200 {
 		limit = int32(l)
 	}
 	if o, err := strconv.Atoi(c.Query("offset")); err == nil && o >= 0 {
@@ -70,13 +50,8 @@ func parsePagination(c fiber.Ctx) (int32, int32) {
 	return limit, offset
 }
 
-// CreateStructure godoc
-// @Summary Create a fee structure template (admin)
-// @Tags fees
-// @Security BearerAuth
-// @Router /fees/structures [post]
+// CreateStructure — POST /fees/structures  (admin)
 func (h *Handler) CreateStructure(c fiber.Ctx) error {
-	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	var req CreateFeeStructureRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -84,38 +59,39 @@ func (h *Handler) CreateStructure(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	st, err := h.service.CreateStructure(c.Context(), tenantID, req)
+	p, err := h.service.CreateStructure(c.Context(), h.tenant(c), req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.Status(fiber.StatusCreated).JSON(structureToMap(st))
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"id": utils.UUIDFromPg(p.ID), "name": p.Name, "total_amount": money(p.TotalMinor),
+		"total_minor": p.TotalMinor, "installments_count": p.InstallmentsCount,
+		"gap_days": p.GapDays, "is_active": p.IsActive,
+	})
 }
 
-// ListStructuresByCourse godoc
-// @Summary List active fee structures for a course
-// @Tags fees
-// @Router /fees/structures/course/{course_id} [get]
+// ListStructuresByCourse — GET /fees/structures/course/:course_id
 func (h *Handler) ListStructuresByCourse(c fiber.Ctx) error {
-	id, err := uuid.Parse(c.Params("course_id"))
+	courseID, err := uuid.Parse(c.Params("course_id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course id"})
 	}
-	rows, err := h.service.ListStructuresByCourse(c.Context(), id)
+	rows, err := h.service.ListStructuresByCourse(c.Context(), h.tenant(c), courseID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	out := make([]fiber.Map, len(rows))
-	for i := range rows {
-		out[i] = structureToMap(&rows[i])
+	for i, r := range rows {
+		out[i] = fiber.Map{
+			"id": utils.UUIDFromPg(r.ID), "name": r.Name, "total_amount": money(r.TotalMinor),
+			"total_minor": r.TotalMinor, "installments_count": r.InstallmentsCount,
+			"gap_days": r.GapDays, "is_active": r.IsActive,
+		}
 	}
 	return c.JSON(out)
 }
 
-// Assign godoc
-// @Summary Assign a fee to a student (admin)
-// @Tags fees
-// @Security BearerAuth
-// @Router /fees/assign [post]
+// Assign — POST /fees/assign  (admin)
 func (h *Handler) Assign(c fiber.Ctx) error {
 	var req AssignFeeRequest
 	if err := c.Bind().JSON(&req); err != nil {
@@ -124,103 +100,88 @@ func (h *Handler) Assign(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	sf, installments, err := h.service.Assign(c.Context(), req)
+	acc, insts, err := h.service.Assign(c.Context(), h.tenant(c), req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	instOut := make([]fiber.Map, len(installments))
-	for i := range installments {
-		instOut[i] = instToMap(&installments[i])
+	out := make([]fiber.Map, len(insts))
+	for i, it := range insts {
+		out[i] = fiber.Map{
+			"id": utils.UUIDFromPg(it.ID), "seq": it.Seq, "amount": money(it.AmountMinor),
+			"due_date": dval(it.DueOn), "status": string(it.Status),
+		}
 	}
-	resp := feeToMap(sf)
-	resp["installments"] = instOut
-	return c.Status(fiber.StatusCreated).JSON(resp)
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"fee_account_id": utils.UUIDFromPg(acc.ID), "total_amount": money(acc.TotalMinor),
+		"status": string(acc.Status), "installments": out,
+	})
 }
 
-// ListMine godoc
-// @Summary List the current user's fees
-// @Tags fees
-// @Security BearerAuth
-// @Router /fees/my [get]
+// ListMine — GET /fees/my  (student: installments)
 func (h *Handler) ListMine(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
-	rows, err := h.service.ListMine(c.Context(), userID)
+	rows, err := h.service.ListMine(c.Context(), h.tenant(c), h.user(c))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	out := make([]fiber.Map, len(rows))
 	for i, r := range rows {
+		st := string(r.Status)
+		if st == "pending" && r.DueOn.Valid && r.DueOn.Time.Before(time.Now()) {
+			st = "overdue"
+		}
 		out[i] = fiber.Map{
-			"id":           utils.UUIDFromPg(r.ID),
-			"course_id":    utils.UUIDFromPg(r.CourseID),
-			"course_title": utils.TextFromPg(r.CourseTitle),
-			"total_amount": utils.NumericToFloat(r.TotalAmount),
-			"paid_amount":  utils.NumericToFloat(r.PaidAmount),
-			"status":       utils.TextFromPg(r.Status),
-			"due_date":     r.DueDate,
+			"installment_id": utils.UUIDFromPg(r.ID),
+			"fee_id":         utils.UUIDFromPg(r.FeeAccountID),
+			"course_title":   utils.TextFromPg(r.CourseTitle),
+			"seq":            r.Seq,
+			"amount":         money(r.AmountMinor),
+			"due_date":       dval(r.DueOn),
+			"status":         st,
+			"paid_at":        tval(r.PaidAt),
 		}
 	}
 	return c.JSON(out)
 }
 
-// ListPending godoc
-// @Summary List all pending/partial/overdue student fees (admin)
-// @Tags fees
-// @Security BearerAuth
-// @Router /fees/pending [get]
+// ListPending — GET /fees/pending  (admin)
 func (h *Handler) ListPending(c fiber.Ctx) error {
 	limit, offset := parsePagination(c)
-	rows, err := h.service.ListPending(c.Context(), limit, offset)
+	rows, err := h.service.ListPending(c.Context(), h.tenant(c), limit, offset)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	out := make([]fiber.Map, len(rows))
 	for i, r := range rows {
 		out[i] = fiber.Map{
-			"id":           utils.UUIDFromPg(r.ID),
-			"user_id":      utils.UUIDFromPg(r.UserID),
-			"email":        r.Email,
-			"full_name":    utils.TextFromPg(r.FullName),
-			"total_amount": utils.NumericToFloat(r.TotalAmount),
-			"paid_amount":  utils.NumericToFloat(r.PaidAmount),
-			"status":       utils.TextFromPg(r.Status),
-			"due_date":     r.DueDate,
+			"id": utils.UUIDFromPg(r.ID), "user_id": utils.UUIDFromPg(r.UserID),
+			"full_name": utils.TextFromPg(r.FullName), "phone": utils.TextFromPg(r.Phone),
+			"total_amount": money(r.TotalMinor), "paid_amount": money(r.PaidMinor),
+			"status": string(r.Status), "due_date": dval(r.DueOn),
 		}
 	}
 	return c.JSON(out)
 }
 
-// ListOverdueInstallments godoc
-// @Summary List overdue installments across all students (admin)
-// @Tags fees
-// @Security BearerAuth
-// @Router /fees/installments/overdue [get]
+// ListOverdueInstallments — GET /fees/installments/overdue  (admin)
 func (h *Handler) ListOverdueInstallments(c fiber.Ctx) error {
 	limit, offset := parsePagination(c)
-	rows, err := h.service.ListOverdueInstallments(c.Context(), limit, offset)
+	rows, err := h.service.ListOverdueInstallments(c.Context(), h.tenant(c), limit, offset)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	out := make([]fiber.Map, len(rows))
 	for i, r := range rows {
 		out[i] = fiber.Map{
-			"id":                 utils.UUIDFromPg(r.ID),
-			"student_fee_id":     utils.UUIDFromPg(r.StudentFeeID),
-			"installment_number": r.InstallmentNumber,
-			"amount":             utils.NumericToFloat(r.Amount),
-			"due_date":           r.DueDate,
-			"user_id":            utils.UUIDFromPg(r.UserID),
-			"email":              r.Email,
+			"id": utils.UUIDFromPg(r.ID), "fee_account_id": utils.UUIDFromPg(r.FeeAccountID),
+			"seq": r.Seq, "amount": money(r.AmountMinor), "due_date": dval(r.DueOn),
+			"user_id": utils.UUIDFromPg(r.UserID), "full_name": utils.TextFromPg(r.FullName),
+			"phone": utils.TextFromPg(r.Phone),
 		}
 	}
 	return c.JSON(out)
 }
 
-// GetInstallments godoc
-// @Summary List installments for a student's fee
-// @Tags fees
-// @Security BearerAuth
-// @Router /fees/{id}/installments [get]
+// GetInstallments — GET /fees/:id/installments
 func (h *Handler) GetInstallments(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
@@ -231,19 +192,17 @@ func (h *Handler) GetInstallments(c fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	out := make([]fiber.Map, len(rows))
-	for i := range rows {
-		out[i] = instToMap(&rows[i])
+	for i, r := range rows {
+		out[i] = fiber.Map{
+			"id": utils.UUIDFromPg(r.ID), "seq": r.Seq, "amount": money(r.AmountMinor),
+			"due_date": dval(r.DueOn), "status": string(r.Status), "paid_at": tval(r.PaidAt),
+		}
 	}
 	return c.JSON(out)
 }
 
-// PayInstallment godoc
-// @Summary Start a Razorpay checkout for an installment
-// @Tags fees
-// @Security BearerAuth
-// @Router /fees/installments/pay [post]
+// PayInstallment — POST /fees/installments/pay
 func (h *Handler) PayInstallment(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
 	var req PayInstallmentRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -251,20 +210,15 @@ func (h *Handler) PayInstallment(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	resp, err := h.service.StartInstallmentCheckout(c.Context(), userID, req, "")
+	resp, err := h.service.StartInstallmentCheckout(c.Context(), h.tenant(c), h.user(c), req, h.publicKey)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(resp)
 }
 
-// VerifyInstallment godoc
-// @Summary Verify Razorpay signature and mark installment paid
-// @Tags fees
-// @Security BearerAuth
-// @Router /fees/installments/verify [post]
+// VerifyInstallment — POST /fees/installments/verify
 func (h *Handler) VerifyInstallment(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
 	var req VerifyInstallmentRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -272,33 +226,19 @@ func (h *Handler) VerifyInstallment(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	if err := h.service.VerifyInstallmentPayment(c.Context(), userID, req); err != nil {
+	if err := h.service.VerifyInstallmentPayment(c.Context(), h.user(c), req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"status": "paid"})
+	return c.JSON(fiber.Map{"message": "payment verified"})
 }
 
-// Revenue godoc
-// @Summary Revenue summary over a date range (admin dashboard)
-// @Tags fees
-// @Security BearerAuth
-// @Router /fees/revenue [get]
+// Revenue — GET /fees/revenue  (admin)
 func (h *Handler) Revenue(c fiber.Ctx) error {
 	from := time.Now().AddDate(0, -1, 0)
-	to := time.Now().AddDate(0, 0, 1)
-	if v := c.Query("from"); v != "" {
-		if t, err := time.Parse("2006-01-02", v); err == nil {
-			from = t
-		}
-	}
-	if v := c.Query("to"); v != "" {
-		if t, err := time.Parse("2006-01-02", v); err == nil {
-			to = t
-		}
-	}
-	rep, err := h.service.Revenue(c.Context(), from, to)
+	to := time.Now()
+	r, err := h.service.Revenue(c.Context(), from, to)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(rep)
+	return c.JSON(r)
 }

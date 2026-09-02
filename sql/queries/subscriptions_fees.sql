@@ -205,3 +205,12 @@ ORDER BY fi.due_on LIMIT $2 OFFSET $3;
 -- name: MarkFeeInstallmentsOverdue :exec
 UPDATE fee_installments SET status = 'overdue'
 WHERE tenant_id = $1 AND status = 'pending' AND due_on < current_date;
+
+-- name: ListFeeInstallmentsForUser :many
+SELECT fi.id, fi.fee_account_id, fi.seq, fi.amount_minor, fi.due_on, fi.status, fi.paid_at,
+       c.title AS course_title
+FROM fee_installments fi
+JOIN fee_accounts fa ON fa.id = fi.fee_account_id
+LEFT JOIN courses c ON c.id = fa.course_id
+WHERE fi.tenant_id = $1 AND fa.user_id = $2
+ORDER BY fi.due_on NULLS LAST, fi.seq;

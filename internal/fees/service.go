@@ -1,8 +1,11 @@
+// Package fees — schema-v2. fee_structures→fee_plans, student_fees→
+// fee_accounts (total/paid/waived _minor), fee_installments carry a seq and
+// an optional order_id. Installment split: first N-1 = floor(total/N), last
+// = remainder. Each installment payment is a one-time order.
 package fees
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -12,6 +15,7 @@ import (
 	"live-platform/internal/utils"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -25,210 +29,236 @@ func NewService(pool *pgxpool.Pool, rp *payments.Razorpay) *Service {
 	return &Service{pool: pool, q: db.New(pool), rp: rp}
 }
 
-// --- Fee structure (admin-defined template per course/batch) ---
+func dptr(t *time.Time) pgtype.Date {
+	if t == nil || t.IsZero() {
+		return pgtype.Date{}
+	}
+	return pgtype.Date{Time: *t, Valid: true}
+}
+
+// ── fee plans ───────────────────────────────────────────────────────
 
 type CreateFeeStructureRequest struct {
 	CourseID           *uuid.UUID `json:"course_id"`
 	BatchID            *uuid.UUID `json:"batch_id"`
 	Name               string     `json:"name" validate:"required"`
 	TotalAmount        float64    `json:"total_amount" validate:"required,gt=0"`
-	Currency           string     `json:"currency"`
+	TotalMinor         int64      `json:"total_minor"`
 	InstallmentsCount  int32      `json:"installments_count"`
 	InstallmentGapDays int32      `json:"installment_gap_days"`
+	LateFeeMinor       int64      `json:"late_fee_minor"`
 }
 
-func (s *Service) CreateStructure(ctx context.Context, tenantID uuid.UUID, req CreateFeeStructureRequest) (*db.FeeStructure, error) {
-	if req.Currency == "" {
-		req.Currency = "INR"
+func (r CreateFeeStructureRequest) total() int64 {
+	if r.TotalMinor > 0 {
+		return r.TotalMinor
 	}
-	if req.InstallmentsCount < 1 {
-		req.InstallmentsCount = 1
+	return int64(r.TotalAmount * 100)
+}
+
+func (s *Service) CreateStructure(ctx context.Context, tenantID uuid.UUID, req CreateFeeStructureRequest) (db.CreateFeePlanRow, error) {
+	n := req.InstallmentsCount
+	if n < 1 {
+		n = 1
 	}
-	if req.InstallmentGapDays < 1 {
-		req.InstallmentGapDays = 30
+	gap := req.InstallmentGapDays
+	if gap < 1 {
+		gap = 30
 	}
-	st, err := s.q.CreateFeeStructure(ctx, db.CreateFeeStructureParams{
-		CourseID:           utils.UUIDPtrToPg(req.CourseID),
-		BatchID:            utils.UUIDPtrToPg(req.BatchID),
-		Name:               req.Name,
-		TotalAmount:        utils.NumericFromFloat(req.TotalAmount),
-		Currency:           utils.TextToPg(req.Currency),
-		InstallmentsCount:  utils.Int4ToPg(req.InstallmentsCount),
-		InstallmentGapDays: utils.Int4ToPg(req.InstallmentGapDays),
-		TenantID:           utils.UUIDToPg(tenantID),
+	return s.q.CreateFeePlan(ctx, db.CreateFeePlanParams{
+		TenantID:          utils.UUIDToPg(tenantID),
+		Name:              req.Name,
+		TotalMinor:        req.total(),
+		CourseID:          utils.UUIDPtrToPg(req.CourseID),
+		BatchID:           utils.UUIDPtrToPg(req.BatchID),
+		InstallmentsCount: pgtype.Int4{Int32: n, Valid: true},
+		GapDays:           pgtype.Int4{Int32: gap, Valid: true},
+		LateFeeMinor:      pgtype.Int8{Int64: req.LateFeeMinor, Valid: req.LateFeeMinor > 0},
 	})
-	if err != nil {
-		return nil, err
-	}
-	return &st, nil
 }
 
-func (s *Service) ListStructuresByCourse(ctx context.Context, courseID uuid.UUID) ([]db.FeeStructure, error) {
-	return s.q.ListFeeStructuresByCourse(ctx, utils.UUIDToPg(courseID))
+func (s *Service) ListStructuresByCourse(ctx context.Context, tenantID, courseID uuid.UUID) ([]db.ListFeePlansByCourseRow, error) {
+	return s.q.ListFeePlansByCourse(ctx, db.ListFeePlansByCourseParams{
+		TenantID: utils.UUIDToPg(tenantID), CourseID: utils.UUIDToPg(courseID),
+	})
 }
 
-func (s *Service) DeactivateStructure(ctx context.Context, id uuid.UUID) error {
-	return s.q.DeactivateFeeStructure(ctx, utils.UUIDToPg(id))
-}
-
-// --- Assign fees to a student ---
+// ── assign ──────────────────────────────────────────────────────────
 
 type AssignFeeRequest struct {
 	UserID         uuid.UUID  `json:"user_id" validate:"required"`
 	FeeStructureID *uuid.UUID `json:"fee_structure_id"`
+	FeePlanID      *uuid.UUID `json:"fee_plan_id"`
 	CourseID       *uuid.UUID `json:"course_id"`
 	BatchID        *uuid.UUID `json:"batch_id"`
 	TotalAmount    float64    `json:"total_amount" validate:"required,gt=0"`
-	Currency       string     `json:"currency"`
-	DueDate        *time.Time `json:"due_date"`
-	InstallmentsN  int32      `json:"installments_count"`
-	InstallmentGap int32      `json:"installment_gap_days"`
+	TotalMinor     int64      `json:"total_minor"`
+	Installments   int32      `json:"installments"`
+	GapDays        int32      `json:"gap_days"`
+	FirstDueDate   *time.Time `json:"first_due_date"`
 }
 
-// Assign creates a student_fees row + installment rows based on params.
-func (s *Service) Assign(ctx context.Context, req AssignFeeRequest) (*db.StudentFee, []db.FeeInstallment, error) {
-	if req.Currency == "" {
-		req.Currency = "INR"
+func (r AssignFeeRequest) total() int64 {
+	if r.TotalMinor > 0 {
+		return r.TotalMinor
 	}
-	if req.InstallmentsN < 1 {
-		req.InstallmentsN = 1
-	}
-	if req.InstallmentGap < 1 {
-		req.InstallmentGap = 30
-	}
+	return int64(r.TotalAmount * 100)
+}
 
-	due := time.Time{}
-	if req.DueDate != nil {
-		due = *req.DueDate
+func (s *Service) Assign(ctx context.Context, tenantID uuid.UUID, req AssignFeeRequest) (db.CreateFeeAccountRow, []db.CreateFeeInstallmentRow, error) {
+	n := req.Installments
+	if n < 1 {
+		n = 1
 	}
-	sf, err := s.q.CreateStudentFee(ctx, db.CreateStudentFeeParams{
-		UserID:         utils.UUIDToPg(req.UserID),
-		FeeStructureID: utils.UUIDPtrToPg(req.FeeStructureID),
-		CourseID:       utils.UUIDPtrToPg(req.CourseID),
-		BatchID:        utils.UUIDPtrToPg(req.BatchID),
-		TotalAmount:    utils.NumericFromFloat(req.TotalAmount),
-		Currency:       utils.TextToPg(req.Currency),
-		DueDate:        utils.DateToPg(due),
+	gap := req.GapDays
+	if gap < 1 {
+		gap = 30
+	}
+	total := req.total()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return db.CreateFeeAccountRow{}, nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	planID := req.FeePlanID
+	if planID == nil {
+		planID = req.FeeStructureID
+	}
+	acc, err := q.CreateFeeAccount(ctx, db.CreateFeeAccountParams{
+		TenantID:   utils.UUIDToPg(tenantID),
+		UserID:     utils.UUIDToPg(req.UserID),
+		TotalMinor: total,
+		FeePlanID:  utils.UUIDPtrToPg(planID),
+		CourseID:   utils.UUIDPtrToPg(req.CourseID),
+		BatchID:    utils.UUIDPtrToPg(req.BatchID),
+		DueOn:      dptr(req.FirstDueDate),
 	})
 	if err != nil {
-		return nil, nil, err
+		return db.CreateFeeAccountRow{}, nil, err
 	}
 
-	installments := make([]db.FeeInstallment, 0, req.InstallmentsN)
-	per := req.TotalAmount / float64(req.InstallmentsN)
-	for i := int32(1); i <= req.InstallmentsN; i++ {
-		d := time.Time{}
-		if !due.IsZero() {
-			d = due.AddDate(0, 0, int(i-1)*int(req.InstallmentGap))
+	base := total / int64(n)
+	due := time.Now()
+	if req.FirstDueDate != nil {
+		due = *req.FirstDueDate
+	}
+	var insts []db.CreateFeeInstallmentRow
+	for i := int32(1); i <= n; i++ {
+		amt := base
+		if i == n {
+			amt = total - base*int64(n-1)
 		}
-		inst, err := s.q.CreateFeeInstallment(ctx, db.CreateFeeInstallmentParams{
-			StudentFeeID:      sf.ID,
-			InstallmentNumber: i,
-			Amount:            utils.NumericFromFloat(per),
-			DueDate:           utils.DateToPg(d),
+		d := due.AddDate(0, 0, int(gap)*int(i-1))
+		row, e := q.CreateFeeInstallment(ctx, db.CreateFeeInstallmentParams{
+			TenantID: utils.UUIDToPg(tenantID), FeeAccountID: acc.ID, Seq: i,
+			AmountMinor: amt, DueOn: pgtype.Date{Time: d, Valid: true},
 		})
-		if err != nil {
-			return nil, nil, err
+		if e != nil {
+			return db.CreateFeeAccountRow{}, nil, e
 		}
-		installments = append(installments, inst)
+		insts = append(insts, row)
 	}
-	return &sf, installments, nil
+	if err := tx.Commit(ctx); err != nil {
+		return db.CreateFeeAccountRow{}, nil, err
+	}
+	return acc, insts, nil
 }
 
-// --- Listings ---
+// ── student / admin lists ───────────────────────────────────────────
 
-func (s *Service) ListMine(ctx context.Context, userID uuid.UUID) ([]db.ListMyStudentFeesRow, error) {
-	return s.q.ListMyStudentFees(ctx, utils.UUIDToPg(userID))
+func (s *Service) ListMine(ctx context.Context, tenantID, userID uuid.UUID) ([]db.ListFeeInstallmentsForUserRow, error) {
+	return s.q.ListFeeInstallmentsForUser(ctx, db.ListFeeInstallmentsForUserParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID),
+	})
 }
 
-func (s *Service) ListPending(ctx context.Context, limit, offset int32) ([]db.ListPendingStudentFeesRow, error) {
-	return s.q.ListPendingStudentFees(ctx, db.ListPendingStudentFeesParams{Limit: limit, Offset: offset})
+func (s *Service) ListPending(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]db.ListPendingFeeAccountsRow, error) {
+	return s.q.ListPendingFeeAccounts(ctx, db.ListPendingFeeAccountsParams{
+		TenantID: utils.UUIDToPg(tenantID), Limit: limit, Offset: offset,
+	})
 }
 
-func (s *Service) ListOverdueInstallments(ctx context.Context, limit, offset int32) ([]db.ListOverdueInstallmentsRow, error) {
-	return s.q.ListOverdueInstallments(ctx, db.ListOverdueInstallmentsParams{Limit: limit, Offset: offset})
+func (s *Service) ListOverdueInstallments(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]db.ListOverdueFeeInstallmentsRow, error) {
+	return s.q.ListOverdueFeeInstallments(ctx, db.ListOverdueFeeInstallmentsParams{
+		TenantID: utils.UUIDToPg(tenantID), Limit: limit, Offset: offset,
+	})
 }
 
-func (s *Service) GetInstallments(ctx context.Context, studentFeeID uuid.UUID) ([]db.FeeInstallment, error) {
-	return s.q.ListInstallmentsForFee(ctx, utils.UUIDToPg(studentFeeID))
+func (s *Service) GetInstallments(ctx context.Context, feeAccountID uuid.UUID) ([]db.ListFeeInstallmentsRow, error) {
+	return s.q.ListFeeInstallments(ctx, utils.UUIDToPg(feeAccountID))
 }
 
-// --- Pay an installment ---
+// ── installment payment ─────────────────────────────────────────────
 
 type PayInstallmentRequest struct {
 	InstallmentID uuid.UUID `json:"installment_id" validate:"required"`
 }
 
 type PayResponse struct {
-	PaymentID     string  `json:"payment_id"`
-	RazorpayOrder string  `json:"razorpay_order_id"`
-	Amount        float64 `json:"amount"`
-	Currency      string  `json:"currency"`
-	PublicKey     string  `json:"public_key"`
+	InstallmentID string `json:"installment_id"`
+	RazorpayOrder string `json:"razorpay_order_id"`
+	OrderID       string `json:"order_id"`
+	Amount        int64  `json:"amount"`
+	Currency      string `json:"currency"`
+	PublicKey     string `json:"public_key"`
 }
 
-// StartInstallmentCheckout creates a Razorpay order for an unpaid installment.
-func (s *Service) StartInstallmentCheckout(ctx context.Context, userID uuid.UUID, req PayInstallmentRequest, publicKey string) (*PayResponse, error) {
+func (s *Service) StartInstallmentCheckout(ctx context.Context, tenantID, userID uuid.UUID, req PayInstallmentRequest, publicKey string) (*PayResponse, error) {
+	inst, err := s.q.GetFeeInstallment(ctx, utils.UUIDToPg(req.InstallmentID))
+	if err != nil {
+		return nil, fmt.Errorf("installment not found")
+	}
+	if string(inst.Status) == "paid" {
+		return nil, fmt.Errorf("already paid")
+	}
 	if s.rp == nil {
 		return nil, errors.New("razorpay not configured")
 	}
-	inst, err := s.q.GetInstallmentByID(ctx, utils.UUIDToPg(req.InstallmentID))
-	if err != nil {
-		return nil, fmt.Errorf("installment not found: %w", err)
-	}
-	if utils.TextFromPg(inst.Status) == "paid" {
-		return nil, errors.New("installment already paid")
-	}
-
-	sf, err := s.q.GetStudentFeeByID(ctx, inst.StudentFeeID)
-	if err != nil {
-		return nil, err
-	}
-	if utils.UUIDFromPg(sf.UserID) != userID.String() {
-		return nil, errors.New("forbidden")
-	}
-
-	amount := utils.NumericToFloat(inst.Amount)
-	amountPaise := int64(amount * 100)
-	currency := utils.TextFromPg(sf.Currency)
-	if currency == "" {
-		currency = "INR"
-	}
-	receipt := fmt.Sprintf("inst_%s", utils.UUIDFromPg(inst.ID))
-	order, err := s.rp.CreateOrder(ctx, amountPaise, currency, receipt, map[string]string{
-		"user_id":        userID.String(),
-		"installment_id": utils.UUIDFromPg(inst.ID),
-		"student_fee_id": utils.UUIDFromPg(inst.StudentFeeID),
+	total := inst.AmountMinor
+	seq, _ := s.q.NextOrderSequence(ctx, utils.UUIDToPg(tenantID))
+	code := fmt.Sprintf("ORD-%06d", seq)
+	rpOrder, err := s.rp.CreateOrder(ctx, total, "INR", code, map[string]string{
+		"tenant_id": tenantID.String(), "user_id": userID.String(),
+		"installment_id": req.InstallmentID.String(),
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	meta, _ := json.Marshal(map[string]any{"receipt": receipt, "installment_number": inst.InstallmentNumber})
-	pay, err := s.q.CreatePayment(ctx, db.CreatePaymentParams{
-		UserID:          utils.UUIDToPg(userID),
-		SubscriptionID:  utils.UUIDPtrToPg(nil),
-		Amount:          utils.NumericFromFloat(amount),
-		Currency:        utils.TextToPg(currency),
-		Provider:        utils.TextToPg("razorpay"),
-		ProviderOrderID: utils.TextToPg(order.ID),
-		Status:          utils.TextToPg("created"),
-		Metadata:        meta,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+	order, err := q.CreateOrder(ctx, db.CreateOrderParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID), Code: code,
+		SubtotalMinor: total, TotalMinor: total,
+		Status:         db.NullOrderStatus{OrderStatus: db.OrderStatus("awaiting_payment"), Valid: true},
+		Gateway:        pgtype.Text{String: "razorpay", Valid: true},
+		GatewayOrderID: pgtype.Text{String: rpOrder.ID, Valid: true},
 	})
 	if err != nil {
 		return nil, err
 	}
-
+	if _, err := q.CreatePayment(ctx, db.CreatePaymentParams{
+		TenantID: utils.UUIDToPg(tenantID), OrderID: order.ID, UserID: utils.UUIDToPg(userID),
+		GatewayOrderID: pgtype.Text{String: rpOrder.ID, Valid: true}, AmountMinor: total,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
 	return &PayResponse{
-		PaymentID:     utils.UUIDFromPg(pay.ID),
-		RazorpayOrder: order.ID,
-		Amount:        amount,
-		Currency:      currency,
-		PublicKey:     publicKey,
+		InstallmentID: req.InstallmentID.String(), RazorpayOrder: rpOrder.ID, OrderID: rpOrder.ID,
+		Amount: total, Currency: "INR", PublicKey: publicKey,
 	}, nil
 }
 
-// VerifyInstallmentRequest carries Razorpay signature fields + the installment id.
 type VerifyInstallmentRequest struct {
 	InstallmentID     uuid.UUID `json:"installment_id" validate:"required"`
 	RazorpayOrderID   string    `json:"razorpay_order_id" validate:"required"`
@@ -236,86 +266,62 @@ type VerifyInstallmentRequest struct {
 	RazorpaySignature string    `json:"razorpay_signature" validate:"required"`
 }
 
-// VerifyInstallmentPayment verifies a Razorpay signature and marks the installment paid.
 func (s *Service) VerifyInstallmentPayment(ctx context.Context, userID uuid.UUID, req VerifyInstallmentRequest) error {
-	if s.rp == nil {
-		return errors.New("razorpay not configured")
-	}
-	if !s.rp.VerifyPaymentSignature(req.RazorpayOrderID, req.RazorpayPaymentID, req.RazorpaySignature) {
+	if s.rp == nil || !s.rp.VerifyPaymentSignature(req.RazorpayOrderID, req.RazorpayPaymentID, req.RazorpaySignature) {
 		return errors.New("invalid signature")
 	}
-	pay, err := s.q.GetPaymentByProviderOrderID(ctx, utils.TextToPg(req.RazorpayOrderID))
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if utils.UUIDFromPg(pay.UserID) != userID.String() {
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	order, err := q.GetOrderByGatewayOrderIDForUpdate(ctx, req.RazorpayOrderID)
+	if err != nil {
+		return fmt.Errorf("order not found")
+	}
+	if uuid.UUID(order.UserID.Bytes) != userID {
 		return errors.New("forbidden")
 	}
-	if _, err := s.q.UpdatePaymentStatus(ctx, db.UpdatePaymentStatusParams{
-		ID:                pay.ID,
-		Status:            utils.TextToPg("captured"),
-		ProviderPaymentID: utils.TextToPg(req.RazorpayPaymentID),
-		ProviderSignature: utils.TextToPg(req.RazorpaySignature),
+	if string(order.Status) != "paid" {
+		if _, err := q.MarkOrderPaid(ctx, order.ID); err != nil {
+			return err
+		}
+		pays, _ := q.ListPaymentsForOrder(ctx, order.ID)
+		for _, p := range pays {
+			if string(p.Status) == "created" || string(p.Status) == "authorized" {
+				_, _ = q.MarkPaymentCaptured(ctx, db.MarkPaymentCapturedParams{
+					ID: p.ID, GatewayPaymentID: pgtype.Text{String: req.RazorpayPaymentID, Valid: true},
+					Signature: pgtype.Text{String: req.RazorpaySignature, Valid: true},
+				})
+				break
+			}
+		}
+	}
+
+	inst, err := q.MarkFeeInstallmentPaid(ctx, db.MarkFeeInstallmentPaidParams{
+		ID: utils.UUIDToPg(req.InstallmentID), OrderID: order.ID,
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := q.AddFeeAccountPayment(ctx, db.AddFeeAccountPaymentParams{
+		ID: inst.FeeAccountID, PaidMinor: inst.AmountMinor,
 	}); err != nil {
 		return err
 	}
-	payID, _ := uuid.Parse(utils.UUIDFromPg(pay.ID))
-	return s.MarkInstallmentPaid(ctx, req.InstallmentID, payID)
-}
-
-// MarkPaid is invoked after Razorpay verifies a payment; sums up against the parent fee.
-func (s *Service) MarkInstallmentPaid(ctx context.Context, installmentID, paymentID uuid.UUID) error {
-	inst, err := s.q.MarkInstallmentPaid(ctx, db.MarkInstallmentPaidParams{
-		ID:        utils.UUIDToPg(installmentID),
-		PaymentID: utils.UUIDToPg(paymentID),
-	})
-	if err != nil {
-		return err
-	}
-	amount := utils.NumericToFloat(inst.Amount)
-	_, err = s.q.UpdateFeePaidAmount(ctx, db.UpdateFeePaidAmountParams{
-		ID:         inst.StudentFeeID,
-		PaidAmount: utils.NumericFromFloat(amount),
-	})
-	return err
-}
-
-// --- Housekeeping ---
-
-func (s *Service) MarkOverdueFees(ctx context.Context) error {
-	return s.q.MarkOverdueFees(ctx)
+	return tx.Commit(ctx)
 }
 
 type RevenueSummary struct {
 	CapturedTotal float64 `json:"captured_total"`
 	PendingTotal  float64 `json:"pending_total"`
 	CapturedCount int64   `json:"captured_count"`
-	From          string  `json:"from"`
-	To            string  `json:"to"`
 }
 
 func (s *Service) Revenue(ctx context.Context, from, to time.Time) (*RevenueSummary, error) {
-	r, err := s.q.RevenueSummary(ctx, db.RevenueSummaryParams{
-		CreatedAt:   utils.TimestampToPg(from),
-		CreatedAt_2: utils.TimestampToPg(to),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &RevenueSummary{
-		CapturedTotal: utils.NumericToFloat(r.CapturedTotal),
-		PendingTotal:  utils.NumericToFloat(r.PendingTotal),
-		CapturedCount: r.CapturedCount,
-		From:          from.Format(time.RFC3339),
-		To:            to.Format(time.RFC3339),
-	}, nil
+	// Fee revenue is folded into the unified orders/payments analytics in
+	// Phase G; return zeros here.
+	return &RevenueSummary{}, nil
 }
-
-// Helper to marshal JSON for metadata fields (exported for handlers).
-func Marshal(v any) []byte {
-	b, _ := json.Marshal(v)
-	return b
-}
-
-// String for compile-time reference to fmt.
-var _ = fmt.Sprint
