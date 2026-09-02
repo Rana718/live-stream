@@ -22,44 +22,36 @@ type UpsertTopicRequest struct {
 	IsFree       bool      `json:"is_free"`
 }
 
-func (s *Service) Create(ctx context.Context, req UpsertTopicRequest) (*db.Topic, error) {
-	t, err := s.q.CreateTopic(ctx, db.CreateTopicParams{
+func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, req UpsertTopicRequest) (db.CreateTopicRow, error) {
+	return s.q.CreateTopic(ctx, db.CreateTopicParams{
+		TenantID:     utils.UUIDToPg(tenantID),
 		ChapterID:    utils.UUIDToPg(req.ChapterID),
 		Name:         req.Name,
 		Description:  utils.TextToPg(req.Description),
 		DisplayOrder: utils.Int4ToPg(req.DisplayOrder),
 		IsFree:       utils.BoolToPg(req.IsFree),
 	})
-	if err != nil {
-		return nil, err
-	}
-	return &t, nil
 }
 
-func (s *Service) Get(ctx context.Context, id uuid.UUID) (*db.Topic, error) {
-	t, err := s.q.GetTopicByID(ctx, utils.UUIDToPg(id))
-	if err != nil {
-		return nil, err
-	}
-	return &t, nil
+func (s *Service) Get(ctx context.Context, id uuid.UUID) (db.GetTopicRow, error) {
+	return s.q.GetTopic(ctx, utils.UUIDToPg(id))
 }
 
-func (s *Service) ListByChapter(ctx context.Context, chapterID uuid.UUID) ([]db.Topic, error) {
-	return s.q.ListTopicsByChapter(ctx, utils.UUIDToPg(chapterID))
+func (s *Service) ListByChapter(ctx context.Context, tenantID, chapterID uuid.UUID) ([]db.ListTopicsByChapterRow, error) {
+	return s.q.ListTopicsByChapter(ctx, db.ListTopicsByChapterParams{
+		TenantID:  utils.UUIDToPg(tenantID),
+		ChapterID: utils.UUIDToPg(chapterID),
+	})
 }
 
-func (s *Service) Update(ctx context.Context, id uuid.UUID, req UpsertTopicRequest) (*db.Topic, error) {
-	t, err := s.q.UpdateTopic(ctx, db.UpdateTopicParams{
+func (s *Service) Update(ctx context.Context, id uuid.UUID, req UpsertTopicRequest) (db.UpdateTopicRow, error) {
+	return s.q.UpdateTopic(ctx, db.UpdateTopicParams{
 		ID:           utils.UUIDToPg(id),
-		Name:         req.Name,
+		Name:         utils.TextToPg(req.Name),
 		Description:  utils.TextToPg(req.Description),
 		DisplayOrder: utils.Int4ToPg(req.DisplayOrder),
 		IsFree:       utils.BoolToPg(req.IsFree),
 	})
-	if err != nil {
-		return nil, err
-	}
-	return &t, nil
 }
 
 func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
