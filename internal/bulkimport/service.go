@@ -164,34 +164,28 @@ func (s *Service) processRow(ctx context.Context, tenantID uuid.UUID, row []stri
 	}
 
 	tID := utils.UUIDToPg(tenantID)
-	// Existing user? Update name + email instead of insert.
-	if existing, err := s.q.GetUserByPhone(ctx, db.GetUserByPhoneParams{
-		TenantID:    tID,
-		PhoneNumber: pgtype.Text{String: phone, Valid: true},
-	}); err == nil {
-		_, _ = s.q.UpdateUser(ctx, db.UpdateUserParams{
+	tRole := db.TenantRole(role)
+	activeMembership := db.NullMembershipStatus{MembershipStatus: db.MembershipStatus("active"), Valid: true}
+
+	// Existing global user? Update name and re-attach membership.
+	if existing, err := s.q.GetUserByPhone(ctx, phone); err == nil {
+		_, _ = s.q.UpdateUserProfileFields(ctx, db.UpdateUserProfileFieldsParams{
 			ID:       existing.ID,
 			FullName: pgtype.Text{String: name, Valid: true},
+			Email:    pgtype.Text{String: email, Valid: email != ""},
 		})
-		// Make sure tenant_users membership exists at the right role.
 		_, _ = s.q.AddTenantUser(ctx, db.AddTenantUserParams{
-			TenantID: tID,
-			UserID:   existing.ID,
-			Role:     role,
+			TenantID: tID, UserID: existing.ID, Role: tRole, Status: activeMembership,
 		})
 		out.Updated++
 		return
 	}
 
-	// Fresh user.
+	// Fresh global user.
 	user, err := s.q.CreateUser(ctx, db.CreateUserParams{
-		TenantID:     tID,
-		PhoneNumber:  pgtype.Text{String: phone, Valid: true},
-		Email:        pgtype.Text{String: email, Valid: email != ""},
-		PasswordHash: pgtype.Text{},
-		FullName:     pgtype.Text{String: name, Valid: true},
-		Role:         pgtype.Text{String: role, Valid: true},
-		AuthMethod:   pgtype.Text{String: "phone", Valid: true},
+		Phone:    pgtype.Text{String: phone, Valid: true},
+		Email:    pgtype.Text{String: email, Valid: email != ""},
+		FullName: pgtype.Text{String: name, Valid: true},
 	})
 	if err != nil {
 		out.RowErrors = append(out.RowErrors, RowError{Row: n, Phone: phone, Err: err.Error()})
@@ -199,9 +193,7 @@ func (s *Service) processRow(ctx context.Context, tenantID uuid.UUID, row []stri
 		return
 	}
 	_, _ = s.q.AddTenantUser(ctx, db.AddTenantUserParams{
-		TenantID: tID,
-		UserID:   user.ID,
-		Role:     role,
+		TenantID: tID, UserID: user.ID, Role: tRole, Status: activeMembership,
 	})
 
 	// Optional batch enrollment. We don't fail the row if batch_code is
