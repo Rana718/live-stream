@@ -76,15 +76,36 @@ SELECT id, tenant_id, course_id, batch_id, lesson_id, title, description,
 FROM assignments WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: ListAssignments :many
-SELECT id, course_id, batch_id, title, due_at, max_marks, status
+SELECT id, course_id, batch_id, title, description, attachment_url, due_at, max_marks, status
 FROM assignments
 WHERE tenant_id = $1 AND deleted_at IS NULL
   AND (sqlc.narg(course_id)::uuid IS NULL OR course_id = sqlc.narg(course_id)::uuid)
   AND (sqlc.narg(batch_id)::uuid IS NULL OR batch_id = sqlc.narg(batch_id)::uuid)
+  AND (sqlc.narg(created_by)::uuid IS NULL OR created_by = sqlc.narg(created_by)::uuid)
 ORDER BY due_at DESC NULLS LAST LIMIT $2 OFFSET $3;
+
+-- name: ListMySubmissions :many
+SELECT s.id, s.assignment_id, s.submission_text, s.file_key, s.submitted_at,
+       s.marks_obtained, s.feedback, s.status, a.title AS assignment_title, a.max_marks
+FROM assignment_submissions s
+JOIN assignments a ON a.id = s.assignment_id
+WHERE s.tenant_id = $1 AND s.user_id = $2
+ORDER BY s.submitted_at DESC
+LIMIT $3 OFFSET $4;
 
 -- name: SetAssignmentStatus :exec
 UPDATE assignments SET status = $2 WHERE id = $1;
+
+-- name: UpdateAssignment :one
+UPDATE assignments SET
+    title          = COALESCE(sqlc.narg(title)::text, title),
+    description    = COALESCE(sqlc.narg(description)::text, description),
+    attachment_url = COALESCE(sqlc.narg(attachment_url)::text, attachment_url),
+    due_at         = COALESCE(sqlc.narg(due_at)::timestamptz, due_at),
+    max_marks      = COALESCE(sqlc.narg(max_marks)::numeric, max_marks),
+    status         = COALESCE(sqlc.narg(status)::publish_status, status)
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING id, tenant_id, title, description, attachment_url, due_at, max_marks, status;
 
 -- name: DeleteAssignment :exec
 UPDATE assignments SET deleted_at = now() WHERE id = $1;

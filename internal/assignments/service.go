@@ -1,3 +1,6 @@
+// Package assignments — schema-v2. due_date→due_at, is_published→status
+// (publish_status), file_path→file_key. Per-batch / per-course / per-creator
+// listing collapses into ListAssignments with optional filters.
 package assignments
 
 import (
@@ -8,6 +11,7 @@ import (
 	"live-platform/internal/utils"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -15,86 +19,104 @@ type Service struct{ q *db.Queries }
 
 func NewService(pool *pgxpool.Pool) *Service { return &Service{q: db.New(pool)} }
 
+func statusFor(published bool) db.PublishStatus {
+	if published {
+		return db.PublishStatusPublished
+	}
+	return db.PublishStatusDraft
+}
+
+func nnum(f float64) pgtype.Numeric {
+	if f == 0 {
+		return pgtype.Numeric{}
+	}
+	return utils.NumericFromFloat(f)
+}
+
+func ntext(s string) pgtype.Text {
+	if s == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: s, Valid: true}
+}
+
+func nts(t *time.Time) pgtype.Timestamptz {
+	if t == nil || t.IsZero() {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: *t, Valid: true}
+}
+
 type CreateAssignmentRequest struct {
 	BatchID       *uuid.UUID `json:"batch_id"`
 	CourseID      *uuid.UUID `json:"course_id"`
+	LessonID      *uuid.UUID `json:"lesson_id"`
 	ChapterID     *uuid.UUID `json:"chapter_id"`
 	TopicID       *uuid.UUID `json:"topic_id"`
 	Title         string     `json:"title" validate:"required,min=3"`
 	Description   string     `json:"description"`
 	AttachmentURL string     `json:"attachment_url"`
 	DueDate       *time.Time `json:"due_date"`
+	DueAt         *time.Time `json:"due_at"`
 	MaxMarks      float64    `json:"max_marks"`
 	IsPublished   bool       `json:"is_published"`
 }
 
-func (s *Service) Create(ctx context.Context, tenantID, creator uuid.UUID, req CreateAssignmentRequest) (*db.Assignment, error) {
-	if req.MaxMarks == 0 {
-		req.MaxMarks = 100
+func (r CreateAssignmentRequest) due() *time.Time {
+	if r.DueAt != nil {
+		return r.DueAt
 	}
-	a, err := s.q.CreateAssignment(ctx, db.CreateAssignmentParams{
-		BatchID:       utils.UUIDPtrToPg(req.BatchID),
+	return r.DueDate
+}
+
+func (s *Service) Create(ctx context.Context, tenantID, creator uuid.UUID, req CreateAssignmentRequest) (db.CreateAssignmentRow, error) {
+	return s.q.CreateAssignment(ctx, db.CreateAssignmentParams{
+		TenantID:      utils.UUIDToPg(tenantID),
+		Title:         req.Title,
 		CourseID:      utils.UUIDPtrToPg(req.CourseID),
+		BatchID:       utils.UUIDPtrToPg(req.BatchID),
+		LessonID:      utils.UUIDPtrToPg(req.LessonID),
 		ChapterID:     utils.UUIDPtrToPg(req.ChapterID),
 		TopicID:       utils.UUIDPtrToPg(req.TopicID),
-		Title:         req.Title,
-		Description:   utils.TextToPg(req.Description),
-		AttachmentUrl: utils.TextToPg(req.AttachmentURL),
-		DueDate:       utils.TimestampPtrToPg(req.DueDate),
-		MaxMarks:      utils.NumericFromFloat(req.MaxMarks),
-		IsPublished:   utils.BoolToPg(req.IsPublished),
+		Description:   ntext(req.Description),
+		AttachmentUrl: ntext(req.AttachmentURL),
+		DueAt:         nts(req.due()),
+		MaxMarks:      nnum(req.MaxMarks),
+		Status:        db.NullPublishStatus{PublishStatus: statusFor(req.IsPublished), Valid: true},
 		CreatedBy:     utils.UUIDToPg(creator),
-		TenantID:      utils.UUIDToPg(tenantID),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &a, nil
-}
-
-func (s *Service) Get(ctx context.Context, id uuid.UUID) (*db.Assignment, error) {
-	a, err := s.q.GetAssignmentByID(ctx, utils.UUIDToPg(id))
-	if err != nil {
-		return nil, err
-	}
-	return &a, nil
-}
-
-func (s *Service) ListByBatch(ctx context.Context, batchID uuid.UUID, limit, offset int32) ([]db.Assignment, error) {
-	return s.q.ListAssignmentsByBatch(ctx, db.ListAssignmentsByBatchParams{
-		BatchID: utils.UUIDToPg(batchID),
-		Limit:   limit, Offset: offset,
 	})
 }
 
-func (s *Service) ListByCourse(ctx context.Context, courseID uuid.UUID, limit, offset int32) ([]db.Assignment, error) {
-	return s.q.ListAssignmentsByCourse(ctx, db.ListAssignmentsByCourseParams{
-		CourseID: utils.UUIDToPg(courseID),
-		Limit:    limit, Offset: offset,
-	})
+func (s *Service) Get(ctx context.Context, id uuid.UUID) (db.GetAssignmentRow, error) {
+	return s.q.GetAssignment(ctx, utils.UUIDToPg(id))
 }
 
-func (s *Service) ListMyCreated(ctx context.Context, creatorID uuid.UUID, limit, offset int32) ([]db.Assignment, error) {
-	return s.q.ListAssignmentsCreatedBy(ctx, db.ListAssignmentsCreatedByParams{
-		CreatedBy: utils.UUIDToPg(creatorID),
+func (s *Service) List(ctx context.Context, tenantID uuid.UUID, courseID, batchID, createdBy *uuid.UUID, limit, offset int32) ([]db.ListAssignmentsRow, error) {
+	return s.q.ListAssignments(ctx, db.ListAssignmentsParams{
+		TenantID:  utils.UUIDToPg(tenantID),
+		CourseID:  utils.UUIDPtrToPg(courseID),
+		BatchID:   utils.UUIDPtrToPg(batchID),
+		CreatedBy: utils.UUIDPtrToPg(createdBy),
 		Limit:     limit, Offset: offset,
 	})
 }
 
-func (s *Service) Update(ctx context.Context, id uuid.UUID, req CreateAssignmentRequest) (*db.Assignment, error) {
-	a, err := s.q.UpdateAssignment(ctx, db.UpdateAssignmentParams{
+func (s *Service) Update(ctx context.Context, id uuid.UUID, req CreateAssignmentRequest) (db.UpdateAssignmentRow, error) {
+	return s.q.UpdateAssignment(ctx, db.UpdateAssignmentParams{
 		ID:            utils.UUIDToPg(id),
-		Title:         req.Title,
-		Description:   utils.TextToPg(req.Description),
-		AttachmentUrl: utils.TextToPg(req.AttachmentURL),
-		DueDate:       utils.TimestampPtrToPg(req.DueDate),
-		MaxMarks:      utils.NumericFromFloat(req.MaxMarks),
-		IsPublished:   utils.BoolToPg(req.IsPublished),
+		Title:         ntext(req.Title),
+		Description:   ntext(req.Description),
+		AttachmentUrl: ntext(req.AttachmentURL),
+		DueAt:         nts(req.due()),
+		MaxMarks:      nnum(req.MaxMarks),
+		Status:        db.NullPublishStatus{PublishStatus: statusFor(req.IsPublished), Valid: true},
 	})
-	if err != nil {
-		return nil, err
-	}
-	return &a, nil
+}
+
+func (s *Service) SetPublished(ctx context.Context, id uuid.UUID, published bool) error {
+	return s.q.SetAssignmentStatus(ctx, db.SetAssignmentStatusParams{
+		ID: utils.UUIDToPg(id), Status: statusFor(published),
+	})
 }
 
 func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
@@ -104,61 +126,61 @@ func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 type SubmitRequest struct {
 	AssignmentID   uuid.UUID `json:"assignment_id" validate:"required"`
 	SubmissionText string    `json:"submission_text"`
-	FilePath       string    `json:"file_path"`
+	Content        string    `json:"content"`   // legacy alias
+	FileKey        string    `json:"file_key"`
+	FileURL        string    `json:"file_url"`  // legacy alias
 }
 
-func (s *Service) Submit(ctx context.Context, userID uuid.UUID, req SubmitRequest) (*db.AssignmentSubmission, error) {
-	sub, err := s.q.SubmitAssignment(ctx, db.SubmitAssignmentParams{
+func (r SubmitRequest) text() string {
+	if r.SubmissionText != "" {
+		return r.SubmissionText
+	}
+	return r.Content
+}
+func (r SubmitRequest) file() string {
+	if r.FileKey != "" {
+		return r.FileKey
+	}
+	return r.FileURL
+}
+
+func (s *Service) Submit(ctx context.Context, tenantID, userID uuid.UUID, req SubmitRequest) (db.SubmitAssignmentRow, error) {
+	return s.q.SubmitAssignment(ctx, db.SubmitAssignmentParams{
+		TenantID:       utils.UUIDToPg(tenantID),
 		AssignmentID:   utils.UUIDToPg(req.AssignmentID),
 		UserID:         utils.UUIDToPg(userID),
-		SubmissionText: utils.TextToPg(req.SubmissionText),
-		FilePath:       utils.TextToPg(req.FilePath),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &sub, nil
-}
-
-func (s *Service) GetMySubmission(ctx context.Context, userID, assignmentID uuid.UUID) (*db.AssignmentSubmission, error) {
-	sub, err := s.q.GetMySubmission(ctx, db.GetMySubmissionParams{
-		AssignmentID: utils.UUIDToPg(assignmentID),
-		UserID:       utils.UUIDToPg(userID),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &sub, nil
-}
-
-func (s *Service) ListSubmissions(ctx context.Context, assignmentID uuid.UUID, limit, offset int32) ([]db.ListSubmissionsForAssignmentRow, error) {
-	return s.q.ListSubmissionsForAssignment(ctx, db.ListSubmissionsForAssignmentParams{
-		AssignmentID: utils.UUIDToPg(assignmentID),
-		Limit:        limit, Offset: offset,
+		SubmissionText: ntext(req.text()),
+		FileKey:        ntext(req.file()),
 	})
 }
 
-func (s *Service) ListMySubmissions(ctx context.Context, userID uuid.UUID, limit, offset int32) ([]db.ListMySubmissionsRow, error) {
+func (s *Service) GetMySubmission(ctx context.Context, userID, assignmentID uuid.UUID) (db.GetMySubmissionRow, error) {
+	return s.q.GetMySubmission(ctx, db.GetMySubmissionParams{
+		AssignmentID: utils.UUIDToPg(assignmentID), UserID: utils.UUIDToPg(userID),
+	})
+}
+
+func (s *Service) ListSubmissions(ctx context.Context, assignmentID uuid.UUID) ([]db.ListSubmissionsRow, error) {
+	return s.q.ListSubmissions(ctx, utils.UUIDToPg(assignmentID))
+}
+
+func (s *Service) ListMySubmissions(ctx context.Context, tenantID, userID uuid.UUID, limit, offset int32) ([]db.ListMySubmissionsRow, error) {
 	return s.q.ListMySubmissions(ctx, db.ListMySubmissionsParams{
-		UserID: utils.UUIDToPg(userID),
-		Limit:  limit, Offset: offset,
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID),
+		Limit: limit, Offset: offset,
 	})
 }
 
 type GradeRequest struct {
-	MarksObtained float64 `json:"marks_obtained" validate:"gte=0"`
+	MarksObtained float64 `json:"marks_obtained"`
 	Feedback      string  `json:"feedback"`
 }
 
-func (s *Service) Grade(ctx context.Context, graderID, submissionID uuid.UUID, req GradeRequest) (*db.AssignmentSubmission, error) {
-	sub, err := s.q.GradeSubmission(ctx, db.GradeSubmissionParams{
+func (s *Service) Grade(ctx context.Context, graderID, submissionID uuid.UUID, req GradeRequest) (db.GradeSubmissionRow, error) {
+	return s.q.GradeSubmission(ctx, db.GradeSubmissionParams{
 		ID:            utils.UUIDToPg(submissionID),
 		MarksObtained: utils.NumericFromFloat(req.MarksObtained),
-		Feedback:      utils.TextToPg(req.Feedback),
+		Feedback:      ntext(req.Feedback),
 		GradedBy:      utils.UUIDToPg(graderID),
 	})
-	if err != nil {
-		return nil, err
-	}
-	return &sub, nil
 }
