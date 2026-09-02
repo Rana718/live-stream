@@ -37,6 +37,18 @@ docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 -q
 applied_count=0
 for path in $(find "$MIGRATIONS_DIR" -maxdepth 1 -name "*.sql" | sort); do
   filename="$(basename "$path")"
+
+  # *_seed_demo.sql files are dev/staging fixtures — never apply them to a
+  # production database.
+  case "$filename" in
+    *_seed_demo.sql)
+      if [ "${APP_ENV:-development}" = "production" ]; then
+        echo "Skipping $filename (APP_ENV=production)"
+        continue
+      fi
+      ;;
+  esac
+
   already="$(docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
     "SELECT 1 FROM schema_migrations_applied WHERE filename = '$filename'")"
   if [ "$already" = "1" ]; then
