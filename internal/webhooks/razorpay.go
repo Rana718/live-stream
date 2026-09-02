@@ -7,6 +7,7 @@ package webhooks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -91,6 +93,37 @@ func (h *Handler) Razorpay(c fiber.Ctx) error {
 	// row, so it runs cross-tenant (RLS bypass). Without this every query
 	// below silently matches zero rows.
 	ctx := database.WithSuperAdmin(c.Context())
+
+	// Event-level idempotency: Razorpay retries aggressively. The unique
+	// (gateway, event_id) key means a duplicate INSERT returns no row —
+	// ack 200 and do nothing. event_id = "<event>:<entity id>" (the entity
+	// ids are globally unique per Razorpay).
+	entityID := env.Payload.Payment.Entity.ID
+	if entityID == "" {
+		entityID = env.Payload.Subscription.Entity.ID
+	}
+	if entityID != "" {
+		eventKey := env.Event + ":" + entityID
+		_, err := h.q.RecordWebhookEvent(ctx, db.RecordWebhookEventParams{
+			Gateway: "razorpay", EventID: eventKey,
+			EventType: env.Event, Payload: body, SignatureOk: true,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			// ON CONFLICT DO NOTHING skipped the insert → already seen.
+			h.log.Info("razorpay webhook duplicate ignored", slog.String("event", env.Event))
+			metrics.PaymentWebhookEvents.WithLabelValues(env.Event, "duplicate").Inc()
+			return c.SendStatus(fiber.StatusOK)
+		}
+		if err != nil {
+			h.log.Error("webhook_events insert failed", slog.String("err", err.Error()))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "dedup insert failed"})
+		}
+		defer func() {
+			_ = h.q.MarkWebhookProcessed(ctx, db.MarkWebhookProcessedParams{
+				Gateway: "razorpay", EventID: eventKey,
+			})
+		}()
+	}
 
 	switch env.Event {
 	case "payment.captured":
