@@ -177,6 +177,17 @@ RETURNING id, title, file_key, file_size, mime, page_count;
 INSERT INTO content_links (tenant_id, title, url) VALUES ($1, $2, $3)
 RETURNING id, title, url;
 
+-- name: GetContentVideo :one
+SELECT id, title, provider, playback_id, duration_sec, drm
+FROM content_videos WHERE id = $1;
+
+-- name: GetContentDocument :one
+SELECT id, title, file_key, file_size, mime, page_count
+FROM content_documents WHERE id = $1;
+
+-- name: GetContentLink :one
+SELECT id, title, url FROM content_links WHERE id = $1;
+
 -- name: CreateCourseLesson :one
 INSERT INTO course_lessons (
     tenant_id, course_id, section_id, title, content_kind, video_id, document_id,

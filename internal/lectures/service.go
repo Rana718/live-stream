@@ -1,13 +1,23 @@
+// Package lectures — schema-v2 adapter. The old standalone `lectures` table
+// (topic/chapter/subject-scoped, with view counts + watch tracking) is gone.
+// Content is now `course_lessons` (typed: video|document|link|live_session)
+// hanging off courses/sections, and progress is `content_progress`.
+//
+// This adapter keeps the /lectures routes working for the course_id path and
+// degrades (empty) for the removed topic/chapter/subject/search filters. The
+// full course→section→lesson browsing UI is rebuilt in Phase J.
 package lectures
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"live-platform/internal/database/db"
 	"live-platform/internal/utils"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -16,141 +26,242 @@ type Service struct{ q *db.Queries }
 func NewService(pool *pgxpool.Pool) *Service { return &Service{q: db.New(pool)} }
 
 type CreateLectureRequest struct {
-	TopicID         *uuid.UUID `json:"topic_id"`
-	ChapterID       *uuid.UUID `json:"chapter_id"`
-	SubjectID       *uuid.UUID `json:"subject_id"`
-	Title           string     `json:"title" validate:"required,min=3"`
-	Description     string     `json:"description"`
-	LectureType     string     `json:"lecture_type" validate:"required,oneof=live recorded"`
-	InstructorID    *uuid.UUID `json:"instructor_id"`
-	StreamID        *uuid.UUID `json:"stream_id"`
-	RecordingID     *uuid.UUID `json:"recording_id"`
-	ThumbnailURL    string     `json:"thumbnail_url"`
-	ScheduledAt     *time.Time `json:"scheduled_at"`
-	DurationSeconds int32      `json:"duration_seconds"`
-	Language        string     `json:"language"`
-	IsFree          bool       `json:"is_free"`
-	IsPublished     bool       `json:"is_published"`
-	DisplayOrder    int32      `json:"display_order"`
+	CourseID     *uuid.UUID `json:"course_id"`
+	SectionID    *uuid.UUID `json:"section_id"`
+	TopicID      *uuid.UUID `json:"topic_id"` // legacy; ignored in v2
+	Title        string     `json:"title" validate:"required,min=3"`
+	Description  string     `json:"description"`
+	VideoURL     string     `json:"video_url"`
+	DocumentURL  string     `json:"document_url"`
+	LinkURL      string     `json:"link_url"`
+	ThumbnailURL string     `json:"thumbnail_url"`
+	DurationSec  int32      `json:"duration_seconds"`
+	IsFree       bool       `json:"is_free"`
+	IsPublished  bool       `json:"is_published"`
+	DisplayOrder int32      `json:"display_order"`
 }
 
-func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, req CreateLectureRequest) (*db.Lecture, error) {
-	if req.Language == "" {
-		req.Language = "en"
+// Lesson is the flattened view returned to the current frontend.
+type Lesson struct {
+	ID           string     `json:"id"`
+	CourseID     string     `json:"course_id"`
+	SectionID    string     `json:"section_id"`
+	Title        string     `json:"title"`
+	ContentKind  string     `json:"content_kind"`
+	VideoURL     string     `json:"video_url,omitempty"`
+	HlsURL       string     `json:"hls_url,omitempty"`
+	DocumentURL  string     `json:"document_url,omitempty"`
+	LinkURL      string     `json:"link_url,omitempty"`
+	DurationSec  int32      `json:"duration_seconds"`
+	IsPreview    bool       `json:"is_preview"`
+	IsFree       bool       `json:"is_free"`
+	IsPublished  bool       `json:"is_published"`
+	DisplayOrder int32      `json:"display_order"`
+	AvailableAt  *time.Time `json:"available_at,omitempty"`
+}
+
+func statusFor(pub bool) db.PublishStatus {
+	if pub {
+		return db.PublishStatusPublished
 	}
-	l, err := s.q.CreateLecture(ctx, db.CreateLectureParams{
-		TopicID:         utils.UUIDPtrToPg(req.TopicID),
-		ChapterID:       utils.UUIDPtrToPg(req.ChapterID),
-		SubjectID:       utils.UUIDPtrToPg(req.SubjectID),
-		Title:           req.Title,
-		Description:     utils.TextToPg(req.Description),
-		LectureType:     utils.TextToPg(req.LectureType),
-		InstructorID:    utils.UUIDPtrToPg(req.InstructorID),
-		StreamID:        utils.UUIDPtrToPg(req.StreamID),
-		RecordingID:     utils.UUIDPtrToPg(req.RecordingID),
-		ThumbnailUrl:    utils.TextToPg(req.ThumbnailURL),
-		ScheduledAt:     utils.TimestampPtrToPg(req.ScheduledAt),
-		DurationSeconds: utils.Int4ToPg(req.DurationSeconds),
-		Language:        utils.TextToPg(req.Language),
-		IsFree:          utils.BoolToPg(req.IsFree),
-		IsPublished:     utils.BoolToPg(req.IsPublished),
-		DisplayOrder:    utils.Int4ToPg(req.DisplayOrder),
-		TenantID:        utils.UUIDToPg(tenantID),
+	return db.PublishStatusDraft
+}
+
+func (s *Service) Create(ctx context.Context, tenantID uuid.UUID, req CreateLectureRequest) (Lesson, error) {
+	if req.CourseID == nil {
+		return Lesson{}, errNoCourse
+	}
+	kind := db.ContentKindLink
+	var videoID, docID, linkID pgtype.UUID
+
+	switch {
+	case req.VideoURL != "":
+		provider := "self"
+		if strings.Contains(req.VideoURL, "youtu") {
+			provider = "youtube"
+		}
+		v, err := s.q.CreateContentVideo(ctx, db.CreateContentVideoParams{
+			TenantID:   utils.UUIDToPg(tenantID),
+			Title:      req.Title,
+			Provider:   pgtype.Text{String: provider, Valid: true},
+			PlaybackID: pgtype.Text{String: req.VideoURL, Valid: true},
+			DurationSec: pgtype.Int4{Int32: req.DurationSec, Valid: req.DurationSec > 0},
+		})
+		if err != nil {
+			return Lesson{}, err
+		}
+		kind, videoID = db.ContentKindVideo, v.ID
+	case req.DocumentURL != "":
+		d, err := s.q.CreateContentDocument(ctx, db.CreateContentDocumentParams{
+			TenantID: utils.UUIDToPg(tenantID),
+			Title:    req.Title,
+			FileKey:  req.DocumentURL,
+		})
+		if err != nil {
+			return Lesson{}, err
+		}
+		kind, docID = db.ContentKindDocument, d.ID
+	default:
+		url := req.LinkURL
+		if url == "" {
+			url = req.VideoURL
+		}
+		l, err := s.q.CreateContentLink(ctx, db.CreateContentLinkParams{
+			TenantID: utils.UUIDToPg(tenantID), Title: req.Title, Url: url,
+		})
+		if err != nil {
+			return Lesson{}, err
+		}
+		kind, linkID = db.ContentKindLink, l.ID
+	}
+
+	row, err := s.q.CreateCourseLesson(ctx, db.CreateCourseLessonParams{
+		TenantID:     utils.UUIDToPg(tenantID),
+		CourseID:     utils.UUIDToPg(*req.CourseID),
+		Title:        req.Title,
+		ContentKind:  kind,
+		SectionID:    utils.UUIDPtrToPg(req.SectionID),
+		VideoID:      videoID,
+		DocumentID:   docID,
+		LinkID:       linkID,
+		IsPreview:    utils.BoolToPg(req.IsFree),
+		DisplayOrder: utils.Int4ToPg(req.DisplayOrder),
+		Status:       db.NullPublishStatus{PublishStatus: statusFor(req.IsPublished), Valid: true},
+	})
+	if err != nil {
+		return Lesson{}, err
+	}
+	return Lesson{
+		ID: utils.UUIDFromPg(row.ID), CourseID: utils.UUIDFromPg(row.CourseID),
+		SectionID: utils.UUIDFromPg(row.SectionID), Title: row.Title,
+		ContentKind: string(row.ContentKind), IsPreview: row.IsPreview,
+		IsFree: row.IsPreview, IsPublished: row.Status == db.PublishStatusPublished,
+		DisplayOrder: row.DisplayOrder,
+	}, nil
+}
+
+func (s *Service) resolveContent(ctx context.Context, l *Lesson, kind db.ContentKind, videoID, docID, linkID pgtype.UUID) {
+	switch kind {
+	case db.ContentKindVideo:
+		if v, err := s.q.GetContentVideo(ctx, videoID); err == nil {
+			l.VideoURL = utils.TextFromPg(v.PlaybackID)
+			if v.Provider == "self" {
+				l.HlsURL = utils.TextFromPg(v.PlaybackID)
+			}
+			l.DurationSec = v.DurationSec
+		}
+	case db.ContentKindDocument:
+		if d, err := s.q.GetContentDocument(ctx, docID); err == nil {
+			l.DocumentURL = d.FileKey
+		}
+	case db.ContentKindLink:
+		if k, err := s.q.GetContentLink(ctx, linkID); err == nil {
+			l.LinkURL = k.Url
+			l.VideoURL = k.Url
+		}
+	}
+}
+
+func (s *Service) Get(ctx context.Context, id uuid.UUID) (Lesson, error) {
+	row, err := s.q.GetCourseLesson(ctx, utils.UUIDToPg(id))
+	if err != nil {
+		return Lesson{}, err
+	}
+	l := Lesson{
+		ID: utils.UUIDFromPg(row.ID), CourseID: utils.UUIDFromPg(row.CourseID),
+		SectionID: utils.UUIDFromPg(row.SectionID), Title: row.Title,
+		ContentKind: string(row.ContentKind), IsPreview: row.IsPreview, IsFree: row.IsPreview,
+		IsPublished: row.Status == db.PublishStatusPublished, DisplayOrder: row.DisplayOrder,
+	}
+	if row.AvailableAt.Valid {
+		t := row.AvailableAt.Time
+		l.AvailableAt = &t
+	}
+	s.resolveContent(ctx, &l, row.ContentKind, row.VideoID, row.DocumentID, row.LinkID)
+	return l, nil
+}
+
+func (s *Service) ListByCourse(ctx context.Context, courseID uuid.UUID) ([]Lesson, error) {
+	rows, err := s.q.ListCourseLessons(ctx, db.ListCourseLessonsParams{
+		CourseID: utils.UUIDToPg(courseID),
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &l, nil
-}
-
-func (s *Service) Get(ctx context.Context, id uuid.UUID) (*db.Lecture, error) {
-	l, err := s.q.GetLectureByID(ctx, utils.UUIDToPg(id))
-	if err != nil {
-		return nil, err
+	out := make([]Lesson, 0, len(rows))
+	for _, r := range rows {
+		l := Lesson{
+			ID: utils.UUIDFromPg(r.ID), SectionID: utils.UUIDFromPg(r.SectionID),
+			Title: r.Title, ContentKind: string(r.ContentKind), IsPreview: r.IsPreview,
+			IsFree: r.IsPreview, IsPublished: r.Status == db.PublishStatusPublished,
+			DisplayOrder: r.DisplayOrder,
+		}
+		out = append(out, l)
 	}
-	return &l, nil
+	return out, nil
 }
 
-func (s *Service) ListByTopic(ctx context.Context, topicID uuid.UUID) ([]db.Lecture, error) {
-	return s.q.ListLecturesByTopic(ctx, utils.UUIDToPg(topicID))
-}
-
-func (s *Service) ListByChapter(ctx context.Context, chapterID uuid.UUID) ([]db.Lecture, error) {
-	return s.q.ListLecturesByChapter(ctx, utils.UUIDToPg(chapterID))
-}
-
-func (s *Service) ListBySubject(ctx context.Context, subjectID uuid.UUID) ([]db.Lecture, error) {
-	return s.q.ListLecturesBySubject(ctx, utils.UUIDToPg(subjectID))
-}
-
-func (s *Service) ListLive(ctx context.Context, limit, offset int32) ([]db.Lecture, error) {
-	return s.q.ListLiveLectures(ctx, db.ListLiveLecturesParams{Limit: limit, Offset: offset})
-}
-
-func (s *Service) ListByInstructor(ctx context.Context, instructorID uuid.UUID, limit, offset int32) ([]db.Lecture, error) {
-	return s.q.ListLecturesByInstructor(ctx, db.ListLecturesByInstructorParams{
-		InstructorID: utils.UUIDToPg(instructorID),
-		Limit:        limit,
-		Offset:       offset,
+func (s *Service) Update(ctx context.Context, id uuid.UUID, req CreateLectureRequest) error {
+	return s.q.UpdateCourseLesson(ctx, db.UpdateCourseLessonParams{
+		ID:           utils.UUIDToPg(id),
+		Title:        pgtype.Text{String: req.Title, Valid: req.Title != ""},
+		IsPreview:    utils.BoolToPg(req.IsFree),
+		DisplayOrder: utils.Int4ToPg(req.DisplayOrder),
+		Status:       db.NullPublishStatus{PublishStatus: statusFor(req.IsPublished), Valid: true},
 	})
-}
-
-func (s *Service) Search(ctx context.Context, q string, limit, offset int32) ([]db.Lecture, error) {
-	return s.q.SearchLectures(ctx, db.SearchLecturesParams{
-		PlaintoTsquery: q,
-		Limit:          limit,
-		Offset:         offset,
-	})
-}
-
-func (s *Service) Update(ctx context.Context, id uuid.UUID, req CreateLectureRequest) (*db.Lecture, error) {
-	l, err := s.q.UpdateLecture(ctx, db.UpdateLectureParams{
-		ID:              utils.UUIDToPg(id),
-		Title:           req.Title,
-		Description:     utils.TextToPg(req.Description),
-		LectureType:     utils.TextToPg(req.LectureType),
-		ThumbnailUrl:    utils.TextToPg(req.ThumbnailURL),
-		ScheduledAt:     utils.TimestampPtrToPg(req.ScheduledAt),
-		DurationSeconds: utils.Int4ToPg(req.DurationSeconds),
-		Language:        utils.TextToPg(req.Language),
-		IsFree:          utils.BoolToPg(req.IsFree),
-		IsPublished:     utils.BoolToPg(req.IsPublished),
-		DisplayOrder:    utils.Int4ToPg(req.DisplayOrder),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &l, nil
 }
 
 func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
-	return s.q.DeleteLecture(ctx, utils.UUIDToPg(id))
-}
-
-func (s *Service) IncrementView(ctx context.Context, id uuid.UUID) error {
-	return s.q.IncrementLectureViewCount(ctx, utils.UUIDToPg(id))
+	return s.q.DeleteCourseLesson(ctx, utils.UUIDToPg(id))
 }
 
 type RecordWatchRequest struct {
-	LectureID       uuid.UUID `json:"lecture_id" validate:"required"`
-	WatchedSeconds  int32     `json:"watched_seconds"`
-	Completed       bool      `json:"completed"`
+	LessonID       *uuid.UUID `json:"lesson_id"`
+	LectureID      *uuid.UUID `json:"lecture_id"` // legacy alias
+	WatchedSeconds int32      `json:"watched_seconds"`
+	PositionSec    int32      `json:"position_seconds"`
+	Completed      bool       `json:"completed"`
 }
 
-func (s *Service) RecordWatch(ctx context.Context, userID uuid.UUID, req RecordWatchRequest) error {
-	_, err := s.q.UpsertLectureView(ctx, db.UpsertLectureViewParams{
-		UserID:         utils.UUIDToPg(userID),
-		LectureID:      utils.UUIDToPg(req.LectureID),
-		WatchedSeconds: utils.Int4ToPg(req.WatchedSeconds),
-		Completed:      utils.BoolToPg(req.Completed),
+func (r RecordWatchRequest) lesson() *uuid.UUID {
+	if r.LessonID != nil {
+		return r.LessonID
+	}
+	return r.LectureID
+}
+
+func (s *Service) RecordWatch(ctx context.Context, tenantID, userID uuid.UUID, req RecordWatchRequest) error {
+	lid := req.lesson()
+	if lid == nil {
+		return errNoLesson
+	}
+	completed := pgtype.Timestamptz{}
+	if req.Completed {
+		completed = pgtype.Timestamptz{Time: time.Now(), Valid: true}
+	}
+	_, err := s.q.UpsertContentProgress(ctx, db.UpsertContentProgressParams{
+		TenantID:    utils.UUIDToPg(tenantID),
+		UserID:      utils.UUIDToPg(userID),
+		LessonID:    utils.UUIDToPg(*lid),
+		WatchedSec:  req.WatchedSeconds,
+		PositionSec: req.PositionSec,
+		CompletedAt: completed,
 	})
 	return err
 }
 
-func (s *Service) ListHistory(ctx context.Context, userID uuid.UUID, limit, offset int32) ([]db.ListUserLectureHistoryRow, error) {
-	return s.q.ListUserLectureHistory(ctx, db.ListUserLectureHistoryParams{
-		UserID: utils.UUIDToPg(userID),
-		Limit:  limit,
-		Offset: offset,
+func (s *Service) ListHistory(ctx context.Context, tenantID, userID uuid.UUID, limit, offset int32) ([]db.ListContentProgressForUserRow, error) {
+	return s.q.ListContentProgressForUser(ctx, db.ListContentProgressForUserParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID),
+		Limit: limit, Offset: offset,
 	})
 }
+
+var (
+	errNoCourse = &lecErr{"course_id is required"}
+	errNoLesson = &lecErr{"lesson_id is required"}
+)
+
+type lecErr struct{ s string }
+
+func (e *lecErr) Error() string { return e.s }
