@@ -1,4 +1,4 @@
-.PHONY: help install sqlc swagger migrate-up migrate-down docker-up docker-down docker-build docker-logs dev run build clean backup restore
+.PHONY: help install sqlc proto swagger migrate-up migrate-down docker-up docker-down docker-build docker-logs dev run build clean backup restore
 
 help:
 	@echo "Available commands:"
@@ -34,10 +34,14 @@ bootstrap: docker-up
 	@sleep 10
 	$(MAKE) migrate-up
 	$(MAKE) sqlc
+	$(MAKE) proto
 	$(MAKE) swagger
 
 sqlc:
 	sqlc generate
+
+proto:
+	cd proto && buf lint && buf generate
 
 swagger:
 	swag init -g cmd/server/main.go -o docs

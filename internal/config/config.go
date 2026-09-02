@@ -57,6 +57,7 @@ type CORSConfig struct {
 
 type ServerConfig struct {
 	Port            string
+	GRPCPort        string
 	Env             string
 	ReadTimeoutSec  int
 	WriteTimeoutSec int
@@ -233,6 +234,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
 			Port:            getEnv("SERVER_PORT", "3000"),
+			GRPCPort:        getEnv("GRPC_PORT", ""), // empty = gRPC server disabled
 			Env:             getEnv("ENV", "development"),
 			ReadTimeoutSec:  getEnvInt("SERVER_READ_TIMEOUT", 30),
 			WriteTimeoutSec: getEnvInt("SERVER_WRITE_TIMEOUT", 30),

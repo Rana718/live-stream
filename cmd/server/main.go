@@ -39,6 +39,7 @@ import (
 	"live-platform/internal/enrollments"
 	"live-platform/internal/events"
 	"live-platform/internal/exams"
+	"live-platform/internal/grpcserver"
 	"live-platform/internal/fees"
 	"live-platform/internal/leads"
 	"live-platform/internal/lectures"
@@ -1037,6 +1038,18 @@ func main() {
 	api.Post("/rtmp/done", rtmpDoneHandler)
 	api.Get("/rtmp/record-done", rtmpRecordDone)
 	api.Post("/rtmp/record-done", rtmpRecordDone)
+
+	// --- gRPC server (optional — set GRPC_PORT to enable) ---
+	if cfg.Server.GRPCPort != "" {
+		grpcSrv := grpcserver.New(cfg, pgPool)
+		go func() {
+			log.Info("gRPC listening", "addr", ":"+cfg.Server.GRPCPort)
+			if err := grpcserver.Start(ctx, grpcSrv, cfg.Server.GRPCPort); err != nil {
+				log.Error("gRPC server exited", "err", err)
+				cancel()
+			}
+		}()
+	}
 
 	// --- Graceful shutdown ---
 	go func() {

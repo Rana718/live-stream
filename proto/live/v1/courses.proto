@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package live.v1;
+
+// CourseService is the gRPC surface for the catalog's course domain. It is a
+// thin transport over the same internal/courses service layer the REST
+// handlers use — no business logic lives here.
+service CourseService {
+  rpc ListCourses(ListCoursesRequest) returns (ListCoursesResponse);
+  rpc GetCourse(GetCourseRequest) returns (GetCourseResponse);
+  rpc CreateCourse(CreateCourseRequest) returns (CreateCourseResponse);
+}
+
+message Course {
+  string id = 1;
+  string title = 2;
+  string slug = 3;
+  string summary = 4;
+  string thumbnail_url = 5;
+  string language = 6;
+  string level = 7;
+  string status = 8;
+  bool is_published = 9;
+  int64 price_minor = 10;
+  string currency = 11;
+}
+
+message ListCoursesRequest {
+  // When true and the caller is an instructor/admin, drafts are included.
+  bool include_unpublished = 1;
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+message ListCoursesResponse {
+  repeated Course courses = 1;
+}
+
+message GetCourseRequest {
+  // id or slug.
+  string id = 1;
+}
+
+message GetCourseResponse {
+  Course course = 1;
+}
+
+message CreateCourseResponse {
+  Course course = 1;
+}
+
+message CreateCourseRequest {
+  string title = 1;
+  string summary = 2;
+  string language = 3;
+  string level = 4;
+  int64 price_minor = 5;
+  string hsn_sac = 6;
+  int32 tax_rate_bps = 7;
+}
