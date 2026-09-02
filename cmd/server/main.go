@@ -665,7 +665,7 @@ func main() {
 	authRoutes.Post("/refresh", authHandler.Refresh)
 	authRoutes.Post("/logout", middleware.AuthMiddleware(&cfg.JWT), authHandler.Logout)
 	authRoutes.Post("/switch-org", middleware.AuthMiddleware(&cfg.JWT), authHandler.SwitchOrg)
-	authRoutes.Get("/me", middleware.AuthMiddleware(&cfg.JWT), authHandler.Me)
+	authRoutes.Get("/me", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), authHandler.Me)
 	authRoutes.Post("/link/phone", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), authHandler.LinkPhone)
 	authRoutes.Post("/link/google", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), authHandler.LinkGoogle)
 
