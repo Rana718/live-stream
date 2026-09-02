@@ -11,6 +11,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -19,8 +20,7 @@ type Handler struct{ service *Service }
 func NewHandler(s *Service) *Handler { return &Handler{service: s} }
 
 func parsePagination(c fiber.Ctx) (int32, int32) {
-	limit := int32(50)
-	offset := int32(0)
+	limit, offset := int32(50), int32(0)
 	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 500 {
 		limit = int32(l)
 	}
@@ -30,142 +30,132 @@ func parsePagination(c fiber.Ctx) (int32, int32) {
 	return limit, offset
 }
 
-// Dashboard godoc
-// @Summary Admin dashboard — aggregate stats across the platform
-// @Tags admin
-// @Security BearerAuth
-// @Router /admin/dashboard [get]
+func (h *Handler) tenant(c fiber.Ctx) uuid.UUID { return middleware.CurrentTenantID(c) }
+func (h *Handler) user(c fiber.Ctx) uuid.UUID   { return middleware.CurrentUserID(c) }
+
+// Dashboard — GET /admin/dashboard
 func (h *Handler) Dashboard(c fiber.Ctx) error {
-	stats, err := h.service.DashboardStats(c.Context())
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-	}
-	return c.JSON(stats)
-}
-
-// ListUsers godoc
-// @Summary Admin: list all users (optionally filtered by role)
-// @Tags admin
-// @Param role query string false "student|instructor|admin"
-// @Security BearerAuth
-// @Router /admin/users [get]
-func (h *Handler) ListUsers(c fiber.Ctx) error {
-	role := c.Query("role")
-	limit, offset := parsePagination(c)
-	rows, err := h.service.ListAllUsers(c.Context(), role, limit, offset)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-	}
-	out := make([]fiber.Map, len(rows))
-	for i, r := range rows {
-		out[i] = fiber.Map{
-			"id":               utils.UUIDFromPg(r.ID),
-			"email":            utils.TextFromPg(r.Email),
-			"full_name":        utils.TextFromPg(r.FullName),
-			"role":             utils.TextFromPg(r.Role),
-			"is_active":        utils.BoolFromPg(r.IsActive),
-			"created_at":       r.CreatedAt,
-			"enrolled_courses": r.EnrolledCourses,
-		}
-	}
-	return c.JSON(out)
-}
-
-// BatchAttendance godoc
-// @Summary Admin: aggregate attendance percent per batch
-// @Tags admin
-// @Security BearerAuth
-// @Router /admin/attendance/batches [get]
-func (h *Handler) BatchAttendance(c fiber.Ctx) error {
-	rows, err := h.service.BatchAttendance(c.Context())
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-	}
-	return c.JSON(rows)
-}
-
-// ListPendingApproval godoc
-// @Summary Admin: courses awaiting approval
-// @Tags admin
-// @Security BearerAuth
-// @Router /admin/courses/pending [get]
-func (h *Handler) ListPendingApproval(c fiber.Ctx) error {
-	limit, offset := parsePagination(c)
-	rows, err := h.service.ListPendingApproval(c.Context(), limit, offset)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-	}
-	out := make([]fiber.Map, len(rows))
-	for i, r := range rows {
-		out[i] = fiber.Map{
-			"id":              utils.UUIDFromPg(r.ID),
-			"title":           r.Title,
-			"slug":            r.Slug,
-			"description":     utils.TextFromPg(r.Description),
-			"created_by":      utils.UUIDFromPg(r.CreatedBy),
-			"approval_status": utils.TextFromPg(r.ApprovalStatus),
-			"created_at":      r.CreatedAt,
-		}
-	}
-	return c.JSON(out)
-}
-
-// ApproveCourse godoc
-// @Summary Admin: approve a course (publishes it)
-// @Tags admin
-// @Security BearerAuth
-// @Router /admin/courses/{id}/approve [post]
-func (h *Handler) ApproveCourse(c fiber.Ctx) error {
-	adminID, _ := c.Locals("userID").(uuid.UUID)
-	id, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
-	}
-	course, err := h.service.ApproveCourse(c.Context(), id, adminID)
+	stats, err := h.service.DashboardStats(c.Context(), h.tenant(c))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{
-		"id":              utils.UUIDFromPg(course.ID),
-		"approval_status": utils.TextFromPg(course.ApprovalStatus),
-		"is_published":    utils.BoolFromPg(course.IsPublished),
-		"approved_at":     course.ApprovedAt,
+		"total_courses":          stats.TotalCourses,
+		"published_courses":      stats.PublishedCourses,
+		"total_students":         stats.TotalStudents,
+		"total_instructors":      stats.TotalInstructors,
+		"total_users":            stats.TotalStudents + stats.TotalInstructors,
+		"active_enrollments":     stats.TotalEnrollments,
+		"total_enrollments":      stats.TotalEnrollments,
+		"revenue_minor":          stats.RevenueMinor,
+		"paid_orders":            stats.PaidOrders,
+		"total_revenue_captured": float64(stats.RevenueMinor) / 100,
 	})
 }
 
-// RejectCourse godoc
-// @Summary Admin: reject a course with a reason
-// @Tags admin
-// @Security BearerAuth
-// @Router /admin/courses/{id}/reject [post]
+func tsAny(t pgtype.Timestamptz) any {
+	if !t.Valid {
+		return nil
+	}
+	return t.Time
+}
+
+// ListUsers — GET /admin/users?role=&q=
+func (h *Handler) ListUsers(c fiber.Ctx) error {
+	limit, offset := parsePagination(c)
+	rows, err := h.service.ListMembers(c.Context(), h.tenant(c), c.Query("role"), c.Query("q"), limit, offset)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	out := make([]fiber.Map, len(rows))
+	for i, r := range rows {
+		out[i] = fiber.Map{
+			"id":                utils.UUIDFromPg(r.ID),
+			"email":             utils.TextFromPg(r.Email),
+			"phone":             utils.TextFromPg(r.Phone),
+			"full_name":         utils.TextFromPg(r.FullName),
+			"role":              string(r.Role),
+			"status":            r.Status,
+			"membership_status": string(r.MembershipStatus),
+			"is_active":         r.Status == "active" && string(r.MembershipStatus) == "active",
+			"created_at":        tsAny(r.CreatedAt),
+		}
+	}
+	return c.JSON(out)
+}
+
+// BatchAttendance — GET /admin/attendance/batches
+func (h *Handler) BatchAttendance(c fiber.Ctx) error {
+	rows, err := h.service.BatchAttendance(c.Context(), h.tenant(c))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	out := make([]fiber.Map, len(rows))
+	for i, r := range rows {
+		out[i] = fiber.Map{
+			"batch_id": utils.UUIDFromPg(r.BatchID), "total": r.Total,
+			"attended": r.Attended, "attendance_percent": r.AttendancePercent,
+		}
+	}
+	return c.JSON(out)
+}
+
+// ListPendingApproval — GET /admin/courses/pending
+func (h *Handler) ListPendingApproval(c fiber.Ctx) error {
+	limit, offset := parsePagination(c)
+	rows, err := h.service.ListPendingApproval(c.Context(), h.tenant(c), limit, offset)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	out := make([]fiber.Map, len(rows))
+	for i, r := range rows {
+		out[i] = fiber.Map{
+			"id": utils.UUIDFromPg(r.ID), "title": r.Title, "slug": r.Slug,
+			"created_by": utils.UUIDFromPg(r.CreatedBy), "created_at": tsAny(r.CreatedAt),
+			"approval_status": "pending",
+		}
+	}
+	return c.JSON(out)
+}
+
+// ApproveCourse — POST /admin/courses/:id/approve
+func (h *Handler) ApproveCourse(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+	}
+	course, err := h.service.ApproveCourse(c.Context(), id, h.user(c))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{
+		"id": utils.UUIDFromPg(course.ID), "approval_status": course.ApprovalStatus,
+		"status": string(course.Status), "is_published": course.Status == "published",
+		"approved_at": tsAny(course.ApprovedAt),
+	})
+}
+
+// RejectCourse — POST /admin/courses/:id/reject
 func (h *Handler) RejectCourse(c fiber.Ctx) error {
-	adminID, _ := c.Locals("userID").(uuid.UUID)
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
 	}
 	var req struct {
-		Reason string `json:"reason" validate:"required,min=3"`
+		Reason string `json:"reason"`
 	}
-	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
-	}
-	course, err := h.service.RejectCourse(c.Context(), id, adminID, req.Reason)
+	_ = c.Bind().JSON(&req)
+	course, err := h.service.RejectCourse(c.Context(), id, req.Reason)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{
-		"id":               utils.UUIDFromPg(course.ID),
-		"approval_status":  utils.TextFromPg(course.ApprovalStatus),
+		"id": utils.UUIDFromPg(course.ID), "approval_status": course.ApprovalStatus,
 		"rejection_reason": utils.TextFromPg(course.RejectionReason),
 	})
 }
 
-// UpdateUser godoc
-// @Summary Admin: update user profile fields
-// @Tags admin
-// @Security BearerAuth
-// @Router /admin/users/{id} [put]
+// UpdateUser — PUT /admin/users/:id
 func (h *Handler) UpdateUser(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
@@ -175,53 +165,36 @@ func (h *Handler) UpdateUser(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
-	u, err := h.service.UpdateUser(c.Context(), id, req)
+	u, err := h.service.UpdateUser(c.Context(), h.tenant(c), id, req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{
-		"id":        utils.UUIDFromPg(u.ID),
-		"email":     utils.TextFromPg(u.Email),
-		"phone":     utils.TextFromPg(u.PhoneNumber),
-		"full_name": utils.TextFromPg(u.FullName),
-		"role":      utils.TextFromPg(u.Role),
+		"id": utils.UUIDFromPg(u.ID), "email": utils.TextFromPg(u.Email),
+		"phone": utils.TextFromPg(u.Phone), "full_name": utils.TextFromPg(u.FullName),
+		"role": string(u.Role),
 	})
 }
 
-// SetUserRole godoc
-// @Summary Admin: change a user's role (student/instructor/admin)
-// @Tags admin
-// @Security BearerAuth
-// @Router /admin/users/{id}/role [post]
+// SetUserRole — POST /admin/users/:id/role
 func (h *Handler) SetUserRole(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
 	}
 	var req struct {
-		Role string `json:"role" validate:"required,oneof=student instructor admin"`
+		Role string `json:"role"`
 	}
-	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
+	if err := c.Bind().JSON(&req); err != nil || req.Role == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "role required"})
 	}
-	if err := middleware.ValidateStruct(&req); err != nil {
+	if err := h.service.SetUserRole(c.Context(), h.tenant(c), id, req.Role); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	u, err := h.service.SetUserRole(c.Context(), id, req.Role)
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-	}
-	return c.JSON(fiber.Map{
-		"id":   utils.UUIDFromPg(u.ID),
-		"role": utils.TextFromPg(u.Role),
-	})
+	return c.JSON(fiber.Map{"id": id, "role": req.Role})
 }
 
-// SetUserActive godoc
-// @Summary Admin: activate / deactivate a user
-// @Tags admin
-// @Security BearerAuth
-// @Router /admin/users/{id}/active [post]
+// SetUserActive — POST /admin/users/:id/active
 func (h *Handler) SetUserActive(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
@@ -230,72 +203,50 @@ func (h *Handler) SetUserActive(c fiber.Ctx) error {
 	var req struct {
 		Active bool `json:"active"`
 	}
-	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
-	}
-	u, err := h.service.SetUserActive(c.Context(), id, req.Active)
-	if err != nil {
+	_ = c.Bind().JSON(&req)
+	if err := h.service.SetUserActive(c.Context(), h.tenant(c), id, req.Active); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{
-		"id":        utils.UUIDFromPg(u.ID),
-		"is_active": utils.BoolFromPg(u.IsActive),
-	})
+	return c.JSON(fiber.Map{"id": id, "is_active": req.Active})
 }
 
-// ResetUserPassword godoc
-// @Summary Admin: reset a user's password
-// @Tags admin
-// @Security BearerAuth
-// @Router /admin/users/{id}/password [post]
+// ResetUserPassword — POST /admin/users/:id/password
 func (h *Handler) ResetUserPassword(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
 	}
 	var req struct {
-		NewPassword string `json:"new_password" validate:"required,min=8"`
+		NewPassword string `json:"new_password"`
 	}
-	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
-	}
-	if err := middleware.ValidateStruct(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	if err := c.Bind().JSON(&req); err != nil || len(req.NewPassword) < 8 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "new_password (min 8) required"})
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "hash failed"})
 	}
-	if _, err := h.service.ResetUserPassword(c.Context(), id, string(hash)); err != nil {
+	if err := h.service.ResetUserPassword(c.Context(), id, string(hash)); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"message": "password reset"})
 }
 
-// DeleteUser godoc
-// @Summary Admin: delete a user
-// @Tags admin
-// @Security BearerAuth
-// @Router /admin/users/{id} [delete]
+// DeleteUser — DELETE /admin/users/:id  (removes tenant membership)
 func (h *Handler) DeleteUser(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
 	}
-	if err := h.service.DeleteUser(c.Context(), id); err != nil {
+	if err := h.service.DeleteUser(c.Context(), h.tenant(c), id); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"message": "user deactivated and anonymized"})
+	return c.JSON(fiber.Map{"message": "removed from this institute"})
 }
 
-// ExportUsersCSV godoc
-// @Summary Admin: export all users as CSV
-// @Tags admin
-// @Security BearerAuth
-// @Router /admin/users/export [get]
+// ExportUsersCSV — GET /admin/users/export
 func (h *Handler) ExportUsersCSV(c fiber.Ctx) error {
-	role := c.Query("role")
-	rows, err := h.service.ListAllUsers(c.Context(), role, 10000, 0)
+	rows, err := h.service.ListMembers(c.Context(), h.tenant(c), c.Query("role"), "", 10000, 0)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -303,24 +254,11 @@ func (h *Handler) ExportUsersCSV(c fiber.Ctx) error {
 	c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="users_%s.csv"`, time.Now().Format("2006-01-02")))
 	w := csv.NewWriter(c.Response().BodyWriter())
 	defer w.Flush()
-	_ = w.Write([]string{"id", "email", "username", "full_name", "role", "is_active", "enrolled_courses", "created_at"})
+	_ = w.Write([]string{"id", "email", "phone", "full_name", "role", "status"})
 	for _, r := range rows {
-		created := ""
-		if r.CreatedAt.Valid {
-			created = r.CreatedAt.Time.Format(time.RFC3339)
-		}
-		active := "false"
-		if utils.BoolFromPg(r.IsActive) {
-			active = "true"
-		}
 		_ = w.Write([]string{
-			utils.UUIDFromPg(r.ID),
-			utils.TextFromPg(r.Email),
-			utils.TextFromPg(r.FullName),
-			utils.TextFromPg(r.Role),
-			active,
-			strconv.FormatInt(r.EnrolledCourses, 10),
-			created,
+			utils.UUIDFromPg(r.ID), utils.TextFromPg(r.Email), utils.TextFromPg(r.Phone),
+			utils.TextFromPg(r.FullName), string(r.Role), string(r.MembershipStatus),
 		})
 	}
 	return nil
