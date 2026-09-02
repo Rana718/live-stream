@@ -137,7 +137,11 @@ func main() {
 
 	// --- Services ---
 	claude := aiclient.NewClaude(cfg.Claude.APIKey, cfg.Claude.Model, cfg.Claude.MaxTokens)
-	razorpay := payments.NewRazorpay(cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret, cfg.Razorpay.WebhookSecret)
+	razorpay := payments.NewRazorpay(cfg.Razorpay.KeyID, cfg.Razorpay.KeySecret, cfg.Razorpay.WebhookSecret).
+		WithDevMode(cfg.Razorpay.DevMode)
+	if cfg.Razorpay.DevMode {
+		log.Warn("RAZORPAY_DEV_MODE on — checkout is faked, no gateway calls")
+	}
 	pushClient := push.New(cfg.Push, log)
 	deviceSvc := devices.NewService(pgPool)
 

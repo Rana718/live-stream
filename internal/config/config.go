@@ -144,6 +144,11 @@ type RazorpayConfig struct {
 	KeyID         string
 	KeySecret     string
 	WebhookSecret string
+	// DevMode short-circuits the gateway: CreateOrder returns a synthetic
+	// order id, signature verification always passes, refunds are faked.
+	// Lets the whole checkout flow run end-to-end with no Razorpay account.
+	// Rejected in production by Validate().
+	DevMode bool
 }
 
 // SMSConfig configures the SMS provider used for OTP delivery. We support
@@ -340,6 +345,7 @@ func Load() (*Config, error) {
 			KeyID:         getEnv("RAZORPAY_KEY_ID", ""),
 			KeySecret:     getEnv("RAZORPAY_KEY_SECRET", ""),
 			WebhookSecret: getEnv("RAZORPAY_WEBHOOK_SECRET", ""),
+			DevMode:       getEnvBool("RAZORPAY_DEV_MODE", false),
 		},
 		App: AppConfig{
 			BaseURL:       getEnv("APP_BASE_URL", "http://localhost:3000"),
@@ -410,6 +416,7 @@ func (c *Config) validate() error {
 	req(c.Database.SSLMode == "disable" || c.Database.SSLMode == "",
 		"DB_SSLMODE must be require/verify-ca/verify-full in production")
 	req(c.OTP.DevMode, "OTP_DEV_MODE must be false in production")
+	req(c.Razorpay.DevMode, "RAZORPAY_DEV_MODE must be false in production")
 	req(c.SMS.Provider == "" || c.SMS.AuthKey == "",
 		"an SMS provider must be configured in production (OTP delivery)")
 	req(c.Razorpay.KeyID == "" || c.Razorpay.KeySecret == "",

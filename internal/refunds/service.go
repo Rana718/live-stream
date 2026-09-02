@@ -123,6 +123,7 @@ func (s *Service) Issue(ctx context.Context, tenantID, adminID uuid.UUID, in Iss
 		_ = s.q.RevokeEntitlementsForOrderItem(ctx, db.RevokeEntitlementsForOrderItemParams{
 			OrderItemID: item.ID, RevokeReason: pgtype.Text{String: "refunded", Valid: true},
 		})
+		_ = s.q.CancelEnrollmentsForOrderItem(ctx, item.ID)
 		_ = s.q.SetOrderStatus(ctx, db.SetOrderStatusParams{ID: pay.OrderID, Status: db.OrderStatus("refunded")})
 	} else {
 		_ = s.q.SetOrderStatus(ctx, db.SetOrderStatusParams{ID: pay.OrderID, Status: db.OrderStatus("partially_refunded")})

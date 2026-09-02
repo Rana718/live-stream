@@ -259,6 +259,18 @@ WHERE id = $1 AND revoked_at IS NULL;
 UPDATE entitlements SET revoked_at = now(), revoke_reason = $2
 WHERE order_item_id = $1 AND revoked_at IS NULL;
 
+-- name: CancelEnrollmentsForOrderItem :exec
+-- On a full refund, cancel the course enrollment(s) the order item granted.
+UPDATE enrollments SET status = 'cancelled'
+WHERE status = 'active' AND course_id IN (
+    SELECT p.course_id FROM order_items oi
+    JOIN products p ON p.id = oi.product_id
+    WHERE oi.id = $1 AND p.course_id IS NOT NULL
+) AND user_id = (
+    SELECT o.user_id FROM order_items oi JOIN orders o ON o.id = oi.order_id
+    WHERE oi.id = $1
+);
+
 -- name: CheckEntitlement :one
 SELECT EXISTS (
     SELECT 1 FROM entitlements

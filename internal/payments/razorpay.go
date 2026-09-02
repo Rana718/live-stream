@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -21,6 +22,7 @@ type Razorpay struct {
 	webhookSecret string
 	endpoint      string
 	http          *http.Client
+	devMode       bool
 }
 
 func NewRazorpay(keyID, keySecret, webhookSecret string) *Razorpay {
@@ -31,6 +33,17 @@ func NewRazorpay(keyID, keySecret, webhookSecret string) *Razorpay {
 		endpoint:      "https://api.razorpay.com/v1",
 		http:          &http.Client{Timeout: 20 * time.Second},
 	}
+}
+
+// WithDevMode short-circuits every gateway call: CreateOrder returns a
+// synthetic order, signature checks pass, refunds are faked. For local dev
+// only — config.Validate() forbids it in production.
+func (r *Razorpay) WithDevMode(on bool) *Razorpay { r.devMode = on; return r }
+
+func devOrderID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return "order_dev" + hex.EncodeToString(b)
 }
 
 type Order struct {
@@ -81,6 +94,9 @@ func (r *Razorpay) CreateOrderWithTransfers(
 	notes map[string]string,
 	transfers []Transfer,
 ) (*Order, error) {
+	if r.devMode {
+		return &Order{ID: devOrderID(), Amount: amountPaise, Currency: currency, Status: "created", Receipt: receipt}, nil
+	}
 	if r.keyID == "" || r.keySecret == "" {
 		return nil, fmt.Errorf("razorpay keys not configured")
 	}
@@ -190,6 +206,9 @@ func (r *Razorpay) CreateLinkedAccount(ctx context.Context, in CreateLinkedAccou
 
 // VerifyPaymentSignature verifies checkout signatures (orderID|paymentID signed with keySecret).
 func (r *Razorpay) VerifyPaymentSignature(orderID, paymentID, signature string) bool {
+	if r.devMode {
+		return true
+	}
 	if r.keySecret == "" {
 		return false
 	}
@@ -223,6 +242,9 @@ type refundReq struct {
 // passes a stable string (we use the internal payment row UUID) so a
 // double-submit from the admin UI doesn't double-refund.
 func (r *Razorpay) CreateRefund(ctx context.Context, paymentID string, amountPaise int64, speed string, idempotencyKey string, notes map[string]string) (*Refund, error) {
+	if r.devMode {
+		return &Refund{ID: "rfnd_dev" + idempotencyKey, PaymentID: paymentID, Amount: amountPaise, Currency: "INR", Status: "processed"}, nil
+	}
 	if r.keyID == "" || r.keySecret == "" {
 		return nil, fmt.Errorf("razorpay keys not configured")
 	}
