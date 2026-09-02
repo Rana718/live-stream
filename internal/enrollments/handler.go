@@ -6,20 +6,26 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Handler struct{ service *Service }
 
 func NewHandler(s *Service) *Handler { return &Handler{service: s} }
 
-// Enroll godoc
-// @Summary Enroll the current user in a course
-// @Tags enrollments
-// @Security BearerAuth
-// @Router /enrollments [post]
+func (h *Handler) tenant(c fiber.Ctx) uuid.UUID { return middleware.CurrentTenantID(c) }
+func (h *Handler) user(c fiber.Ctx) uuid.UUID   { return middleware.CurrentUserID(c) }
+
+func pct(bps int32) float64 { return float64(bps) / 100 }
+func ts(t pgtype.Timestamptz) any {
+	if !t.Valid {
+		return nil
+	}
+	return t.Time
+}
+
+// Enroll — POST /enrollments
 func (h *Handler) Enroll(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
-	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	var req EnrollRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -27,90 +33,62 @@ func (h *Handler) Enroll(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	e, err := h.service.Enroll(c.Context(), tenantID, userID, req)
+	e, err := h.service.Enroll(c.Context(), h.tenant(c), h.user(c), req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"id":                utils.UUIDFromPg(e.ID),
-		"user_id":           utils.UUIDFromPg(e.UserID),
-		"course_id":         utils.UUIDFromPg(e.CourseID),
-		"batch_id":          utils.UUIDFromPg(e.BatchID),
-		"status":            utils.TextFromPg(e.Status),
-		"progress_percent":  utils.NumericToFloat(e.ProgressPercent),
-		"enrolled_at":       e.EnrolledAt,
+		"id": utils.UUIDFromPg(e.ID), "user_id": utils.UUIDFromPg(e.UserID),
+		"course_id": utils.UUIDFromPg(e.CourseID), "batch_id": utils.UUIDFromPg(e.BatchID),
+		"status": string(e.Status), "progress_percent": pct(e.ProgressBps),
+		"enrolled_at": ts(e.StartedAt),
 	})
 }
 
-// ListMine godoc
-// @Summary List my enrolled courses
-// @Tags enrollments
-// @Security BearerAuth
-// @Router /enrollments/my [get]
+// ListMine — GET /enrollments/my
 func (h *Handler) ListMine(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
-	rows, err := h.service.ListMine(c.Context(), userID)
+	rows, err := h.service.ListMine(c.Context(), h.tenant(c), h.user(c))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	out := make([]fiber.Map, len(rows))
 	for i, r := range rows {
 		out[i] = fiber.Map{
-			"id":                utils.UUIDFromPg(r.ID),
-			"course_id":         utils.UUIDFromPg(r.CourseID),
-			"course_title":      r.CourseTitle,
-			"course_thumbnail":  utils.TextFromPg(r.CourseThumbnail),
-			"batch_id":          utils.UUIDFromPg(r.BatchID),
-			"status":            utils.TextFromPg(r.Status),
-			"progress_percent":  utils.NumericToFloat(r.ProgressPercent),
-			"enrolled_at":       r.EnrolledAt,
-			"completed_at":      r.CompletedAt,
+			"id": utils.UUIDFromPg(r.ID), "course_id": utils.UUIDFromPg(r.CourseID),
+			"course_title": r.Title, "course_thumbnail": utils.TextFromPg(r.ThumbnailUrl),
+			"batch_id": utils.UUIDFromPg(r.BatchID), "status": string(r.Status),
+			"progress_percent": pct(r.ProgressBps), "progress_bps": r.ProgressBps,
+			"enrolled_at": ts(r.StartedAt), "completed_at": ts(r.CompletedAt),
 		}
 	}
 	return c.JSON(out)
 }
 
-// ListByCourse godoc — admin/instructor view of a course's roster.
-//
-// @Summary List enrollments for a course
-// @Tags enrollments
-// @Security BearerAuth
-// @Router /courses/{course_id}/enrollments [get]
+// ListByCourse — GET /courses/:course_id/enrollments  (roster)
 func (h *Handler) ListByCourse(c fiber.Ctx) error {
 	courseID, err := uuid.Parse(c.Params("course_id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course id"})
 	}
-	limit := int32(500)
-	rows, err := h.service.ListCourseEnrollments(c.Context(), courseID, limit, 0)
+	rows, err := h.service.ListRoster(c.Context(), h.tenant(c), courseID, 500, 0)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	out := make([]fiber.Map, len(rows))
 	for i, r := range rows {
 		out[i] = fiber.Map{
-			"id":               utils.UUIDFromPg(r.ID),
-			"user_id":          utils.UUIDFromPg(r.UserID),
-			"course_id":        utils.UUIDFromPg(r.CourseID),
-			"batch_id":         utils.UUIDFromPg(r.BatchID),
-			"full_name":        utils.TextFromPg(r.FullName),
-			"email":            utils.TextFromPg(r.Email),
-			"status":           utils.TextFromPg(r.Status),
-			"progress_percent": utils.NumericToFloat(r.ProgressPercent),
-			"enrolled_at":      r.EnrolledAt,
+			"id": utils.UUIDFromPg(r.ID), "user_id": utils.UUIDFromPg(r.UserID),
+			"course_id": courseID, "batch_id": utils.UUIDFromPg(r.BatchID),
+			"full_name": utils.TextFromPg(r.FullName), "email": utils.TextFromPg(r.Email),
+			"phone": utils.TextFromPg(r.Phone), "status": string(r.Status),
+			"progress_percent": pct(r.ProgressBps), "enrolled_at": ts(r.StartedAt),
 		}
 	}
 	return c.JSON(out)
 }
 
-// AdminEnroll — admin manually enrolls a student in a course.
-//
-// @Summary Admin manual enrollment
-// @Tags enrollments
-// @Security BearerAuth
-// @Router /admin/enrollments [post]
+// AdminEnroll — POST /admin/enrollments
 func (h *Handler) AdminEnroll(c fiber.Ctx) error {
-	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	var body struct {
 		UserID   string  `json:"user_id"`
 		CourseID string  `json:"course_id"`
@@ -129,31 +107,26 @@ func (h *Handler) AdminEnroll(c fiber.Ctx) error {
 	}
 	var bid *uuid.UUID
 	if body.BatchID != nil && *body.BatchID != "" {
-		parsed, perr := uuid.Parse(*body.BatchID)
+		p, perr := uuid.Parse(*body.BatchID)
 		if perr != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid batch id"})
 		}
-		bid = &parsed
+		bid = &p
 	}
-	e, err := h.service.Enroll(c.Context(), tenantID, uid, EnrollRequest{CourseID: cid, BatchID: bid})
+	e, err := h.service.Enroll(c.Context(), h.tenant(c), uid, EnrollRequest{CourseID: cid, BatchID: bid})
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"id": utils.UUIDFromPg(e.ID)})
 }
 
-// Cancel godoc
-// @Summary Cancel my enrollment in a course
-// @Tags enrollments
-// @Security BearerAuth
-// @Router /enrollments/{course_id} [delete]
+// Cancel — DELETE /enrollments/:course_id
 func (h *Handler) Cancel(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
 	courseID, err := uuid.Parse(c.Params("course_id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid course id"})
 	}
-	if err := h.service.Cancel(c.Context(), userID, courseID); err != nil {
+	if err := h.service.Cancel(c.Context(), h.tenant(c), h.user(c), courseID); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"message": "cancelled"})
