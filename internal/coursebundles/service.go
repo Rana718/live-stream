@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"live-platform/internal/billing"
 	"live-platform/internal/database/db"
 	"live-platform/internal/events"
 	"live-platform/internal/payments"
@@ -24,10 +25,11 @@ type Service struct {
 	q        *db.Queries
 	rp       *payments.Razorpay
 	producer *events.Producer
+	billing  *billing.Service
 }
 
 func NewService(pool *pgxpool.Pool, rp *payments.Razorpay) *Service {
-	return &Service{pool: pool, q: db.New(pool), rp: rp}
+	return &Service{pool: pool, q: db.New(pool), rp: rp, billing: billing.NewService(pool)}
 }
 
 func (s *Service) WithProducer(p *events.Producer) *Service { s.producer = p; return s }
@@ -243,6 +245,9 @@ func (s *Service) Verify(ctx context.Context, req VerifyRequest, userID uuid.UUI
 				}
 			}
 		}
+	}
+	if _, err := s.billing.GenerateForOrder(ctx, q, uuid.UUID(paid.TenantID.Bytes), uuid.UUID(order.ID.Bytes)); err != nil {
+		return fmt.Errorf("invoice generation failed: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err

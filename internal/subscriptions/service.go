@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"time"
 
+	"live-platform/internal/billing"
 	"live-platform/internal/database/db"
 	"live-platform/internal/payments"
 	"live-platform/internal/utils"
@@ -22,13 +23,14 @@ import (
 )
 
 type Service struct {
-	pool *pgxpool.Pool
-	q    *db.Queries
-	rp   *payments.Razorpay
+	pool    *pgxpool.Pool
+	q       *db.Queries
+	rp      *payments.Razorpay
+	billing *billing.Service
 }
 
 func NewService(pool *pgxpool.Pool, rp *payments.Razorpay) *Service {
-	return &Service{pool: pool, q: db.New(pool), rp: rp}
+	return &Service{pool: pool, q: db.New(pool), rp: rp, billing: billing.NewService(pool)}
 }
 
 func ntext(s string) pgtype.Text {
@@ -327,6 +329,9 @@ func (s *Service) VerifyCheckout(ctx context.Context, userID uuid.UUID, req Veri
 		_ = q.ExtendEntitlement(ctx, db.ExtendEntitlementParams{
 			ID: entID, ExpiresAt: pgtype.Timestamptz{Time: now.AddDate(0, 0, int(days)), Valid: true},
 		})
+	}
+	if _, err := s.billing.GenerateForOrder(ctx, q, uuid.UUID(order.TenantID.Bytes), uuid.UUID(order.ID.Bytes)); err != nil {
+		return nil, fmt.Errorf("invoice generation failed: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err

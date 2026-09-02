@@ -100,6 +100,23 @@ SELECT id, number, order_id, status, total_minor, issued_at
 FROM invoices WHERE tenant_id = $1
 ORDER BY issued_at DESC LIMIT $2 OFFSET $3;
 
+-- name: ListInvoicesForUser :many
+SELECT i.id, i.number, i.order_id, i.status, i.supply_type, i.taxable_minor,
+       i.cgst_minor, i.sgst_minor, i.igst_minor, i.total_minor, i.issued_at
+FROM invoices i
+JOIN orders o ON o.id = i.order_id
+WHERE i.tenant_id = $1 AND o.user_id = $2
+ORDER BY i.issued_at DESC LIMIT $3 OFFSET $4;
+
+-- name: GetInvoiceForUser :one
+SELECT i.id, i.tenant_id, i.order_id, i.number, i.fin_year, i.status,
+       i.supply_type, i.place_of_supply, i.buyer_snapshot, i.seller_snapshot,
+       i.taxable_minor, i.cgst_minor, i.sgst_minor, i.igst_minor,
+       i.round_off_minor, i.total_minor, i.issued_at
+FROM invoices i
+JOIN orders o ON o.id = i.order_id
+WHERE i.id = $1 AND o.user_id = $2;
+
 -- name: SetInvoicePDFKey :exec
 UPDATE invoices SET pdf_key = $2 WHERE id = $1;
 

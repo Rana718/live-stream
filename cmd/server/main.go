@@ -19,6 +19,7 @@ import (
 	"live-platform/internal/auth"
 	"live-platform/internal/auth/google"
 	"live-platform/internal/banners"
+	"live-platform/internal/billing"
 	"live-platform/internal/batches"
 	"live-platform/internal/bookmarks"
 	"live-platform/internal/bulkimport"
@@ -574,6 +575,12 @@ func main() {
 	// before the verify call lands.
 	webhookHandler := webhooks.NewHandler(pgPool, razorpay, log)
 	api.Post("/webhooks/razorpay", webhookHandler.Razorpay)
+
+	// GST invoices — student's own tax invoices for paid orders.
+	invoiceHandler := billing.NewHandler(billing.NewService(pgPool))
+	invg := api.Group("/invoices", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext())
+	invg.Get("/mine", invoiceHandler.ListMine)
+	invg.Get("/:id", invoiceHandler.Get)
 
 	// Authenticated tenant endpoints. TenantContext sets the RLS session var
 	// on every request so the handler reads/writes only its tenant's rows.

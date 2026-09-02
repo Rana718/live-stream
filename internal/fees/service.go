@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"live-platform/internal/billing"
 	"live-platform/internal/database/db"
 	"live-platform/internal/payments"
 	"live-platform/internal/utils"
@@ -20,13 +21,14 @@ import (
 )
 
 type Service struct {
-	pool *pgxpool.Pool
-	q    *db.Queries
-	rp   *payments.Razorpay
+	pool    *pgxpool.Pool
+	q       *db.Queries
+	rp      *payments.Razorpay
+	billing *billing.Service
 }
 
 func NewService(pool *pgxpool.Pool, rp *payments.Razorpay) *Service {
-	return &Service{pool: pool, q: db.New(pool), rp: rp}
+	return &Service{pool: pool, q: db.New(pool), rp: rp, billing: billing.NewService(pool)}
 }
 
 func dptr(t *time.Time) pgtype.Date {
@@ -314,6 +316,9 @@ func (s *Service) VerifyInstallmentPayment(ctx context.Context, userID uuid.UUID
 		ID: inst.FeeAccountID, PaidMinor: inst.AmountMinor,
 	}); err != nil {
 		return err
+	}
+	if _, err := s.billing.GenerateForOrder(ctx, q, uuid.UUID(order.TenantID.Bytes), uuid.UUID(order.ID.Bytes)); err != nil {
+		return fmt.Errorf("invoice generation failed: %w", err)
 	}
 	return tx.Commit(ctx)
 }

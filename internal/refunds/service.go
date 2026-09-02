@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	"live-platform/internal/billing"
 	"live-platform/internal/database/db"
 	"live-platform/internal/email"
 	"live-platform/internal/payments"
@@ -18,13 +19,14 @@ import (
 )
 
 type Service struct {
-	q     *db.Queries
-	rp    *payments.Razorpay
-	email email.Client
+	q       *db.Queries
+	rp      *payments.Razorpay
+	email   email.Client
+	billing *billing.Service
 }
 
 func NewService(pool *pgxpool.Pool, rp *payments.Razorpay) *Service {
-	return &Service{q: db.New(pool), rp: rp}
+	return &Service{q: db.New(pool), rp: rp, billing: billing.NewService(pool)}
 }
 
 func (s *Service) WithEmail(c email.Client) *Service { s.email = c; return s }
@@ -124,6 +126,13 @@ func (s *Service) Issue(ctx context.Context, tenantID, adminID uuid.UUID, in Iss
 		_ = s.q.SetOrderStatus(ctx, db.SetOrderStatusParams{ID: pay.OrderID, Status: db.OrderStatus("refunded")})
 	} else {
 		_ = s.q.SetOrderStatus(ctx, db.SetOrderStatusParams{ID: pay.OrderID, Status: db.OrderStatus("partially_refunded")})
+	}
+
+	// GST credit note reversing the refunded slice.
+	if _, err := s.billing.GenerateForRefund(ctx, s.q, tenantID,
+		uuid.UUID(pay.OrderID.Bytes), uuid.UUID(done.ID.Bytes), amount, in.Reason); err != nil {
+		// non-fatal: the money moved; a missing credit note is a reconciliation task
+		_ = err
 	}
 
 	emailSent := false

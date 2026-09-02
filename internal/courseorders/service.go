@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"live-platform/internal/billing"
 	"live-platform/internal/database/db"
 	"live-platform/internal/events"
 	"live-platform/internal/payments"
@@ -34,10 +35,11 @@ type Service struct {
 	producer  *events.Producer
 	coupons   CouponRedeemer
 	referrals ReferralRewarder
+	billing   *billing.Service
 }
 
 func NewService(pool *pgxpool.Pool, rp *payments.Razorpay) *Service {
-	return &Service{pool: pool, q: db.New(pool), rp: rp}
+	return &Service{pool: pool, q: db.New(pool), rp: rp, billing: billing.NewService(pool)}
 }
 
 func (s *Service) WithProducer(p *events.Producer) *Service { s.producer = p; return s }
@@ -304,6 +306,11 @@ func (s *Service) Verify(ctx context.Context, req VerifyRequest, userID uuid.UUI
 				}
 			}
 		}
+	}
+
+	// GST invoice — same tx so numbering stays gapless on the happy path.
+	if _, err := s.billing.GenerateForOrder(ctx, q, tenantID, uuid.UUID(order.ID.Bytes)); err != nil {
+		return nil, fmt.Errorf("invoice generation failed: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

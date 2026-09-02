@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 
+	"live-platform/internal/billing"
 	"live-platform/internal/database"
 	"live-platform/internal/database/db"
 	"live-platform/internal/metrics"
@@ -23,14 +24,15 @@ import (
 )
 
 type Handler struct {
-	pool *pgxpool.Pool
-	q    *db.Queries
-	rp   *payments.Razorpay
-	log  *slog.Logger
+	pool    *pgxpool.Pool
+	q       *db.Queries
+	rp      *payments.Razorpay
+	log     *slog.Logger
+	billing *billing.Service
 }
 
 func NewHandler(pool *pgxpool.Pool, rp *payments.Razorpay, log *slog.Logger) *Handler {
-	return &Handler{pool: pool, q: db.New(pool), rp: rp, log: log}
+	return &Handler{pool: pool, q: db.New(pool), rp: rp, log: log, billing: billing.NewService(pool)}
 }
 
 type rzpEnvelope struct {
@@ -206,6 +208,10 @@ func (h *Handler) applyPaymentSuccess(ctx context.Context, env rzpEnvelope) erro
 				}
 			}
 		}
+	}
+
+	if _, err := h.billing.GenerateForOrder(ctx, qtx, uuid.UUID(paid.TenantID.Bytes), uuid.UUID(order.ID.Bytes)); err != nil {
+		return fmt.Errorf("invoice on webhook: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

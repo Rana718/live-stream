@@ -294,6 +294,32 @@ func SplitGST(taxable Money, rateBps int64, interState bool) GST {
 	return g
 }
 
+// SplitGSTInclusive back-computes the GST breakup for a GST-INCLUSIVE gross
+// amount (the price the customer actually pays) at rateBps. taxable is
+// gross * 10000 / (10000 + rateBps), rounded to paise; the remainder is the
+// tax, split CGST/SGST for intra-state or all IGST for inter-state.
+func SplitGSTInclusive(gross Money, rateBps int64, interState bool) GST {
+	if rateBps <= 0 {
+		return GST{Taxable: gross, Total: gross,
+			CGST: Zero(gross.Currency), SGST: Zero(gross.Currency), IGST: Zero(gross.Currency)}
+	}
+	taxableMinor := gross.Minor * 10000 / (10000 + rateBps)
+	taxable := New(taxableMinor, gross.Currency)
+	tax := gross.Sub(taxable)
+	g := GST{Taxable: taxable, Total: gross}
+	if interState {
+		g.IGST = tax
+		g.CGST = Zero(gross.Currency)
+		g.SGST = Zero(gross.Currency)
+	} else {
+		half := New(tax.Minor/2, gross.Currency)
+		g.CGST = half
+		g.SGST = tax.Sub(half) // odd paise → SGST
+		g.IGST = Zero(gross.Currency)
+	}
+	return g
+}
+
 // Sum adds any number of same-currency amounts. Empty input returns a zero
 // INR amount.
 func Sum(ms ...Money) Money {
