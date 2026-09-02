@@ -261,3 +261,49 @@ ORDER BY created_at DESC LIMIT $1 OFFSET $2;
 -- name: UpdateLeadStatus :exec
 UPDATE leads SET status = $2, assigned_to = sqlc.narg(assigned_to)::uuid, notes = sqlc.narg(notes)::text
 WHERE id = $1;
+
+-- ─────────────────────────────────────────────────────── cms admin (super)
+
+-- name: AdminListBlogPosts :many
+SELECT id, slug, title, excerpt, cover_url, author_name, tags, minutes_read, published_at
+FROM blog_posts ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+
+-- name: GetBlogPostByID :one
+SELECT id, slug, title, excerpt, body_json, body_html, cover_url, author_name, tags,
+       minutes_read, seo_title, seo_desc, published_at
+FROM blog_posts WHERE id = $1;
+
+-- name: DeleteBlogPost :exec
+DELETE FROM blog_posts WHERE id = $1;
+
+-- name: AdminListFaqs :many
+SELECT id, category, question, answer_html, show_on_home, is_active, display_order
+FROM faqs ORDER BY category, display_order;
+
+-- name: CreateFaq :one
+INSERT INTO faqs (category, question, answer_html, show_on_home, display_order)
+VALUES (COALESCE(sqlc.narg(category)::text, 'general'), $1, $2,
+        COALESCE(sqlc.narg(show_on_home)::boolean, false),
+        COALESCE(sqlc.narg(display_order)::int, 0))
+RETURNING id, category, question, answer_html, show_on_home, is_active, display_order;
+
+-- name: UpdateFaq :one
+UPDATE faqs SET
+    category      = COALESCE(sqlc.narg(category)::text, category),
+    question      = COALESCE(sqlc.narg(question)::text, question),
+    answer_html   = COALESCE(sqlc.narg(answer_html)::text, answer_html),
+    show_on_home  = COALESCE(sqlc.narg(show_on_home)::boolean, show_on_home),
+    is_active     = COALESCE(sqlc.narg(is_active)::boolean, is_active),
+    display_order = COALESCE(sqlc.narg(display_order)::int, display_order)
+WHERE id = $1
+RETURNING id, category, question, answer_html, show_on_home, is_active, display_order;
+
+-- name: DeleteFaq :exec
+DELETE FROM faqs WHERE id = $1;
+
+-- name: AdminListCmsPages :many
+SELECT slug, title, is_published, updated_at FROM cms_pages ORDER BY slug;
+
+-- name: AdminGetCmsPage :one
+SELECT slug, title, body_json, body_html, seo_title, seo_desc, is_published
+FROM cms_pages WHERE slug = sqlc.arg(slug)::citext;

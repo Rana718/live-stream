@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 )
 
 type Handler struct{ service *Service }
@@ -30,7 +31,8 @@ func (h *Handler) Search(c fiber.Ctx) error {
 	if o, err := strconv.Atoi(c.Query("offset")); err == nil && o >= 0 {
 		offset = int32(o)
 	}
-	out, err := h.service.Unified(c.Context(), q, limit, offset)
+	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
+	out, err := h.service.Unified(c.Context(), tenantID, q, limit, offset)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}

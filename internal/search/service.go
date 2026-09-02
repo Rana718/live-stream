@@ -1,3 +1,6 @@
+// Package search — schema-v2. Course full-text search only (lectures are no
+// longer a standalone searchable table; lesson search returns in Phase J
+// with a content-search index).
 package search
 
 import (
@@ -6,10 +9,10 @@ import (
 	"live-platform/internal/database/db"
 	"live-platform/internal/utils"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Service aggregates searches across content types (courses, lectures, PYQs).
 type Service struct {
 	q *db.Queries
 }
@@ -17,47 +20,30 @@ type Service struct {
 func NewService(pool *pgxpool.Pool) *Service { return &Service{q: db.New(pool)} }
 
 type UnifiedResult struct {
-	Type        string `json:"type"` // "course" | "lecture"
+	Type        string `json:"type"`
 	ID          string `json:"id"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
+	Snippet     string `json:"snippet,omitempty"`
 	Thumbnail   string `json:"thumbnail_url,omitempty"`
-	Language    string `json:"language,omitempty"`
 }
 
-func (s *Service) Unified(ctx context.Context, q string, limit, offset int32) ([]UnifiedResult, error) {
+func (s *Service) Unified(ctx context.Context, tenantID uuid.UUID, q string, limit, offset int32) ([]UnifiedResult, error) {
+	if tenantID == uuid.Nil || q == "" {
+		return []UnifiedResult{}, nil
+	}
 	courses, err := s.q.SearchCourses(ctx, db.SearchCoursesParams{
-		PlaintoTsquery: q, Limit: limit, Offset: offset,
+		TenantID: utils.UUIDToPg(tenantID), Q: q, Limit: limit,
 	})
 	if err != nil {
 		return nil, err
 	}
-	lectures, err := s.q.SearchLectures(ctx, db.SearchLecturesParams{
-		PlaintoTsquery: q, Limit: limit, Offset: offset,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	out := make([]UnifiedResult, 0, len(courses)+len(lectures))
+	out := make([]UnifiedResult, 0, len(courses))
 	for _, c := range courses {
+		summary := utils.TextFromPg(c.Summary)
 		out = append(out, UnifiedResult{
-			Type:        "course",
-			ID:          utils.UUIDFromPg(c.ID),
-			Title:       c.Title,
-			Description: utils.TextFromPg(c.Description),
-			Thumbnail:   utils.TextFromPg(c.ThumbnailUrl),
-			Language:    utils.TextFromPg(c.Language),
-		})
-	}
-	for _, l := range lectures {
-		out = append(out, UnifiedResult{
-			Type:        "lecture",
-			ID:          utils.UUIDFromPg(l.ID),
-			Title:       l.Title,
-			Description: utils.TextFromPg(l.Description),
-			Thumbnail:   utils.TextFromPg(l.ThumbnailUrl),
-			Language:    utils.TextFromPg(l.Language),
+			Type: "course", ID: utils.UUIDFromPg(c.ID), Title: c.Title,
+			Description: summary, Snippet: summary, Thumbnail: utils.TextFromPg(c.ThumbnailUrl),
 		})
 	}
 	return out, nil
