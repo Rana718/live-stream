@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"live-platform/internal/auth/google"
 	"live-platform/internal/database"
 	"live-platform/internal/database/db"
 
@@ -18,15 +19,41 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// Dev-mode constants. Until we wire Firebase Auth (phase 2b) every OTP the
-// server issues is ignored in favour of this canned value so the mobile app
-// can still drive the full login flow end-to-end against localhost. Flip the
-// constant to false before shipping to production or the stub will still
-// accept "123456" as a valid code.
-const (
-	devModeOTP = true
-	devOTPCode = "123456"
-)
+// GoogleIdentity is the internal, already-verified identity passed between
+// helpers in this file. It is never populated from a client payload —
+// verifyGoogle is the only source.
+type GoogleIdentity struct {
+	Sub      string
+	Email    string
+	FullName string
+}
+
+// OTP dev-mode is controlled by config (OTP_DEV_MODE, default false).
+// When on, SendOTP skips real SMS and stores the configured dev code so QA
+// can drive the flow against localhost. config.validate() refuses to boot
+// production with dev-mode enabled.
+func (s *Service) otpDevMode() bool { return s.cfg != nil && s.cfg.OTP.DevMode }
+
+func (s *Service) otpDevCode() string {
+	if s.cfg != nil && s.cfg.OTP.DevCode != "" {
+		return s.cfg.OTP.DevCode
+	}
+	return "123456"
+}
+
+func (s *Service) otpTTL() time.Duration {
+	if s.cfg != nil && s.cfg.OTP.TTLSec > 0 {
+		return time.Duration(s.cfg.OTP.TTLSec) * time.Second
+	}
+	return 5 * time.Minute
+}
+
+func (s *Service) otpMaxSendsPerHour() int {
+	if s.cfg != nil && s.cfg.OTP.MaxSends > 0 {
+		return s.cfg.OTP.MaxSends
+	}
+	return 5
+}
 
 // E.164-ish check — good enough to reject obvious garbage without locking
 // out domestic-only numbers. A real integration would normalize via libphonenumber.
@@ -56,12 +83,17 @@ func random6DigitCode() (string, error) {
 
 // SendOTP issues a fresh code for `phone`. The Org Code is captured here too
 // so the eventual VerifyOTP knows which tenant to scope the new user under.
-// Returning the dev code is a debug affordance — flip devModeOTP off and wire
-// MSG91 in production.
+// devCode is only ever non-empty when OTP_DEV_MODE is on (never in prod).
 func (s *Service) SendOTP(ctx context.Context, phoneInput, orgCode string) (phone, devCode string, err error) {
 	phone, err = normalizePhone(phoneInput)
 	if err != nil {
 		return "", "", err
+	}
+
+	// Real SMS delivery must be wired unless we're explicitly in dev mode —
+	// otherwise a caller would get "sent: true" and never receive a code.
+	if !s.otpDevMode() && s.sms == nil {
+		return "", "", fmt.Errorf("otp delivery is not configured")
 	}
 
 	// We don't strictly *need* the tenant at this point (the SMS code is
@@ -71,12 +103,28 @@ func (s *Service) SendOTP(ctx context.Context, phoneInput, orgCode string) (phon
 		return "", "", err
 	}
 
+	// Per-phone send throttle — stops SMS-bombing / cost abuse. Backed by
+	// Redis so it holds across instances. Fails open if Redis is down
+	// (availability > perfect rate limiting for the login path).
+	if s.redis != nil {
+		key := "otp:sends:" + phone
+		n, incErr := s.redis.Incr(ctx, key).Result()
+		if incErr == nil {
+			if n == 1 {
+				_ = s.redis.Expire(ctx, key, time.Hour).Err()
+			}
+			if int(n) > s.otpMaxSendsPerHour() {
+				return "", "", fmt.Errorf("too many OTP requests — try again later")
+			}
+		}
+	}
+
 	if err := s.queries.InvalidateOlderSmsCodes(ctx, phone); err != nil {
 		return "", "", err
 	}
 
-	code := devOTPCode
-	if !devModeOTP {
+	code := s.otpDevCode()
+	if !s.otpDevMode() {
 		code, err = random6DigitCode()
 		if err != nil {
 			return "", "", err
@@ -86,21 +134,17 @@ func (s *Service) SendOTP(ctx context.Context, phoneInput, orgCode string) (phon
 	_, err = s.queries.CreateSmsCode(ctx, db.CreateSmsCodeParams{
 		PhoneNumber: phone,
 		CodeHash:    hashCode(code),
-		ExpiresAt:   pgtype.Timestamp{Time: time.Now().Add(5 * time.Minute), Valid: true},
+		ExpiresAt:   pgtype.Timestamp{Time: time.Now().Add(s.otpTTL()), Valid: true},
 	})
 	if err != nil {
 		return "", "", err
 	}
 
-	// Dispatch via SMS provider (MSG91). In dev we short-circuit and return
-	// the code so the QA flow can skip the SMS leg.
-	if !devModeOTP && s.sms != nil {
-		if e := s.sms.SendOTP(ctx, phone, code); e != nil {
-			return "", "", fmt.Errorf("sms send failed: %w", e)
-		}
-	}
-	if devModeOTP {
+	if s.otpDevMode() {
 		return phone, code, nil
+	}
+	if e := s.sms.SendOTP(ctx, phone, code); e != nil {
+		return "", "", fmt.Errorf("sms send failed: %w", e)
 	}
 	return phone, "", nil
 }
@@ -200,22 +244,45 @@ func (s *Service) LoginWithOTP(ctx context.Context, phone, code, orgCode, referr
 	return s.issueTokensForUser(ctx, user, tenantID)
 }
 
-// GoogleIdentity is the minimum data we accept from the client after a Google
-// Sign-In round-trip. Once Firebase Admin SDK verification lands (phase 2b)
-// this will come from decoding the ID token rather than trusting the client.
-type GoogleIdentity struct {
-	Sub      string `json:"sub"`
-	Email    string `json:"email"`
-	FullName string `json:"full_name"`
+// GoogleCredential is what the client sends after a Google Sign-In
+// round-trip: the raw ID token (a signed JWT). We verify it server-side —
+// identity fields are never taken from the client directly.
+type GoogleCredential struct {
+	IDToken string `json:"id_token"`
+	// Deprecated client fields — accepted in the payload for backwards
+	// compatibility but ignored. The trusted identity always comes from
+	// verifying IDToken.
+	Sub      string `json:"sub,omitempty"`
+	Email    string `json:"email,omitempty"`
+	FullName string `json:"full_name,omitempty"`
 }
 
-// LoginWithGoogle creates-or-fetches a user keyed by the Google subject claim
-// inside the resolved tenant, then issues tokens. The tenant is required so
-// the same Google account can belong to different orgs as separate user rows.
-func (s *Service) LoginWithGoogle(ctx context.Context, id GoogleIdentity, orgCode string) (*TokenResponse, error) {
-	if id.Sub == "" || id.Email == "" {
-		return nil, fmt.Errorf("missing google identity")
+// verifyGoogle turns a raw ID token into a trusted identity, or errors.
+func (s *Service) verifyGoogle(ctx context.Context, idToken string) (*google.Identity, error) {
+	if s.google == nil || !s.google.Enabled() {
+		return nil, fmt.Errorf("google sign-in is not configured")
 	}
+	if idToken == "" {
+		return nil, fmt.Errorf("missing google id_token")
+	}
+	id, err := s.google.Verify(ctx, idToken)
+	if err != nil {
+		return nil, err
+	}
+	if !id.EmailVerified {
+		return nil, fmt.Errorf("google account email is not verified")
+	}
+	return id, nil
+}
+
+// LoginWithGoogle verifies the ID token then creates-or-fetches a user keyed
+// by the Google subject claim inside the resolved tenant, then issues tokens.
+func (s *Service) LoginWithGoogle(ctx context.Context, cred GoogleCredential, orgCode string) (*TokenResponse, error) {
+	verified, err := s.verifyGoogle(ctx, cred.IDToken)
+	if err != nil {
+		return nil, err
+	}
+	id := GoogleIdentity{Sub: verified.Sub, Email: verified.Email, FullName: verified.FullName}
 
 	tenantID, err := s.resolveTenant(ctx, orgCode)
 	if err != nil {
@@ -299,12 +366,14 @@ func (s *Service) LinkPhone(ctx context.Context, userID uuid.UUID, tenantID uuid
 	return &linked, nil
 }
 
-// LinkGoogle attaches a Google identity to an existing authenticated account.
-// Mirrors LinkPhone's conflict handling.
-func (s *Service) LinkGoogle(ctx context.Context, userID, tenantID uuid.UUID, id GoogleIdentity) (*db.User, error) {
-	if id.Sub == "" {
-		return nil, fmt.Errorf("missing google sub")
+// LinkGoogle attaches a Google identity to an existing authenticated account
+// after verifying the ID token. Mirrors LinkPhone's conflict handling.
+func (s *Service) LinkGoogle(ctx context.Context, userID, tenantID uuid.UUID, cred GoogleCredential) (*db.User, error) {
+	verified, err := s.verifyGoogle(ctx, cred.IDToken)
+	if err != nil {
+		return nil, err
 	}
+	id := GoogleIdentity{Sub: verified.Sub, Email: verified.Email, FullName: verified.FullName}
 	tID := pgtype.UUID{Bytes: tenantID, Valid: true}
 	if other, err := s.queries.GetUserByGoogleSub(ctx, db.GetUserByGoogleSubParams{
 		TenantID:  tID,

@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 
+	"live-platform/internal/database"
 	"live-platform/internal/database/db"
 	"live-platform/internal/metrics"
 	"live-platform/internal/payments"
@@ -22,13 +23,14 @@ import (
 )
 
 type Handler struct {
-	q   *db.Queries
-	rp  *payments.Razorpay
-	log *slog.Logger
+	pool *pgxpool.Pool
+	q    *db.Queries
+	rp   *payments.Razorpay
+	log  *slog.Logger
 }
 
 func NewHandler(pool *pgxpool.Pool, rp *payments.Razorpay, log *slog.Logger) *Handler {
-	return &Handler{q: db.New(pool), rp: rp, log: log}
+	return &Handler{pool: pool, q: db.New(pool), rp: rp, log: log}
 }
 
 type rzpEnvelope struct {
@@ -82,9 +84,18 @@ func (h *Handler) Razorpay(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
 	}
 
+	// This is a trusted, signature-verified server-to-server call. It has no
+	// authenticated user and can't know the tenant until it reads the order
+	// row, so it runs cross-tenant (RLS bypass). Without this every query
+	// below silently matches zero rows.
+	ctx := database.WithSuperAdmin(c.Context())
+
 	switch env.Event {
-	case "payment.captured", "payment.authorized":
-		if err := h.applyPaymentSuccess(c.Context(), env); err != nil {
+	case "payment.captured":
+		// Only a *captured* payment means money actually moved. An
+		// "authorized" payment can still be voided/expire, so we never
+		// grant access on payment.authorized alone.
+		if err := h.applyPaymentSuccess(ctx, env); err != nil {
 			h.log.Error("webhook apply failed",
 				slog.String("event", env.Event),
 				slog.String("err", err.Error()))
@@ -92,6 +103,9 @@ func (h *Handler) Razorpay(c fiber.Ctx) error {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 		}
 		metrics.PaymentWebhookEvents.WithLabelValues(env.Event, "applied").Inc()
+	case "payment.authorized":
+		h.log.Info("razorpay payment authorized (awaiting capture)",
+			slog.String("order_id", env.Payload.Payment.Entity.OrderID))
 	case "payment.failed":
 		h.log.Info("razorpay payment failed",
 			slog.String("order_id", env.Payload.Payment.Entity.OrderID))
@@ -103,7 +117,7 @@ func (h *Handler) Razorpay(c fiber.Ctx) error {
 	case "subscription.activated", "subscription.charged":
 		subID := env.Payload.Subscription.Entity.ID
 		if subID != "" {
-			if _, err := h.q.SetUserSubStatusByProviderID(c.Context(),
+			if _, err := h.q.SetUserSubStatusByProviderID(ctx,
 				db.SetUserSubStatusByProviderIDParams{
 					RazorpaySubscriptionID: pgtype.Text{String: subID, Valid: true},
 					Status:                 pgtype.Text{String: "active", Valid: true},
@@ -128,7 +142,7 @@ func (h *Handler) Razorpay(c fiber.Ctx) error {
 			status = "halted"
 		}
 		if subID != "" {
-			if _, err := h.q.SetUserSubStatusByProviderID(c.Context(),
+			if _, err := h.q.SetUserSubStatusByProviderID(ctx,
 				db.SetUserSubStatusByProviderIDParams{
 					RazorpaySubscriptionID: pgtype.Text{String: subID, Valid: true},
 					Status:                 pgtype.Text{String: status, Valid: true},
@@ -155,19 +169,30 @@ func (h *Handler) applyPaymentSuccess(ctx context.Context, env rzpEnvelope) erro
 		return fmt.Errorf("missing order_id")
 	}
 
-	row, err := h.q.GetCourseOrderByProviderOrderID(ctx, pgtype.Text{String: orderID, Valid: true})
+	tx, err := h.pool.Begin(ctx)
 	if err != nil {
-		// Not all webhooks are course orders — could be a subscription.
-		// Silently skip.
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := h.q.WithTx(tx)
+
+	row, err := qtx.GetCourseOrderByProviderOrderIDForUpdate(ctx, pgtype.Text{String: orderID, Valid: true})
+	if err != nil {
+		// Not all webhooks are course orders — could be a subscription or
+		// a fee installment. Silently skip (not an error).
 		return nil
 	}
 
-	// Idempotency — already processed by client-side verify path.
+	// Idempotency — already processed by the client-side verify path or a
+	// prior webhook delivery.
 	if row.Status.String == "paid" {
 		return nil
 	}
+	if row.Status.String == "refunded" {
+		return nil
+	}
 
-	updated, err := h.q.MarkCourseOrderPaid(ctx, db.MarkCourseOrderPaidParams{
+	updated, err := qtx.MarkCourseOrderPaid(ctx, db.MarkCourseOrderPaidParams{
 		ID:                row.ID,
 		ProviderPaymentID: pgtype.Text{String: env.Payload.Payment.Entity.ID, Valid: true},
 		ProviderSignature: pgtype.Text{String: "webhook", Valid: true},
@@ -176,12 +201,20 @@ func (h *Handler) applyPaymentSuccess(ctx context.Context, env rzpEnvelope) erro
 		return err
 	}
 
-	// Auto-enroll just like the client-side verify path.
-	_, _ = h.q.CreateEnrollment(ctx, db.CreateEnrollmentParams{
+	// Enrollment is in the same transaction — if it fails the payment stays
+	// unsettled and Razorpay's webhook retry (or the client verify) will
+	// re-attempt the whole unit.
+	if _, err := qtx.CreateEnrollment(ctx, db.CreateEnrollmentParams{
 		UserID:   updated.UserID,
 		CourseID: updated.CourseID,
 		TenantID: updated.TenantID,
-	})
+	}); err != nil {
+		return fmt.Errorf("enroll on webhook: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
 
 	h.log.Info("razorpay webhook settled order",
 		slog.String("order_id", orderID),

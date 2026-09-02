@@ -20,6 +20,13 @@ RETURNING *;
 -- name: GetCourseOrderByProviderOrderID :one
 SELECT * FROM payments WHERE provider_order_id = $1 LIMIT 1;
 
+-- name: GetCourseOrderByProviderOrderIDForUpdate :one
+-- Row-locking variant used inside the verify/webhook transaction so two
+-- concurrent settlement attempts for the same order serialise instead of
+-- both passing the "not yet paid" check and double-enrolling.
+SELECT * FROM payments WHERE provider_order_id = $1 LIMIT 1
+FOR UPDATE;
+
 -- name: MarkCourseOrderPaid :one
 UPDATE payments
 SET status = 'paid',

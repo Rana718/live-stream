@@ -17,18 +17,19 @@ import (
 	"live-platform/internal/attendance"
 	"live-platform/internal/audit"
 	"live-platform/internal/auth"
+	"live-platform/internal/auth/google"
 	"live-platform/internal/banners"
 	"live-platform/internal/batches"
 	"live-platform/internal/bookmarks"
 	"live-platform/internal/bulkimport"
 	"live-platform/internal/cache"
-	"live-platform/internal/chat"
 	"live-platform/internal/chapters"
-	"live-platform/internal/config"
+	"live-platform/internal/chat"
 	"live-platform/internal/cms"
+	"live-platform/internal/config"
+	"live-platform/internal/coupons"
 	"live-platform/internal/coursebundles"
 	"live-platform/internal/courseorders"
-	"live-platform/internal/coupons"
 	"live-platform/internal/courses"
 	"live-platform/internal/database"
 	"live-platform/internal/devices"
@@ -55,9 +56,9 @@ import (
 	"live-platform/internal/schedule"
 	"live-platform/internal/search"
 	"live-platform/internal/share"
+	"live-platform/internal/sms"
 	"live-platform/internal/storage"
 	"live-platform/internal/stream"
-	"live-platform/internal/sms"
 	"live-platform/internal/subjects"
 	"live-platform/internal/subscriptions"
 	"live-platform/internal/tenants"
@@ -190,9 +191,14 @@ func main() {
 	// OTP verify can attach a referral code at signup. Re-instantiated
 	// later for the /referrals/me handler — both share the same db.
 	authReferralSvc := referrals.NewService(pgPool)
+	googleVerifier := google.New(cfg.Google.ClientIDs)
+	if !googleVerifier.Enabled() {
+		log.Warn("google sign-in disabled — GOOGLE_CLIENT_IDS not set")
+	}
 	authService := auth.NewService(pgPool, redisClient, cfg).
 		WithSMS(smsClient).
-		WithReferrer(authReferralSvc)
+		WithReferrer(authReferralSvc).
+		WithGoogle(googleVerifier)
 	authHandler := auth.NewHandler(authService)
 
 	userService := users.NewService(pgPool)
@@ -206,7 +212,7 @@ func main() {
 
 	chatHub := chat.NewHub()
 	go chatHub.Run()
-	chatHandler := chat.NewHandler(chatHub, &cfg.JWT)
+	chatHandler := chat.NewHandler(chatHub, &cfg.JWT, chat.NewService(pgPool), log)
 
 	examHandler := exams.NewHandler(exams.NewService(pgPool))
 	courseHandler := courses.NewHandler(courses.NewService(pgPool))
@@ -258,11 +264,20 @@ func main() {
 	// stashed in c.Locals("hostTenant"). Public landing pages can read it
 	// without forcing the user to type an Org Code.
 	app.Use(middleware.CustomDomain(pgPool))
-	app.Use(cors.New(cors.Config{
-		AllowOrigins: []string{"*"},
+	corsCfg := cors.Config{
+		AllowOrigins: cfg.CORS.AllowedOrigins,
 		AllowHeaders: []string{"Origin", "Content-Type", "Accept", "Authorization", "Accept-Language", "X-Request-ID"},
 		AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
-	}))
+	}
+	if len(corsCfg.AllowOrigins) == 0 {
+		corsCfg.AllowOrigins = []string{"*"}
+	}
+	// Credentials + wildcard is invalid per the CORS spec and rejected by
+	// browsers; only enable credentialed CORS with an explicit allow-list.
+	if len(corsCfg.AllowOrigins) != 1 || corsCfg.AllowOrigins[0] != "*" {
+		corsCfg.AllowCredentials = true
+	}
+	app.Use(cors.New(corsCfg))
 	if cfg.RateLimit.Enabled {
 		app.Use(middleware.RateLimit(cfg.RateLimit.RequestsPerMinute, cfg.RateLimit.Burst))
 	}
@@ -512,10 +527,10 @@ func main() {
 		tenantRateLimit,
 		middleware.AdminOnly(),
 	)
-	adminBundles.Get("/",          bundleHandler.AdminList)
-	adminBundles.Post("/",         bundleHandler.AdminCreate)
+	adminBundles.Get("/", bundleHandler.AdminList)
+	adminBundles.Post("/", bundleHandler.AdminCreate)
 	adminBundles.Patch("/:id/active", bundleHandler.AdminSetActive)
-	adminBundles.Delete("/:id",    bundleHandler.AdminDelete)
+	adminBundles.Delete("/:id", bundleHandler.AdminDelete)
 
 	// Admin notifications broadcast — single endpoint that handles all
 	// three audience modes (all / by course / single user).
@@ -694,8 +709,8 @@ func main() {
 	// Chat (existing)
 	chatRoutes := api.Group("/chat")
 	chatRoutes.Get("/ws/:stream_id", chatHandler.HandleWebSocket)
-	chatRoutes.Post("/:stream_id/send", middleware.AuthMiddleware(&cfg.JWT), chatHandler.SendMessage)
-	chatRoutes.Get("/:stream_id/history", middleware.AuthMiddleware(&cfg.JWT), chatHandler.GetChatHistory)
+	chatRoutes.Post("/:stream_id/send", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), chatHandler.SendMessage)
+	chatRoutes.Get("/:stream_id/history", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), chatHandler.GetChatHistory)
 
 	// Exam categories
 	ec := api.Group("/exam-categories")

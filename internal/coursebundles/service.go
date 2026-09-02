@@ -16,6 +16,7 @@ import (
 	"live-platform/internal/database/db"
 	"live-platform/internal/events"
 	"live-platform/internal/payments"
+	"live-platform/internal/utils"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -23,13 +24,14 @@ import (
 )
 
 type Service struct {
+	pool     *pgxpool.Pool
 	q        *db.Queries
 	rp       *payments.Razorpay
 	producer *events.Producer
 }
 
 func NewService(pool *pgxpool.Pool, rp *payments.Razorpay) *Service {
-	return &Service{q: db.New(pool), rp: rp}
+	return &Service{pool: pool, q: db.New(pool), rp: rp}
 }
 
 func (s *Service) WithProducer(p *events.Producer) *Service { s.producer = p; return s }
@@ -136,7 +138,7 @@ func (s *Service) Buy(ctx context.Context, tenantID, userID, bundleID uuid.UUID,
 	row, err := s.q.CreateBundleOrder(ctx, db.CreateBundleOrderParams{
 		TenantID:        pgtype.UUID{Bytes: tenantID, Valid: true},
 		UserID:          pgtype.UUID{Bytes: userID, Valid: true},
-		Amount:          pgtype.Numeric{Int: nil, Exp: 0, Valid: true},
+		Amount:          utils.NumericFromFloat(float64(amountPaise) / 100), // rupees
 		Column4:         "INR",
 		ProviderOrderID: pgtype.Text{String: order.ID, Valid: true},
 		Metadata:        meta,
@@ -163,7 +165,14 @@ func (s *Service) Verify(ctx context.Context, req VerifyRequest, userID uuid.UUI
 		return fmt.Errorf("signature mismatch")
 	}
 
-	row, err := s.q.GetCourseOrderByProviderOrderID(ctx, pgtype.Text{String: req.RazorpayOrderID, Valid: true})
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.q.WithTx(tx)
+
+	row, err := qtx.GetCourseOrderByProviderOrderIDForUpdate(ctx, pgtype.Text{String: req.RazorpayOrderID, Valid: true})
 	if err != nil {
 		return fmt.Errorf("order not found")
 	}
@@ -171,7 +180,10 @@ func (s *Service) Verify(ctx context.Context, req VerifyRequest, userID uuid.UUI
 		return fmt.Errorf("not your order")
 	}
 	if row.Status.String == "paid" {
-		return nil
+		return nil // idempotent
+	}
+	if row.Status.String == "refunded" {
+		return fmt.Errorf("order was refunded")
 	}
 
 	// Pull the bundle id back out of the metadata jsonb.
@@ -186,7 +198,7 @@ func (s *Service) Verify(ctx context.Context, req VerifyRequest, userID uuid.UUI
 		return fmt.Errorf("malformed bundle id")
 	}
 
-	if _, err := s.q.MarkCourseOrderPaid(ctx, db.MarkCourseOrderPaidParams{
+	if _, err := qtx.MarkCourseOrderPaid(ctx, db.MarkCourseOrderPaidParams{
 		ID:                row.ID,
 		ProviderPaymentID: pgtype.Text{String: req.RazorpayPaymentID, Valid: true},
 		ProviderSignature: pgtype.Text{String: req.RazorpaySignature, Valid: true},
@@ -194,32 +206,41 @@ func (s *Service) Verify(ctx context.Context, req VerifyRequest, userID uuid.UUI
 		return err
 	}
 
-	// Fan out: enroll into every course in the bundle. Best-effort per
-	// course — one failed enrollment shouldn't roll back the payment.
-	items, err := s.q.ListCourseBundleItems(ctx, pgtype.UUID{Bytes: bundleID, Valid: true})
+	// Fan out: enroll into every course in the bundle, in the same
+	// transaction — a failure rolls the whole settlement back so a retry
+	// (client verify or webhook) completes it cleanly.
+	items, err := qtx.ListCourseBundleItems(ctx, pgtype.UUID{Bytes: bundleID, Valid: true})
 	if err != nil {
 		return err
 	}
 	for _, courseID := range items {
-		_, _ = s.q.CreateEnrollment(ctx, db.CreateEnrollmentParams{
+		if _, err := qtx.CreateEnrollment(ctx, db.CreateEnrollmentParams{
 			UserID:   row.UserID,
 			CourseID: courseID,
 			TenantID: row.TenantID,
-		})
+		}); err != nil {
+			return fmt.Errorf("enroll into bundle course: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
 	}
 
 	tenantID := uuid.UUID(row.TenantID.Bytes)
-	s.producer.Emit(ctx, events.TypePaymentSucceeded, tenantID, userID, map[string]any{
-		"order_id":    req.RazorpayOrderID,
-		"payment_id":  req.RazorpayPaymentID,
-		"bundle_id":   bundleID,
-		"amount_paid": row.Amount,
-	})
-	for _, courseID := range items {
-		s.producer.Emit(ctx, events.TypeCoursePurchased, tenantID, userID, map[string]any{
-			"course_id":  uuid.UUID(courseID.Bytes),
-			"via_bundle": bundleID,
+	if s.producer != nil {
+		s.producer.Emit(ctx, events.TypePaymentSucceeded, tenantID, userID, map[string]any{
+			"order_id":    req.RazorpayOrderID,
+			"payment_id":  req.RazorpayPaymentID,
+			"bundle_id":   bundleID,
+			"amount_paid": row.Amount,
 		})
+		for _, courseID := range items {
+			s.producer.Emit(ctx, events.TypeCoursePurchased, tenantID, userID, map[string]any{
+				"course_id":  uuid.UUID(courseID.Bytes),
+				"via_bundle": bundleID,
+			})
+		}
 	}
 	return nil
 }

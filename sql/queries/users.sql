@@ -35,6 +35,23 @@ WHERE id = $1
 RETURNING *;
 
 -- name: DeleteUser :exec
+-- Soft delete. The row is kept so payment / audit / attendance history
+-- stays referentially intact (payments.user_id is ON DELETE RESTRICT).
+-- PII is scrubbed and the login identifiers are freed for reuse.
+UPDATE users
+SET is_active      = false,
+    email          = NULL,
+    phone_number   = NULL,
+    google_sub     = NULL,
+    password_hash  = NULL,
+    full_name      = 'Deleted user',
+    updated_at     = now()
+WHERE id = $1;
+
+-- name: HardDeleteUser :exec
+-- Escape hatch for GDPR/DPDP erasure requests where history retention is
+-- overridden by law. Fails if the user still has payments (RESTRICT) —
+-- caller must re-point or delete those first.
 DELETE FROM users WHERE id = $1;
 
 -- name: ListUsers :many

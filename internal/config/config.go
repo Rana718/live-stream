@@ -4,29 +4,55 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
 
 type Config struct {
-	Server       ServerConfig
-	Database     DatabaseConfig
-	Redis        RedisConfig
-	Kafka        KafkaConfig
-	MinIO        MinIOConfig
-	JWT          JWTConfig
-	RTMP         RTMPConfig
-	RateLimit    RateLimitConfig
-	TLS          TLSConfig
-	Logging      LoggingConfig
-	Claude       ClaudeConfig
-	Razorpay     RazorpayConfig
-	SMS          SMSConfig
-	Push         PushConfig
-	Codemagic    CodemagicConfig
-	WhatsApp     WhatsAppConfig
-	Email        EmailConfig
-	App          AppConfig
+	Server    ServerConfig
+	Database  DatabaseConfig
+	Redis     RedisConfig
+	Kafka     KafkaConfig
+	MinIO     MinIOConfig
+	JWT       JWTConfig
+	RTMP      RTMPConfig
+	RateLimit RateLimitConfig
+	TLS       TLSConfig
+	Logging   LoggingConfig
+	Claude    ClaudeConfig
+	Razorpay  RazorpayConfig
+	SMS       SMSConfig
+	Push      PushConfig
+	Codemagic CodemagicConfig
+	WhatsApp  WhatsAppConfig
+	Email     EmailConfig
+	App       AppConfig
+	OTP       OTPConfig
+	Google    GoogleConfig
+	CORS      CORSConfig
+}
+
+// OTPConfig controls phone-OTP behaviour. DevMode bypasses real SMS
+// delivery and accepts a fixed code — it MUST be false in production and
+// startup refuses to boot otherwise.
+type OTPConfig struct {
+	DevMode  bool
+	DevCode  string
+	TTLSec   int
+	MaxSends int // per phone, per hour
+}
+
+// GoogleConfig lists the OAuth client IDs that Google Sign-In ID tokens are
+// allowed to be issued for (web, Android, iOS). Empty disables Google login.
+type GoogleConfig struct {
+	ClientIDs []string
+}
+
+// CORSConfig holds the browser origins allowed to call the API. "*" is only
+// honoured outside production.
+type CORSConfig struct {
+	AllowedOrigins []string
 }
 
 type ServerConfig struct {
@@ -64,13 +90,13 @@ type KafkaConfig struct {
 }
 
 type MinIOConfig struct {
-	Endpoint         string
-	AccessKey        string
-	SecretKey        string
-	UseSSL           bool
-	Bucket           string
-	MaterialsBucket  string
-	DownloadsBucket  string
+	Endpoint        string
+	AccessKey       string
+	SecretKey       string
+	UseSSL          bool
+	Bucket          string
+	MaterialsBucket string
+	DownloadsBucket string
 }
 
 type JWTConfig struct {
@@ -124,12 +150,12 @@ type RazorpayConfig struct {
 // MSG91 (Indian DLT-compliant) out of the box. Leave AuthKey empty to
 // disable SMS dispatch — the dev OTP flow short-circuits in that case.
 type SMSConfig struct {
-	Provider     string // "msg91" | "" (none)
-	AuthKey      string
-	SenderID     string // 6-letter DLT sender ID
-	OTPTemplate  string // MSG91 OTP template ID
-	BaseURL      string // override for tests
-	TimeoutSec   int
+	Provider    string // "msg91" | "" (none)
+	AuthKey     string
+	SenderID    string // 6-letter DLT sender ID
+	OTPTemplate string // MSG91 OTP template ID
+	BaseURL     string // override for tests
+	TimeoutSec  int
 }
 
 // PushConfig configures FCM HTTP v1 for mobile + web push notifications.
@@ -267,7 +293,7 @@ func Load() (*Config, error) {
 		},
 		Claude: ClaudeConfig{
 			APIKey:    getEnv("CLAUDE_API_KEY", ""),
-			Model:     getEnv("CLAUDE_MODEL", "claude-sonnet-4-6"),
+			Model:     getEnv("CLAUDE_MODEL", "claude-sonnet-4-5"),
 			MaxTokens: getEnvInt("CLAUDE_MAX_TOKENS", 2048),
 		},
 		SMS: SMSConfig{
@@ -321,6 +347,18 @@ func Load() (*Config, error) {
 			RTMPBaseURL:   getEnv("RTMP_BASE_URL", "rtmp://localhost:1935/live"),
 			DefaultLocale: getEnv("DEFAULT_LOCALE", "en"),
 		},
+		OTP: OTPConfig{
+			DevMode:  getEnvBool("OTP_DEV_MODE", false),
+			DevCode:  getEnv("OTP_DEV_CODE", "123456"),
+			TTLSec:   getEnvInt("OTP_TTL_SECONDS", 300),
+			MaxSends: getEnvInt("OTP_MAX_SENDS_PER_HOUR", 5),
+		},
+		Google: GoogleConfig{
+			ClientIDs: splitList(getEnv("GOOGLE_CLIENT_IDS", "")),
+		},
+		CORS: CORSConfig{
+			AllowedOrigins: splitList(getEnv("CORS_ALLOWED_ORIGINS", "*")),
+		},
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -329,19 +367,89 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// weakSecrets are placeholder values shipped in .env.example. Booting
+// production with any of these is refused.
+var weakSecrets = map[string]bool{
+	"":                    true,
+	"access-secret-key":   true,
+	"refresh-secret-key":  true,
+	"your-secret-key":     true,
+	"your-refresh-secret": true,
+	"your-access-secret-key-change-in-production":  true,
+	"your-refresh-secret-key-change-in-production": true,
+	"changeme": true,
+}
+
 func (c *Config) validate() error {
-	if c.Server.Env == "production" {
-		if c.JWT.AccessSecret == "access-secret-key" || c.JWT.RefreshSecret == "refresh-secret-key" {
-			return fmt.Errorf("production requires strong JWT secrets (set JWT_ACCESS_SECRET and JWT_REFRESH_SECRET)")
-		}
-		if c.Database.Password == "postgres" {
-			return fmt.Errorf("production requires a non-default DB password")
-		}
-	}
 	if c.TLS.Enabled && (c.TLS.CertFile == "" || c.TLS.KeyFile == "") {
 		return fmt.Errorf("TLS enabled but cert/key file not provided")
 	}
+
+	// Google sign-in, when enabled, always requires the audience allow-list
+	// (any env). Without it we'd accept tokens minted for any app.
+	if c.Server.Env != "production" {
+		return nil
+	}
+
+	// ---- production-only hard requirements ----
+	var errs []string
+	req := func(cond bool, msg string) {
+		if cond {
+			errs = append(errs, msg)
+		}
+	}
+
+	req(weakSecrets[c.JWT.AccessSecret] || len(c.JWT.AccessSecret) < 32,
+		"JWT_ACCESS_SECRET must be a strong secret (>=32 chars)")
+	req(weakSecrets[c.JWT.RefreshSecret] || len(c.JWT.RefreshSecret) < 32,
+		"JWT_REFRESH_SECRET must be a strong secret (>=32 chars)")
+	req(c.JWT.AccessSecret == c.JWT.RefreshSecret,
+		"JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must differ")
+	req(c.Database.Password == "postgres" || c.Database.Password == "app_user_dev_password" || c.Database.Password == "",
+		"DB_PASSWORD must not be a default/blank value")
+	req(c.Database.SSLMode == "disable" || c.Database.SSLMode == "",
+		"DB_SSLMODE must be require/verify-ca/verify-full in production")
+	req(c.OTP.DevMode, "OTP_DEV_MODE must be false in production")
+	req(c.SMS.Provider == "" || c.SMS.AuthKey == "",
+		"an SMS provider must be configured in production (OTP delivery)")
+	req(c.Razorpay.KeyID == "" || c.Razorpay.KeySecret == "",
+		"RAZORPAY_KEY_ID/RAZORPAY_KEY_SECRET are required in production")
+	req(c.Razorpay.WebhookSecret == "",
+		"RAZORPAY_WEBHOOK_SECRET is required in production")
+	req(c.MinIO.AccessKey == "minioadmin" || c.MinIO.SecretKey == "minioadmin",
+		"MinIO credentials must not be the minioadmin defaults in production")
+	req(contains(c.CORS.AllowedOrigins, "*"),
+		"CORS_ALLOWED_ORIGINS must be an explicit allow-list in production (no '*')")
+	req(len(c.Google.ClientIDs) == 0,
+		"GOOGLE_CLIENT_IDS is required in production (Google sign-in token audience)")
+
+	if len(errs) > 0 {
+		return fmt.Errorf("invalid production config:\n  - %s", strings.Join(errs, "\n  - "))
+	}
 	return nil
+}
+
+func splitList(v string) []string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func contains(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
 
 func getEnv(key, defaultValue string) string {

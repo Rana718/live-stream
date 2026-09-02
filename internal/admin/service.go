@@ -15,17 +15,17 @@ type Service struct{ q *db.Queries }
 func NewService(pool *pgxpool.Pool) *Service { return &Service{q: db.New(pool)} }
 
 type DashboardStats struct {
-	TotalStudents         int64   `json:"total_students"`
-	TotalInstructors      int64   `json:"total_instructors"`
-	TotalUsers            int64   `json:"total_users"`
-	TotalCourses          int64   `json:"total_courses"`
-	PendingApproval       int64   `json:"pending_approval"`
-	ActiveBatches         int64   `json:"active_batches"`
-	ActiveEnrollments     int64   `json:"active_enrollments"`
-	LiveStreams           int64   `json:"live_streams"`
-	TotalTests            int64   `json:"total_tests"`
-	TotalAttempts         int64   `json:"total_attempts"`
-	TotalRevenueCaptured  float64 `json:"total_revenue_captured"`
+	TotalStudents        int64   `json:"total_students"`
+	TotalInstructors     int64   `json:"total_instructors"`
+	TotalUsers           int64   `json:"total_users"`
+	TotalCourses         int64   `json:"total_courses"`
+	PendingApproval      int64   `json:"pending_approval"`
+	ActiveBatches        int64   `json:"active_batches"`
+	ActiveEnrollments    int64   `json:"active_enrollments"`
+	LiveStreams          int64   `json:"live_streams"`
+	TotalTests           int64   `json:"total_tests"`
+	TotalAttempts        int64   `json:"total_attempts"`
+	TotalRevenueCaptured float64 `json:"total_revenue_captured"`
 }
 
 func (s *Service) DashboardStats(ctx context.Context) (*DashboardStats, error) {
@@ -163,6 +163,8 @@ func (s *Service) ResetUserPassword(ctx context.Context, id uuid.UUID, newHash s
 	return &u, nil
 }
 
+// DeleteUser soft-deletes: the row is kept (payments FK is RESTRICT) but
+// deactivated and its PII scrubbed. See sql/queries/users.sql:DeleteUser.
 func (s *Service) DeleteUser(ctx context.Context, id uuid.UUID) error {
 	return s.q.DeleteUser(ctx, utils.UUIDToPg(id))
 }

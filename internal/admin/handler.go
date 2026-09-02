@@ -59,13 +59,13 @@ func (h *Handler) ListUsers(c fiber.Ctx) error {
 	out := make([]fiber.Map, len(rows))
 	for i, r := range rows {
 		out[i] = fiber.Map{
-			"id":                utils.UUIDFromPg(r.ID),
-			"email":             utils.TextFromPg(r.Email),
-			"full_name":         utils.TextFromPg(r.FullName),
-			"role":              utils.TextFromPg(r.Role),
-			"is_active":         utils.BoolFromPg(r.IsActive),
-			"created_at":        r.CreatedAt,
-			"enrolled_courses":  r.EnrolledCourses,
+			"id":               utils.UUIDFromPg(r.ID),
+			"email":            utils.TextFromPg(r.Email),
+			"full_name":        utils.TextFromPg(r.FullName),
+			"role":             utils.TextFromPg(r.Role),
+			"is_active":        utils.BoolFromPg(r.IsActive),
+			"created_at":       r.CreatedAt,
+			"enrolled_courses": r.EnrolledCourses,
 		}
 	}
 	return c.JSON(out)
@@ -285,7 +285,7 @@ func (h *Handler) DeleteUser(c fiber.Ctx) error {
 	if err := h.service.DeleteUser(c.Context(), id); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(fiber.Map{"message": "deleted"})
+	return c.JSON(fiber.Map{"message": "user deactivated and anonymized"})
 }
 
 // ExportUsersCSV godoc

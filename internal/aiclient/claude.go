@@ -23,7 +23,7 @@ type Claude struct {
 
 func NewClaude(apiKey, model string, maxTokens int) *Claude {
 	if model == "" {
-		model = "claude-sonnet-4-6"
+		model = "claude-sonnet-4-5"
 	}
 	if maxTokens <= 0 {
 		maxTokens = 2048

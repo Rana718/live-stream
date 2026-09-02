@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"live-platform/internal/auth/google"
 	"live-platform/internal/config"
 	"live-platform/internal/database"
 	"live-platform/internal/database/db"
@@ -35,6 +36,7 @@ type Service struct {
 	cfg      *config.Config
 	sms      SMSClient
 	referrer Referrer
+	google   *google.Verifier
 }
 
 func NewService(pool *pgxpool.Pool, redis *redis.Client, cfg *config.Config) *Service {
@@ -53,6 +55,11 @@ func (s *Service) WithSMS(c SMSClient) *Service { s.sms = c; return s }
 // referral code to a fresh signup. Optional — leaving nil disables
 // referral tracking without breaking anything else.
 func (s *Service) WithReferrer(r Referrer) *Service { s.referrer = r; return s }
+
+// WithGoogle wires the Google ID-token verifier. Required for /auth/google
+// to work — without it Google sign-in returns a clear error rather than
+// trusting client-supplied identity.
+func (s *Service) WithGoogle(v *google.Verifier) *Service { s.google = v; return s }
 
 // Email + password registration was removed in favor of phone-OTP and
 // Google sign-in only. The RegisterRequest type is kept here as a thin

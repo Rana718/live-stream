@@ -46,19 +46,17 @@ func (h *Handler) VerifyOtp(c fiber.Ctx) error {
 	return c.JSON(tokens)
 }
 
-// GoogleSignIn takes the identity pulled from Google's SDK on the client and
-// mints our tokens, scoped to the tenant resolved from the org_code field.
-// Current build trusts the client — phase 2b will verify the ID token via
-// the Firebase Admin SDK before trusting sub.
+// GoogleSignIn verifies the Google ID token supplied by the client and mints
+// our tokens, scoped to the tenant resolved from the org_code field.
 func (h *Handler) GoogleSignIn(c fiber.Ctx) error {
 	var req struct {
-		GoogleIdentity
+		GoogleCredential
 		OrgCode string `json:"org_code"`
 	}
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
-	tokens, err := h.service.LoginWithGoogle(c.Context(), req.GoogleIdentity, req.OrgCode)
+	tokens, err := h.service.LoginWithGoogle(c.Context(), req.GoogleCredential, req.OrgCode)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -89,7 +87,7 @@ func (h *Handler) LinkPhone(c fiber.Ctx) error {
 func (h *Handler) LinkGoogle(c fiber.Ctx) error {
 	userID := c.Locals("userID").(uuid.UUID)
 	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
-	var req GoogleIdentity
+	var req GoogleCredential
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
