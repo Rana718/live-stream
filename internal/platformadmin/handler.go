@@ -2,6 +2,7 @@ package platformadmin
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"live-platform/internal/payments"
@@ -209,11 +210,33 @@ func (h *Handler) SetCustomDomain(c fiber.Ctx) error {
 	if err := c.Bind().Body(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
 	}
-	t, err := h.svc.SetCustomDomain(c.Context(), id, body.Domain)
+	if err := h.svc.SetCustomDomain(c.Context(), id, body.Domain); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"domain": strings.ToLower(strings.TrimSpace(body.Domain)), "verified": true})
+}
+
+// ListUsers — GET /api/v1/admin/platform/users?tenant_id=&role=&q=
+//
+//	@Summary  Super-admin: list users across every tenant
+//	@Tags     platformadmin
+//	@Security BearerAuth
+//	@Router   /admin/platform/users [get]
+func (h *Handler) ListUsers(c fiber.Ctx) error {
+	limit, offset := parsePagination(c)
+	var f UserFilter
+	if v := c.Query("tenant_id"); v != "" {
+		if tid, e := uuid.Parse(v); e == nil {
+			f.TenantID = &tid
+		}
+	}
+	f.Role = c.Query("role")
+	f.Query = c.Query("q")
+	rows, total, err := h.svc.ListUsers(c.Context(), f, limit, offset)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(t)
+	return c.JSON(fiber.Map{"users": rows, "total": total, "limit": limit, "offset": offset})
 }
 
 // SetRazorpayAccount — PUT /api/v1/admin/platform/tenants/:id/razorpay
@@ -258,30 +281,4 @@ func (h *Handler) Impersonate(c fiber.Ctx) error {
 	}
 	return c.JSON(res)
 }
-
-// UpdateLeadStatus — PATCH /api/v1/admin/leads/:id
-func (h *Handler) UpdateLeadStatus(c fiber.Ctx) error {
-	id, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
-	}
-	var body struct {
-		Status     string  `json:"status"`
-		Notes      string  `json:"notes"`
-		AssignedTo *string `json:"assigned_to"`
-	}
-	if err := c.Bind().Body(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
-	}
-	var assigned *uuid.UUID
-	if body.AssignedTo != nil && *body.AssignedTo != "" {
-		if u, e := uuid.Parse(*body.AssignedTo); e == nil {
-			assigned = &u
-		}
-	}
-	row, err := h.svc.UpdateLeadStatus(c.Context(), id, body.Status, body.Notes, assigned)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-	}
-	return c.JSON(row)
-}
+// Lead triage (PATCH /admin/leads/:id) is served by internal/leads.Handler.

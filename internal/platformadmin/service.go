@@ -1,11 +1,10 @@
 // Package platformadmin is the super_admin (platform-staff) control plane.
-// Every method bypasses tenant RLS — callers must run inside the
-// SuperAdminContext middleware.
+// Every method runs under SuperAdminContext middleware (is_super_admin() =
+// true), so tenant RLS is bypassed and reads span every tenant.
 //
-// Conceptually mirrors what the tenant admin can do for one org, except
-// scoped across every tenant on the platform. Used by the marketing dashboard
-// to triage leads, the support tooling to suspend abusive tenants, and the
-// finance dashboard to read MRR/active-tenant counts.
+// Conceptually mirrors what a tenant admin can do for one org, except scoped
+// across every tenant: triage marketing leads, suspend abusive tenants, read
+// platform-wide stats, impersonate a tenant admin for support.
 package platformadmin
 
 import (
@@ -41,69 +40,61 @@ func NewService(pool *pgxpool.Pool) *Service { return &Service{q: db.New(pool)} 
 // the manual paste-an-account-ID path keeps working without it.
 func (s *Service) WithRazorpay(rp RazorpayLinker) *Service { s.rp = rp; return s }
 
-// CreateLinkedAccount provisions a Razorpay Route Linked Account for a tenant
-// and stores the resulting account ID on the tenant row.
-func (s *Service) CreateLinkedAccount(ctx context.Context, tenantID uuid.UUID, in payments.CreateLinkedAccountInput) (*payments.LinkedAccount, error) {
-	if s.rp == nil {
-		return nil, fmt.Errorf("razorpay client not wired")
-	}
-	if in.ReferenceID == "" {
-		in.ReferenceID = tenantID.String()
-	}
-	acc, err := s.rp.CreateLinkedAccount(ctx, in)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := s.SetRazorpayAccount(ctx, tenantID, acc.ID); err != nil {
-		return nil, err
-	}
-	return acc, nil
-}
+// ─────────────────────────────────────────────────────────────── tenants
 
-// ListTenants returns the platform-wide tenant table joined with their
-// active platform subscription (if any) and member count. Optional `status`
-// filter mirrors the field on `tenants` (active|trial|suspended).
+// ListTenants returns every tenant with its member count. Optional `status`
+// filter mirrors the `tenants.status` enum (trial|active|past_due|suspended|
+// cancelled).
 func (s *Service) ListTenants(ctx context.Context, status string, limit, offset int32) ([]db.PlatformListTenantsRow, error) {
+	var st db.NullTenantStatus
+	if status != "" {
+		st = db.NullTenantStatus{TenantStatus: db.TenantStatus(status), Valid: true}
+	}
 	return s.q.PlatformListTenants(ctx, db.PlatformListTenantsParams{
-		Column1: status,
-		Limit:   limit,
-		Offset:  offset,
+		Status: st,
+		Limit:  limit,
+		Offset: offset,
 	})
 }
 
-// SuspendTenant flips status to 'suspended'. The tenant's RLS still works
-// from their existing session vars but every authenticated request from a
-// suspended tenant should be 403'd by an upstream gate that calls IsSuspended
-// before issuing tokens.
+// SuspendTenant flips status to 'suspended'. Auth issuance must check this
+// before minting tokens for the tenant's users.
 func (s *Service) SuspendTenant(ctx context.Context, id uuid.UUID) error {
-	return s.q.SuspendTenant(ctx, utils.UUIDToPg(id))
+	return s.q.SetTenantStatus(ctx, db.SetTenantStatusParams{
+		ID: utils.UUIDToPg(id), Status: db.TenantStatusSuspended,
+	})
 }
 
 func (s *Service) ReactivateTenant(ctx context.Context, id uuid.UUID) error {
-	return s.q.ReactivateTenant(ctx, utils.UUIDToPg(id))
+	return s.q.SetTenantStatus(ctx, db.SetTenantStatusParams{
+		ID: utils.UUIDToPg(id), Status: db.TenantStatusActive,
+	})
 }
 
-// UpdateTenantPlan moves a tenant between Starter/Pro/Premium/Enterprise.
-// Used after a successful platform-subscription payment lands.
-func (s *Service) UpdateTenantPlan(ctx context.Context, id uuid.UUID, plan, status string, trialEnds *time.Time) (*db.Tenant, error) {
+// UpdateTenantPlan moves a tenant between plans and (usually) flips it live
+// after a platform-subscription payment lands.
+func (s *Service) UpdateTenantPlan(ctx context.Context, id uuid.UUID, plan, status string, trialEnds *time.Time) (*db.PlatformUpdateTenantPlanRow, error) {
+	if status == "" {
+		status = "active"
+	}
 	trial := pgtype.Timestamptz{}
 	if trialEnds != nil {
 		trial = pgtype.Timestamptz{Time: *trialEnds, Valid: true}
 	}
-	t, err := s.q.UpdateTenantPlan(ctx, db.UpdateTenantPlanParams{
+	row, err := s.q.PlatformUpdateTenantPlan(ctx, db.PlatformUpdateTenantPlanParams{
 		ID:          utils.UUIDToPg(id),
-		Plan:        plan,
-		Status:      status,
+		Plan:        db.TenantPlan(plan),
+		Status:      db.TenantStatus(status),
 		TrialEndsAt: trial,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &t, nil
+	return &row, nil
 }
 
-// PlatformStats is the headline number bag shown on the super-admin
-// dashboard (active tenants, total users, MRR, etc.).
+// ─────────────────────────────────────────────────────────── stats / audit
+
 func (s *Service) PlatformStats(ctx context.Context) (*db.PlatformTenantStatsRow, error) {
 	row, err := s.q.PlatformTenantStats(ctx)
 	if err != nil {
@@ -124,141 +115,68 @@ func (s *Service) RecentSignups(ctx context.Context, limit int32) ([]db.Platform
 	return s.q.PlatformRecentSignups(ctx, limit)
 }
 
-func (s *Service) PlatformAuditLogs(ctx context.Context, limit, offset int32) ([]db.PlatformAuditLogsRow, error) {
-	return s.q.PlatformAuditLogs(ctx, db.PlatformAuditLogsParams{Limit: limit, Offset: offset})
+func (s *Service) PlatformAuditLogs(ctx context.Context, limit, offset int32) ([]db.ListAuditLogsRow, error) {
+	return s.q.ListAuditLogs(ctx, db.ListAuditLogsParams{
+		Limit: limit, Offset: offset, TenantID: pgtype.UUID{}, // null → every tenant
+	})
 }
 
-// UpsertPlatformSubInput is a super-admin record of how we charge a tenant.
-type UpsertPlatformSubInput struct {
-	TenantID               uuid.UUID  `json:"tenant_id"`
-	Plan                   string     `json:"plan"`
-	Status                 string     `json:"status"`
-	AmountPaise            int        `json:"amount_paise"`
-	CurrentPeriodEnd       *time.Time `json:"current_period_end"`
-	TrialEndsAt            *time.Time `json:"trial_ends_at"`
-	RazorpaySubscriptionID string     `json:"razorpay_subscription_id"`
+// ─────────────────────────────────────────────────────────── platform users
+
+// UserFilter narrows the cross-tenant user list.
+type UserFilter struct {
+	TenantID *uuid.UUID
+	Role     string
+	Query    string
 }
 
-// UpsertPlatformSubscription records (or updates) the platform's billing
-// of one tenant. Mirrors the resulting plan onto the tenant row so the
-// rest of the system can feature-gate without a join.
-func (s *Service) UpsertPlatformSubscription(ctx context.Context, in UpsertPlatformSubInput) (*db.PlatformSubscription, error) {
-	cpe := pgtype.Timestamptz{}
-	if in.CurrentPeriodEnd != nil {
-		cpe = pgtype.Timestamptz{Time: *in.CurrentPeriodEnd, Valid: true}
+func (s *Service) ListUsers(ctx context.Context, f UserFilter, limit, offset int32) ([]db.PlatformListUsersRow, int64, error) {
+	tid := pgtype.UUID{}
+	if f.TenantID != nil {
+		tid = utils.UUIDToPg(*f.TenantID)
 	}
-	tea := pgtype.Timestamptz{}
-	if in.TrialEndsAt != nil {
-		tea = pgtype.Timestamptz{Time: *in.TrialEndsAt, Valid: true}
+	var role db.NullTenantRole
+	if f.Role != "" {
+		role = db.NullTenantRole{TenantRole: db.TenantRole(f.Role), Valid: true}
 	}
-	row, err := s.q.UpsertPlatformSubscription(ctx, db.UpsertPlatformSubscriptionParams{
-		TenantID:               utils.UUIDToPg(in.TenantID),
-		Plan:                   in.Plan,
-		Status:                 in.Status,
-		CurrentPeriodEnd:       cpe,
-		RazorpaySubscriptionID: pgtype.Text{String: in.RazorpaySubscriptionID, Valid: in.RazorpaySubscriptionID != ""},
-		Amount:                 int32(in.AmountPaise),
-		TrialEndsAt:            tea,
+	q := pgtype.Text{}
+	if strings.TrimSpace(f.Query) != "" {
+		q = pgtype.Text{String: strings.TrimSpace(f.Query), Valid: true}
+	}
+	rows, err := s.q.PlatformListUsers(ctx, db.PlatformListUsersParams{
+		Limit: limit, Offset: offset, TenantID: tid, Role: role, Q: q,
 	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	_, _ = s.UpdateTenantPlan(ctx, in.TenantID, in.Plan, in.Status, in.TrialEndsAt)
-	return &row, nil
-}
-
-func (s *Service) ListPlatformSubscriptions(ctx context.Context, limit, offset int32) ([]db.ListPlatformSubscriptionsRow, error) {
-	return s.q.ListPlatformSubscriptions(ctx, db.ListPlatformSubscriptionsParams{Limit: limit, Offset: offset})
-}
-
-// BuildConfig is the branding bundle Codemagic fetches before each
-// per-tenant build. We hand-pick fields here rather than dumping the raw
-// tenant row so changes to the schema don't accidentally leak internal
-// state (owner_user_id, razorpay_account_id) to the build pipeline.
-type BuildConfig struct {
-	TenantID               string          `json:"tenant_id"`
-	OrgCode                string          `json:"org_code"`
-	Name                   string          `json:"name"`
-	Slug                   string          `json:"slug"`
-	PackageID              string          `json:"package_id"`
-	VersionName            string          `json:"version_name"`
-	Theme                  json.RawMessage `json:"theme"`
-	LogoURL                string          `json:"logo_url,omitempty"`
-	SplashURL              string          `json:"splash_url,omitempty"`
-	GoogleServicesURL      string          `json:"google_services_url,omitempty"`
-	GoogleServicesPlistURL string          `json:"google_services_plist_url,omitempty"`
-}
-
-// GetBuildConfig is the read-only branding bundle Codemagic GETs at the
-// start of a per-tenant build. The bundle is deterministic for a given
-// (tenant, platform) — no side effects, idempotent, safe to cache.
-//
-// Caller must have super_admin context; SuperAdminContext middleware
-// gates the route so we don't re-check here.
-func (s *Service) GetBuildConfig(ctx context.Context, tenantID uuid.UUID, platform string) (*BuildConfig, error) {
-	t, err := s.q.GetTenantByID(ctx, utils.UUIDToPg(tenantID))
+	total, err := s.q.PlatformCountUsers(ctx, db.PlatformCountUsersParams{
+		TenantID: tid, Role: role, Q: q,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("tenant not found")
+		return nil, 0, err
 	}
-
-	// Package ID convention: `com.school.<slug-without-hyphens>`. Tenants
-	// can override via app_config later; for now this gives a stable,
-	// conflict-free namespace on the Play Store.
-	pkg := "com.school." + strings.ReplaceAll(t.Slug, "-", "")
-	cfg := &BuildConfig{
-		TenantID:    uuid.UUID(t.ID.Bytes).String(),
-		OrgCode:     t.OrgCode,
-		Name:        t.Name,
-		Slug:        t.Slug,
-		PackageID:   pkg,
-		VersionName: time.Now().Format("2006.01.02"),
-		Theme:       t.Theme,
-	}
-	if t.LogoUrl.Valid {
-		cfg.LogoURL = t.LogoUrl.String
-	}
-	// SplashURL + google services live in the JSONB app_config blob; we
-	// peek into it only for those specific keys. Missing keys are fine —
-	// the Dart helper falls back to the shipped placeholder.
-	if len(t.AppConfig) > 0 {
-		var ac map[string]interface{}
-		if json.Unmarshal(t.AppConfig, &ac) == nil {
-			if v, ok := ac["splash_url"].(string); ok {
-				cfg.SplashURL = v
-			}
-			if platform == "ios" {
-				if v, ok := ac["google_services_plist_url"].(string); ok {
-					cfg.GoogleServicesPlistURL = v
-				}
-			} else {
-				if v, ok := ac["google_services_url"].(string); ok {
-					cfg.GoogleServicesURL = v
-				}
-			}
-		}
-	}
-	return cfg, nil
+	return rows, total, nil
 }
+
+// ─────────────────────────────────────────────────────── features / domain
 
 // GetFeatures returns a tenant's feature-flag JSON. Empty `{}` if no row.
 func (s *Service) GetFeatures(ctx context.Context, tenantID uuid.UUID) ([]byte, error) {
-	raw, err := s.q.GetTenantFeatures(ctx, utils.UUIDToPg(tenantID))
-	if err != nil {
+	row, err := s.q.GetTenantSettings(ctx, utils.UUIDToPg(tenantID))
+	if err != nil || len(row.Features) == 0 {
 		return []byte("{}"), nil
 	}
-	return raw, nil
+	return row.Features, nil
 }
 
-// SetFeatures replaces the feature-flag JSON for a tenant. The /super UI
-// uses this to flip live/store/tests/ai_doubts/downloads on or off per
-// tenant without code changes.
+// SetFeatures replaces the feature-flag JSON for a tenant.
 func (s *Service) SetFeatures(ctx context.Context, tenantID uuid.UUID, features []byte) ([]byte, error) {
 	if len(features) == 0 {
 		features = []byte("{}")
 	}
-	row, err := s.q.UpsertTenantFeatures(ctx, db.UpsertTenantFeaturesParams{
+	row, err := s.q.UpsertTenantSettings(ctx, db.UpsertTenantSettingsParams{
 		TenantID: utils.UUIDToPg(tenantID),
-		Features: features,
+		Features:  features,
 	})
 	if err != nil {
 		return nil, err
@@ -266,39 +184,89 @@ func (s *Service) SetFeatures(ctx context.Context, tenantID uuid.UUID, features 
 	return row.Features, nil
 }
 
-// SetCustomDomain stores a tenant's custom domain (e.g. learn.rajan.com).
-// The CustomDomain middleware reads this on every request so a tenant on
-// the Premium tier can serve their portal on their own subdomain.
-//
-// Pass an empty string to detach.
-func (s *Service) SetCustomDomain(ctx context.Context, id uuid.UUID, domain string) (*db.Tenant, error) {
-	t, err := s.q.SetTenantCustomDomain(ctx, db.SetTenantCustomDomainParams{
-		ID:      utils.UUIDToPg(id),
-		Column2: domain,
+// SetCustomDomain attaches (or, with an empty string, detaches) a tenant's
+// primary custom domain. Super-admin action — the domain is marked verified
+// immediately.
+func (s *Service) SetCustomDomain(ctx context.Context, id uuid.UUID, domain string) error {
+	domain = strings.TrimSpace(strings.ToLower(domain))
+	if domain == "" {
+		return fmt.Errorf("domain required (detach by deleting the domain row directly)")
+	}
+	return s.q.SetTenantPrimaryDomain(ctx, db.SetTenantPrimaryDomainParams{
+		TenantID: utils.UUIDToPg(id),
+		Domain:   domain,
+	})
+}
+
+// SetRazorpayAccount stores a tenant's Route Linked-Account ID so future
+// purchases auto-split. Empty string detaches.
+func (s *Service) SetRazorpayAccount(ctx context.Context, id uuid.UUID, accountID string) (*db.SetTenantRazorpayAccountRow, error) {
+	row, err := s.q.SetTenantRazorpayAccount(ctx, db.SetTenantRazorpayAccountParams{
+		ID:                utils.UUIDToPg(id),
+		RazorpayAccountID: accountID,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &t, nil
+	return &row, nil
 }
 
-// SetRazorpayAccount stores a tenant's Linked-Account ID so future course
-// purchases auto-split via Razorpay Route. Pass an empty string to detach
-// (rare — usually only when KYC has been revoked).
-func (s *Service) SetRazorpayAccount(ctx context.Context, id uuid.UUID, accountID string) (*db.Tenant, error) {
-	t, err := s.q.SetTenantRazorpayAccount(ctx, db.SetTenantRazorpayAccountParams{
-		ID:      utils.UUIDToPg(id),
-		Column2: accountID,
-	})
+// CreateLinkedAccount provisions a Razorpay Route account for a tenant and
+// stores the resulting ID.
+func (s *Service) CreateLinkedAccount(ctx context.Context, tenantID uuid.UUID, in payments.CreateLinkedAccountInput) (*payments.LinkedAccount, error) {
+	if s.rp == nil {
+		return nil, fmt.Errorf("razorpay client not wired")
+	}
+	if in.ReferenceID == "" {
+		in.ReferenceID = tenantID.String()
+	}
+	acc, err := s.rp.CreateLinkedAccount(ctx, in)
 	if err != nil {
 		return nil, err
 	}
-	return &t, nil
+	if _, err := s.SetRazorpayAccount(ctx, tenantID, acc.ID); err != nil {
+		return nil, err
+	}
+	return acc, nil
 }
 
-// ImpersonationResult is what the support tool gets back: a short-lived
-// access token signed for the tenant_admin user inside the target tenant,
-// plus enough metadata to render the "you are impersonating" banner.
+// ─────────────────────────────────────────────────────────── build config
+
+// BuildConfig is the branding bundle Codemagic fetches before each per-tenant
+// build. Hand-picked fields — never the raw tenant row.
+type BuildConfig struct {
+	TenantID    string          `json:"tenant_id"`
+	OrgCode     string          `json:"org_code"`
+	Name        string          `json:"name"`
+	Slug        string          `json:"slug"`
+	PackageID   string          `json:"package_id"`
+	VersionName string          `json:"version_name"`
+	Theme       json.RawMessage `json:"theme"`
+	LogoURL     string          `json:"logo_url,omitempty"`
+}
+
+func (s *Service) GetBuildConfig(ctx context.Context, tenantID uuid.UUID, platform string) (*BuildConfig, error) {
+	t, err := s.q.GetTenantByID(ctx, utils.UUIDToPg(tenantID))
+	if err != nil {
+		return nil, fmt.Errorf("tenant not found")
+	}
+	cfg := &BuildConfig{
+		TenantID:    utils.UUIDFromPg(t.ID),
+		OrgCode:     t.OrgCode,
+		Name:        t.Name,
+		Slug:        t.Slug,
+		PackageID:   "com.school." + strings.ReplaceAll(t.Slug, "-", ""),
+		VersionName: time.Now().Format("2006.01.02"),
+		Theme:       t.Theme,
+	}
+	if t.LogoUrl.Valid {
+		cfg.LogoURL = t.LogoUrl.String
+	}
+	return cfg, nil
+}
+
+// ─────────────────────────────────────────────────────────── impersonation
+
 type ImpersonationResult struct {
 	AccessToken string    `json:"access_token"`
 	TenantID    uuid.UUID `json:"tenant_id"`
@@ -308,43 +276,35 @@ type ImpersonationResult struct {
 	ExpiresAt   time.Time `json:"expires_at"`
 }
 
-// Impersonate mints an access token for the tenant's owner (or first admin)
-// so platform support can drop into the tenant's portal without their
-// password. The token is signed with the same JWT secret as regular auth,
-// but is short-lived (15m) and labelled with role=admin tied to the target
-// tenant — students/instructors never get this kind of token.
-//
-// Caller is responsible for guarding this endpoint behind super_admin role
-// + audit log; the audit row gets written by the middleware automatically
-// thanks to the standard mutating-route capture.
+// Impersonate mints a 15-minute admin access token for the tenant's owner
+// (or first admin) so platform support can drop into their portal.
 func (s *Service) Impersonate(ctx context.Context, tenantID uuid.UUID, jwtSecret string) (*ImpersonationResult, error) {
 	t, err := s.q.GetTenantByID(ctx, utils.UUIDToPg(tenantID))
 	if err != nil {
 		return nil, err
 	}
 
-	// Pick a target user: tenant.owner_user_id if set, otherwise the first
-	// active admin in tenant_users. Falls back to error if neither exists —
-	// support can ask the tenant to create an admin first instead of us
-	// minting a token bound to a nonexistent user.
-	var ownerID uuid.UUID
+	var targetID uuid.UUID
 	if t.OwnerUserID.Valid {
-		ownerID = uuid.UUID(t.OwnerUserID.Bytes)
-	} else {
-		users, e := s.q.ListUsersForTenant(ctx, db.ListUsersForTenantParams{
+		targetID = uuid.UUID(t.OwnerUserID.Bytes)
+	}
+	if targetID == uuid.Nil {
+		adminRole := db.NullTenantRole{TenantRole: db.TenantRoleAdmin, Valid: true}
+		members, e := s.q.ListTenantMembers(ctx, db.ListTenantMembersParams{
 			TenantID: utils.UUIDToPg(tenantID),
+			Role:     adminRole,
 			Limit:    1,
 			Offset:   0,
 		})
-		if e != nil || len(users) == 0 {
+		if e != nil || len(members) == 0 {
 			return nil, fmt.Errorf("no admin user in tenant %s", tenantID)
 		}
-		ownerID = uuid.UUID(users[0].ID.Bytes)
+		targetID = uuid.UUID(members[0].UserID.Bytes)
 	}
 
 	expiresAt := time.Now().Add(15 * time.Minute)
-	tok, err := utils.GenerateAccessToken(ownerID, t.Name+"@impersonated", "admin",
-		tenantID, jwtSecret, time.Until(expiresAt))
+	tok, err := utils.GenerateAccessToken(targetID, t.Name+"@impersonated", "admin",
+		tenantID, 0, jwtSecret, time.Until(expiresAt))
 	if err != nil {
 		return nil, err
 	}
@@ -353,26 +313,7 @@ func (s *Service) Impersonate(ctx context.Context, tenantID uuid.UUID, jwtSecret
 		TenantID:    tenantID,
 		TenantName:  t.Name,
 		OrgCode:     t.OrgCode,
-		UserID:      ownerID,
+		UserID:      targetID,
 		ExpiresAt:   expiresAt,
 	}, nil
-}
-
-// UpdateLeadStatus is called from the leads triage view as the prospect
-// moves through new → contacted → demo → won/lost.
-func (s *Service) UpdateLeadStatus(ctx context.Context, id uuid.UUID, status, notes string, assignedTo *uuid.UUID) (*db.Lead, error) {
-	assigned := pgtype.UUID{}
-	if assignedTo != nil {
-		assigned = pgtype.UUID{Bytes: *assignedTo, Valid: true}
-	}
-	row, err := s.q.UpdateLeadStatus(ctx, db.UpdateLeadStatusParams{
-		ID:         utils.UUIDToPg(id),
-		Status:     pgtype.Text{String: status, Valid: status != ""},
-		Column3:    notes,
-		AssignedTo: assigned,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &row, nil
 }

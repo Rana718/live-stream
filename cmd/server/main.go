@@ -605,6 +605,7 @@ func main() {
 	)
 	platformGroup.Get("/stats", platformHandler.Stats)
 	platformGroup.Get("/audit", platformHandler.AuditLogs)
+	platformGroup.Get("/users", platformHandler.ListUsers)
 
 	platformGroup.Get("/tenants", platformHandler.ListTenants)
 	platformGroup.Post("/tenants/:id/suspend", platformHandler.Suspend)
@@ -638,7 +639,7 @@ func main() {
 	api.Patch("/admin/leads/:id",
 		middleware.AuthMiddleware(&cfg.JWT),
 		middleware.SuperAdminContext(),
-		platformHandler.UpdateLeadStatus,
+		leadHandler.UpdateLead,
 	)
 
 	// Super-admin CMS — blog posts, FAQs, free-form pages. Cross-tenant
