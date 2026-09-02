@@ -1,370 +1,290 @@
+// Package auth implements phone-OTP and Google sign-in against the schema-v2
+// identity tables (users / auth_identities / tenant_users / refresh_tokens).
+// A user is one global identity; their role is per-tenant (tenant_users) and
+// the access token is minted for one chosen tenant. Refresh tokens are
+// opaque, DB-backed and family-rotated (reuse revokes the whole family).
 package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/netip"
+	"strings"
+	"time"
+
 	"live-platform/internal/auth/google"
 	"live-platform/internal/config"
 	"live-platform/internal/database"
 	"live-platform/internal/database/db"
 	"live-platform/internal/utils"
-	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
 
-// SMSClient is the minimal contract auth needs for OTP delivery. The default
-// wiring is the MSG91 implementation under internal/sms; in dev we leave it
-// nil and devModeOTP short-circuits the send.
+// SMSClient is the minimal contract auth needs to deliver an OTP.
 type SMSClient interface {
 	SendOTP(ctx context.Context, phone, code string) error
 }
 
-// Referrer is the slice of internal/referrals that auth depends on. We
-// inject it (rather than import the package) so the dependency is one-way
-// and testable. Best-effort: an invalid referral code never fails signup.
+// Referrer lets OTP/Google signup attach a referral code. Wired in Phase F;
+// nil is a no-op.
 type Referrer interface {
-	AttachToSignup(ctx context.Context, tenantID, newUserID uuid.UUID, code string)
+	AttachSignup(ctx context.Context, tenantID, newUserID uuid.UUID, code string)
 }
 
 type Service struct {
-	queries  *db.Queries
+	pool     *pgxpool.Pool
+	q        *db.Queries
 	redis    *redis.Client
 	cfg      *config.Config
 	sms      SMSClient
-	referrer Referrer
 	google   *google.Verifier
+	referrer Referrer
 }
 
-func NewService(pool *pgxpool.Pool, redis *redis.Client, cfg *config.Config) *Service {
-	return &Service{
-		queries: db.New(pool),
-		redis:   redis,
-		cfg:     cfg,
-	}
+func NewService(pool *pgxpool.Pool, rdb *redis.Client, cfg *config.Config) *Service {
+	return &Service{pool: pool, q: db.New(pool), redis: rdb, cfg: cfg}
 }
 
-// WithSMS wires an SMS client. Optional — production sets it via main.go,
-// tests can leave it nil.
-func (s *Service) WithSMS(c SMSClient) *Service { s.sms = c; return s }
-
-// WithReferrer wires the referrals service so OTP verify can attach a
-// referral code to a fresh signup. Optional — leaving nil disables
-// referral tracking without breaking anything else.
-func (s *Service) WithReferrer(r Referrer) *Service { s.referrer = r; return s }
-
-// WithGoogle wires the Google ID-token verifier. Required for /auth/google
-// to work — without it Google sign-in returns a clear error rather than
-// trusting client-supplied identity.
+func (s *Service) WithSMS(c SMSClient) *Service           { s.sms = c; return s }
 func (s *Service) WithGoogle(v *google.Verifier) *Service { s.google = v; return s }
+func (s *Service) WithReferrer(r Referrer) *Service       { s.referrer = r; return s }
 
-// Email + password registration was removed in favor of phone-OTP and
-// Google sign-in only. The RegisterRequest type is kept here as a thin
-// adapter for the legacy /auth/register/* endpoints during the deprecation
-// window — those endpoints now refuse to issue tokens and only create a
-// shell user record (used by automated tests that don't go through OTP).
-type RegisterRequest struct {
-	FullName string `json:"full_name"`
-	Phone    string `json:"phone"`
-	Role     string `json:"role"`
-	OrgCode  string `json:"org_code"`
+var (
+	ErrInvalidOrgCode   = errors.New("invalid org code")
+	ErrOTPNotConfigured = errors.New("otp delivery is not configured")
+	ErrOTPThrottled     = errors.New("too many OTP requests — try again later")
+	ErrInvalidCode      = errors.New("invalid or expired code")
+	ErrTooManyAttempts  = errors.New("too many attempts — request a new code")
+	ErrNoMembership     = errors.New("user is not a member of this org")
+	ErrGoogleDisabled   = errors.New("google sign-in is not configured")
+)
+
+// ---- config helpers -------------------------------------------------------
+
+func (s *Service) accessTTL() time.Duration {
+	d, err := time.ParseDuration(s.cfg.JWT.AccessExpiry)
+	if err != nil || d <= 0 {
+		return 15 * time.Minute
+	}
+	return d
 }
 
-type TokenResponse struct {
-	AccessToken  string   `json:"access_token"`
-	RefreshToken string   `json:"refresh_token"`
-	User         UserInfo `json:"user"`
+func (s *Service) refreshTTL() time.Duration {
+	d, err := time.ParseDuration(s.cfg.JWT.RefreshExpiry)
+	if err != nil || d <= 0 {
+		return 7 * 24 * time.Hour
+	}
+	return d
 }
+
+func (s *Service) otpTTL() time.Duration {
+	if s.cfg.OTP.TTLSec > 0 {
+		return time.Duration(s.cfg.OTP.TTLSec) * time.Second
+	}
+	return 5 * time.Minute
+}
+
+func (s *Service) otpMaxSendsPerHour() int {
+	if s.cfg.OTP.MaxSends > 0 {
+		return s.cfg.OTP.MaxSends
+	}
+	return 5
+}
+
+func (s *Service) devCode() string {
+	if s.cfg.OTP.DevCode != "" {
+		return s.cfg.OTP.DevCode
+	}
+	return "123456"
+}
+
+// ---- tenant resolution --------------------------------------------------
+
+// DefaultOrgCode is used in dev when a client omits org_code.
+const DefaultOrgCode = "DEMO"
+
+func (s *Service) resolveTenant(ctx context.Context, orgCode string) (db.GetTenantByOrgCodeRow, error) {
+	code := strings.TrimSpace(orgCode)
+	if code == "" {
+		code = DefaultOrgCode
+	}
+	row, err := s.q.GetTenantByOrgCode(database.WithPublicLookup(ctx), code)
+	if err != nil {
+		return db.GetTenantByOrgCodeRow{}, ErrInvalidOrgCode
+	}
+	return row, nil
+}
+
+// ---- token bundle -----------------------------------------------------------
 
 type UserInfo struct {
 	ID       uuid.UUID `json:"id"`
-	Phone    string    `json:"phone"`
 	Email    string    `json:"email,omitempty"`
-	FullName string    `json:"full_name"`
+	Phone    string    `json:"phone,omitempty"`
+	FullName string    `json:"full_name,omitempty"`
 	Role     string    `json:"role"`
 	TenantID uuid.UUID `json:"tenant_id"`
 }
 
-// DefaultTenantID is the seed tenant used pre-migration and during dev when
-// no Org Code is provided. Production deployments should require Org Code.
-var DefaultTenantID = uuid.MustParse("00000000-0000-0000-0000-000000000001")
-
-// resolveTenant turns an Org Code (case-insensitive) into a tenant UUID. If
-// the Org Code is blank we fall back to the default tenant — useful during
-// the migration window before every client passes Org Code, but lock this
-// down once all clients are updated.
-func (s *Service) resolveTenant(ctx context.Context, orgCode string) (uuid.UUID, error) {
-	if orgCode == "" {
-		return DefaultTenantID, nil
-	}
-	t, err := s.queries.GetTenantByOrgCode(ctx, orgCode)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("invalid org code")
-	}
-	return uuid.UUID(t.ID.Bytes), nil
+type TokenBundle struct {
+	AccessToken  string   `json:"access_token"`
+	RefreshToken string   `json:"refresh_token"`
+	ExpiresIn    int      `json:"expires_in"`
+	User         UserInfo `json:"user"`
 }
 
-func (s *Service) RegisterStudent(ctx context.Context, req RegisterRequest) (*db.User, error) {
-	req.Role = "student"
-	return s.register(ctx, req)
-}
+// issueTokens resolves the user's role for tenantID, mints an access token,
+// and creates a fresh refresh-token row (optionally chained to parentID for
+// rotation). Runs cross-tenant (WithSuperAdmin) — this is a trusted server op
+// and the user is not yet request-authenticated.
+func (s *Service) issueTokens(ctx context.Context, userID, tenantID uuid.UUID, parentID, familyID uuid.UUID, userAgent, ip string) (*TokenBundle, error) {
+	sctx := database.WithSuperAdmin(ctx)
 
-func (s *Service) RegisterInstructor(ctx context.Context, req RegisterRequest) (*db.User, error) {
-	req.Role = "instructor"
-	return s.register(ctx, req)
-}
-
-func (s *Service) RegisterAdmin(ctx context.Context, req RegisterRequest) (*db.User, error) {
-	req.Role = "admin"
-	return s.register(ctx, req)
-}
-
-// register creates a shell user record in a tenant — no password, no email,
-// just phone + name. It is invoked from the legacy /auth/register/* admin
-// endpoints (admins occasionally bulk-create student accounts before the
-// student has logged in via OTP). The student then completes auth via
-// /auth/otp/verify which finds this row by phone.
-func (s *Service) register(ctx context.Context, req RegisterRequest) (*db.User, error) {
-	if req.Role == "" {
-		req.Role = "student"
-	}
-
-	tenantID, err := s.resolveTenant(ctx, req.OrgCode)
-	if err != nil {
-		return nil, err
-	}
-	ctx = database.WithTenant(ctx, tenantID.String(), "")
-
-	user, err := s.queries.CreateUser(ctx, db.CreateUserParams{
-		TenantID:     pgtype.UUID{Bytes: tenantID, Valid: true},
-		PhoneNumber:  pgtype.Text{String: req.Phone, Valid: req.Phone != ""},
-		Email:        pgtype.Text{}, // email is now optional
-		PasswordHash: pgtype.Text{}, // no password — phone OTP / Google only
-		FullName:     pgtype.Text{String: req.FullName, Valid: req.FullName != ""},
-		Role:         pgtype.Text{String: req.Role, Valid: true},
-		AuthMethod:   pgtype.Text{String: "phone", Valid: true},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	_, _ = s.queries.AddTenantUser(ctx, db.AddTenantUserParams{
-		TenantID: pgtype.UUID{Bytes: tenantID, Valid: true},
-		UserID:   user.ID,
-		Role:     req.Role,
-	})
-
-	return &user, nil
-}
-
-// issueTokensForUser mints fresh access + refresh tokens for an authenticated
-// user row and persists the refresh token in Redis, matching the behaviour of
-// the email/password Login path. All alternative login methods (OTP, Google,
-// account linking) go through this helper so refresh-token rotation stays
-// consistent across login surfaces.
-//
-// tenantID is the resolved Org Code → tenant mapping used to scope the JWT.
-// Pass uuid.Nil to use the user's primary tenant on the row.
-func (s *Service) issueTokensForUser(ctx context.Context, user *db.User, tenantID uuid.UUID) (*TokenResponse, error) {
-	accessExpiry, _ := time.ParseDuration(s.cfg.JWT.AccessExpiry)
-	refreshExpiry, _ := time.ParseDuration(s.cfg.JWT.RefreshExpiry)
-
-	role := "student"
-	if user.Role.Valid {
-		role = user.Role.String
-	}
-
-	userID := uuid.UUID(user.ID.Bytes)
-	if tenantID == uuid.Nil {
-		tenantID = uuid.UUID(user.TenantID.Bytes)
-		if tenantID == uuid.Nil {
-			tenantID = DefaultTenantID
-		}
-	}
-
-	// Email is now nullable; use it for the JWT only when present.
-	emailClaim := ""
-	if user.Email.Valid {
-		emailClaim = user.Email.String
-	}
-	phone := ""
-	if user.PhoneNumber.Valid {
-		phone = user.PhoneNumber.String
-	}
-
-	accessToken, err := utils.GenerateAccessToken(userID, emailClaim, role, tenantID, s.cfg.JWT.AccessSecret, accessExpiry)
-	if err != nil {
-		return nil, err
-	}
-
-	refreshToken, err := utils.GenerateRefreshToken(userID, s.cfg.JWT.RefreshSecret, refreshExpiry)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := s.redis.Set(ctx, fmt.Sprintf("refresh:%s", userID.String()), refreshToken, refreshExpiry).Err(); err != nil {
-		return nil, err
-	}
-
-	fullName := ""
-	if user.FullName.Valid {
-		fullName = user.FullName.String
-	}
-
-	return &TokenResponse{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		User: UserInfo{
-			ID:       userID,
-			Email:    emailClaim,
-			Phone:    phone,
-			FullName: fullName,
-			Role:     role,
-			TenantID: tenantID,
-		},
-	}, nil
-}
-
-func (s *Service) Logout(ctx context.Context, userID uuid.UUID) error {
-	return s.redis.Del(ctx, fmt.Sprintf("refresh:%s", userID.String())).Err()
-}
-
-// MeResponse is the shape returned by GET /auth/me. The mobile app uses this
-// both to rehydrate the session and to decide whether to force the user into
-// the onboarding flow.
-type MeResponse struct {
-	ID                  uuid.UUID `json:"id"`
-	Phone               string    `json:"phone"`
-	Email               string    `json:"email,omitempty"`
-	FullName            string    `json:"full_name"`
-	Role                string    `json:"role"`
-	ClassLevel          *string   `json:"class_level"`
-	Board               *string   `json:"board"`
-	ExamGoal            *string   `json:"exam_goal"`
-	OnboardingCompleted bool      `json:"onboarding_completed"`
-}
-
-func (s *Service) GetMe(ctx context.Context, userID uuid.UUID) (*MeResponse, error) {
-	pgUUID := pgtype.UUID{Bytes: userID, Valid: true}
-	user, err := s.queries.GetUserByID(ctx, pgUUID)
-	if err != nil {
-		return nil, err
-	}
-
-	me := &MeResponse{
-		ID:                  uuid.UUID(user.ID.Bytes),
-		Role:                "student",
-		OnboardingCompleted: user.OnboardingCompleted.Bool,
-	}
-	if user.Email.Valid {
-		me.Email = user.Email.String
-	}
-	if user.PhoneNumber.Valid {
-		me.Phone = user.PhoneNumber.String
-	}
-	if user.FullName.Valid {
-		me.FullName = user.FullName.String
-	}
-	if user.Role.Valid {
-		me.Role = user.Role.String
-	}
-	if user.ClassLevel.Valid {
-		v := user.ClassLevel.String
-		me.ClassLevel = &v
-	}
-	if user.Board.Valid {
-		v := user.Board.String
-		me.Board = &v
-	}
-	if user.ExamGoal.Valid {
-		v := user.ExamGoal.String
-		me.ExamGoal = &v
-	}
-	return me, nil
-}
-
-func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (*TokenResponse, error) {
-	claims, err := utils.ValidateRefreshToken(refreshToken, s.cfg.JWT.RefreshSecret)
-	if err != nil {
-		return nil, fmt.Errorf("invalid refresh token")
-	}
-
-	userID, err := uuid.Parse(claims.Subject)
-	if err != nil {
-		return nil, fmt.Errorf("invalid user id")
-	}
-
-	storedToken, err := s.redis.Get(ctx, fmt.Sprintf("refresh:%s", userID.String())).Result()
-	if err != nil || storedToken != refreshToken {
-		return nil, fmt.Errorf("invalid refresh token")
-	}
-
-	// The tenant isn't known yet at this point — that's what this lookup is
-	// for — so there's no app.tenant_id to scope it by. The signature check
-	// plus the redis round-trip above already prove this is a legitimate,
-	// previously-issued session, so a superuser bypass here is scoped to a
-	// single row by primary key, not an attacker-controlled cross-tenant read.
-	pgUUID := pgtype.UUID{Bytes: userID, Valid: true}
-	user, err := s.queries.GetUserByID(database.WithSuperAdmin(ctx), pgUUID)
+	u, err := s.q.GetUserByID(sctx, pgUUID(userID))
 	if err != nil {
 		return nil, fmt.Errorf("user not found")
 	}
-
-	accessExpiry, _ := time.ParseDuration(s.cfg.JWT.AccessExpiry)
-	refreshExpiry, _ := time.ParseDuration(s.cfg.JWT.RefreshExpiry)
-
-	role := "student"
-	if user.Role.Valid {
-		role = user.Role.String
+	mem, err := s.q.GetTenantUser(sctx, db.GetTenantUserParams{TenantID: pgUUID(tenantID), UserID: pgUUID(userID)})
+	if err != nil {
+		return nil, ErrNoMembership
 	}
+	role := string(mem.Role)
 
-	tenantID := uuid.UUID(user.TenantID.Bytes)
-	if tenantID == uuid.Nil {
-		tenantID = DefaultTenantID
-	}
-
-	emailClaim := ""
-	if user.Email.Valid {
-		emailClaim = user.Email.String
-	}
-	phone := ""
-	if user.PhoneNumber.Valid {
-		phone = user.PhoneNumber.String
-	}
-
-	newAccessToken, err := utils.GenerateAccessToken(userID, emailClaim, role, tenantID, s.cfg.JWT.AccessSecret, accessExpiry)
+	access, err := utils.GenerateAccessToken(userID, textVal(u.Email), role, tenantID, u.TokenVersion, s.cfg.JWT.AccessSecret, s.accessTTL())
 	if err != nil {
 		return nil, err
 	}
 
-	newRefreshToken, err := utils.GenerateRefreshToken(userID, s.cfg.JWT.RefreshSecret, refreshExpiry)
+	raw, hash, err := utils.NewOpaqueToken()
 	if err != nil {
 		return nil, err
 	}
-
-	err = s.redis.Set(ctx, fmt.Sprintf("refresh:%s", userID.String()), newRefreshToken, refreshExpiry).Err()
+	if familyID == uuid.Nil {
+		familyID = uuid.New()
+	}
+	_, err = s.q.CreateRefreshToken(sctx, db.CreateRefreshTokenParams{
+		UserID:    pgUUID(userID),
+		TenantID:  pgUUID(tenantID),
+		FamilyID:  pgUUID(familyID),
+		ParentID:  pgUUIDOrNull(parentID),
+		TokenHash: hash,
+		UserAgent: textOrNull(userAgent),
+		Ip:        inetOrNull(ip),
+		ExpiresAt: pgTime(time.Now().Add(s.refreshTTL())),
+	})
 	if err != nil {
 		return nil, err
 	}
+	_ = s.q.TouchUserLastLogin(sctx, pgUUID(userID))
 
-	fullName := ""
-	if user.FullName.Valid {
-		fullName = user.FullName.String
-	}
-
-	return &TokenResponse{
-		AccessToken:  newAccessToken,
-		RefreshToken: newRefreshToken,
+	return &TokenBundle{
+		AccessToken:  access,
+		RefreshToken: raw,
+		ExpiresIn:    int(s.accessTTL().Seconds()),
 		User: UserInfo{
-			ID:       userID,
-			Email:    emailClaim,
-			Phone:    phone,
-			FullName: fullName,
-			Role:     role,
-			TenantID: tenantID,
+			ID: userID, Email: textVal(u.Email), Phone: textVal(u.Phone),
+			FullName: textVal(u.FullName), Role: role, TenantID: tenantID,
 		},
 	}, nil
+}
+
+// Refresh rotates a refresh token. Reuse of an already-used token revokes
+// the whole family (breach response).
+func (s *Service) Refresh(ctx context.Context, rawToken, userAgent, ip string) (*TokenBundle, error) {
+	sctx := database.WithSuperAdmin(ctx)
+	row, err := s.q.GetRefreshTokenByHash(sctx, utils.HashToken(rawToken))
+	if err != nil {
+		return nil, errors.New("invalid refresh token")
+	}
+	if row.RevokedAt.Valid {
+		return nil, errors.New("refresh token revoked")
+	}
+	if row.ExpiresAt.Time.Before(time.Now()) {
+		return nil, errors.New("refresh token expired")
+	}
+	if row.UsedAt.Valid {
+		// Reuse detected — burn the family.
+		_ = s.q.RevokeRefreshTokenFamily(sctx, row.FamilyID)
+		return nil, errors.New("refresh token already used — session revoked")
+	}
+
+	userID := uuid.UUID(row.UserID.Bytes)
+	tenantID := uuid.UUID(row.TenantID.Bytes)
+	bundle, err := s.issueTokens(ctx, userID, tenantID, uuid.UUID(row.ID.Bytes), uuid.UUID(row.FamilyID.Bytes), userAgent, ip)
+	if err != nil {
+		return nil, err
+	}
+	// Mark the old token used and link it to its replacement.
+	newRow, _ := s.q.GetRefreshTokenByHash(sctx, utils.HashToken(bundle.RefreshToken))
+	_ = s.q.MarkRefreshTokenUsed(sctx, db.MarkRefreshTokenUsedParams{ID: row.ID, ReplacedBy: newRow.ID})
+	return bundle, nil
+}
+
+// Logout revokes the presented refresh token's whole family.
+func (s *Service) Logout(ctx context.Context, rawToken string) error {
+	sctx := database.WithSuperAdmin(ctx)
+	row, err := s.q.GetRefreshTokenByHash(sctx, utils.HashToken(rawToken))
+	if err != nil {
+		return nil // already gone
+	}
+	return s.q.RevokeRefreshTokenFamily(sctx, row.FamilyID)
+}
+
+// SwitchOrg re-mints tokens for a different tenant the user belongs to.
+func (s *Service) SwitchOrg(ctx context.Context, userID, targetTenantID uuid.UUID, userAgent, ip string) (*TokenBundle, error) {
+	return s.issueTokens(ctx, userID, targetTenantID, uuid.Nil, uuid.Nil, userAgent, ip)
+}
+
+// tx helper
+func (s *Service) inTx(ctx context.Context, fn func(q *db.Queries) error) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := fn(s.q.WithTx(tx)); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+var _ = pgx.ErrNoRows
+
+// ---- pgtype helpers (local, money-free) ---------------------------------
+
+func pgUUID(id uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: id, Valid: id != uuid.Nil} }
+func pgUUIDOrNull(id uuid.UUID) pgtype.UUID {
+	if id == uuid.Nil {
+		return pgtype.UUID{}
+	}
+	return pgtype.UUID{Bytes: id, Valid: true}
+}
+func textVal(t pgtype.Text) string {
+	if !t.Valid {
+		return ""
+	}
+	return t.String
+}
+func textOrNull(s string) pgtype.Text {
+	if s == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: s, Valid: true}
+}
+func pgTime(t time.Time) pgtype.Timestamptz { return pgtype.Timestamptz{Time: t, Valid: true} }
+func inetOrNull(s string) *netip.Addr {
+	if s == "" {
+		return nil
+	}
+	addr, err := netip.ParseAddr(s)
+	if err != nil {
+		return nil
+	}
+	return &addr
 }

@@ -1,14 +1,14 @@
 // Cross-tenant RLS smoke test. docs.md §20 calls this out as the highest-
 // risk surface ("tenant data leak via RLS misconfig — automated tests for
 // cross-tenant queries"). The test:
-//   1. Creates two tenants + one user inside each.
-//   2. Inserts a course in each tenant.
-//   3. With app.tenant_id set to tenant A, confirms only tenant A's
-//      course is visible — even via a SELECT that doesn't mention
-//      tenant_id.
-//   4. Confirms an UPDATE that tries to bump tenant B's course while
-//      app.tenant_id is set to A returns 0 rows.
-//   5. Confirms super_admin bypass returns both rows.
+//  1. Creates two tenants + one user inside each.
+//  2. Inserts a course in each tenant.
+//  3. With app.tenant_id set to tenant A, confirms only tenant A's
+//     course is visible — even via a SELECT that doesn't mention
+//     tenant_id.
+//  4. Confirms an UPDATE that tries to bump tenant B's course while
+//     app.tenant_id is set to A returns 0 rows.
+//  5. Confirms super_admin bypass returns both rows.
 //
 // Skipped automatically if TEST_DATABASE_URL is unset — keeps the unit
 // test layer fast and lets CI opt in.

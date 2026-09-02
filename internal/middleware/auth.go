@@ -1,126 +1,114 @@
 package middleware
 
 import (
-	"live-platform/internal/config"
-	"live-platform/internal/utils"
-	"log"
 	"strings"
 
+	"live-platform/internal/config"
+	"live-platform/internal/utils"
+
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 )
 
-// AuthMiddleware checks for JWT token in Authorization header
+// Locals keys set by AuthMiddleware.
+const (
+	LocalUserID   = "userID"
+	LocalTenantID = "tenantID"
+	LocalRole     = "role"
+	LocalEmail    = "email"
+	LocalTokenVer = "tokenVer"
+)
+
+func bearerToken(c fiber.Ctx) string {
+	h := c.Get("Authorization")
+	if h == "" {
+		return ""
+	}
+	parts := strings.SplitN(h, " ", 2)
+	if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+		return strings.TrimSpace(parts[1])
+	}
+	return ""
+}
+
+func setAuthLocals(c fiber.Ctx, claims *utils.Claims) {
+	c.Locals(LocalUserID, claims.UserID)
+	c.Locals(LocalTenantID, claims.TenantID)
+	c.Locals(LocalRole, claims.Role)
+	c.Locals(LocalEmail, claims.Email)
+	c.Locals(LocalTokenVer, claims.Ver)
+}
+
+// AuthMiddleware requires a valid access token. The token_version check
+// against the DB (revocation) is applied in the auth service's session
+// endpoints and at refresh time; a stale access token lives at most one
+// access-TTL (default 15m).
 func AuthMiddleware(cfg *config.JWTConfig) fiber.Handler {
 	return func(c fiber.Ctx) error {
-		var token string
-
-		// Check Authorization header
-		authHeader := c.Get("Authorization")
-		if authHeader != "" {
-			parts := strings.Split(authHeader, " ")
-			if len(parts) == 2 && parts[0] == "Bearer" {
-				token = parts[1]
-			}
+		tok := bearerToken(c)
+		if tok == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing authentication token"})
 		}
-
-		if token == "" {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "missing authentication token",
-			})
-		}
-
-		claims, err := utils.ValidateToken(token, cfg.AccessSecret)
+		claims, err := utils.ValidateToken(tok, cfg.AccessSecret)
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "invalid or expired token",
-			})
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid or expired token"})
 		}
-
-		c.Locals("userID", claims.UserID)
-		c.Locals("email", claims.Email)
-		c.Locals("role", claims.Role)
-		c.Locals("username", claims.Email)
-		c.Locals("tenantID", claims.TenantID)
-
+		setAuthLocals(c, claims)
 		return c.Next()
 	}
 }
 
-// OptionalAuthMiddleware checks for JWT but allows unauthenticated requests
+// OptionalAuthMiddleware attaches identity when a valid token is present but
+// never rejects the request.
 func OptionalAuthMiddleware(cfg *config.JWTConfig) fiber.Handler {
 	return func(c fiber.Ctx) error {
-		var token string
-
-		// Check Authorization header
-		authHeader := c.Get("Authorization")
-		if authHeader != "" {
-			parts := strings.Split(authHeader, " ")
-			if len(parts) == 2 && parts[0] == "Bearer" {
-				token = parts[1]
+		if tok := bearerToken(c); tok != "" {
+			if claims, err := utils.ValidateToken(tok, cfg.AccessSecret); err == nil {
+				setAuthLocals(c, claims)
 			}
 		}
-
-		// If no token, continue without authentication
-		if token == "" {
-			return c.Next()
-		}
-
-		// If token exists, validate it
-		claims, err := utils.ValidateToken(token, cfg.AccessSecret)
-		if err != nil {
-			// Invalid token, continue without authentication
-			return c.Next()
-		}
-
-		c.Locals("userID", claims.UserID)
-		c.Locals("email", claims.Email)
-		c.Locals("role", claims.Role)
-		c.Locals("username", claims.Email)
-		c.Locals("tenantID", claims.TenantID)
-
 		return c.Next()
 	}
 }
 
-// RoleMiddleware checks if the user has one of the allowed roles
-func RoleMiddleware(allowedRoles ...string) fiber.Handler {
+// RequireRole allows the request only if the caller's tenant role is in the
+// allowed set. A platform super_admin passes every check.
+func RequireRole(allowed ...string) fiber.Handler {
+	set := make(map[string]struct{}, len(allowed))
+	for _, r := range allowed {
+		set[r] = struct{}{}
+	}
 	return func(c fiber.Ctx) error {
-		role, ok := c.Locals("role").(string)
-		if !ok {
-			log.Printf("[RoleMiddleware] Role not found in context")
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-				"error": "role not found in context",
-			})
+		role, _ := c.Locals(LocalRole).(string)
+		if role == "super_admin" {
+			return c.Next()
 		}
-
-		// Normalize role to lowercase for comparison
-		normalizedRole := strings.ToLower(strings.TrimSpace(role))
-		log.Printf("[RoleMiddleware] User role: '%s' (normalized: '%s'), Allowed roles: %v", role, normalizedRole, allowedRoles)
-
-		for _, allowedRole := range allowedRoles {
-			if normalizedRole == strings.ToLower(strings.TrimSpace(allowedRole)) {
-				return c.Next()
-			}
+		if _, ok := set[role]; ok {
+			return c.Next()
 		}
-
-		log.Printf("[RoleMiddleware] Access denied for role '%s'", role)
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-			"error": "insufficient permissions",
-		})
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "insufficient permissions"})
 	}
 }
 
-// AdminOnly middleware - only admins can access
-func AdminOnly() fiber.Handler {
-	return RoleMiddleware("admin")
-}
-
-// InstructorOrAdmin middleware - instructors and admins can access
+// Role-group helpers matching schema-v2 tenant_role values.
+func OwnerOnly() fiber.Handler    { return RequireRole("owner") }
+func AdminOnly() fiber.Handler    { return RequireRole("owner", "admin") }
+func StaffOrAbove() fiber.Handler { return RequireRole("owner", "admin", "instructor", "staff") }
 func InstructorOrAdmin() fiber.Handler {
-	return RoleMiddleware("instructor", "admin")
+	return RequireRole("owner", "admin", "instructor")
+}
+func StudentOrAbove() fiber.Handler {
+	return RequireRole("owner", "admin", "instructor", "staff", "student", "parent")
 }
 
-// StudentOrAbove middleware - all authenticated users can access
-func StudentOrAbove() fiber.Handler {
-	return RoleMiddleware("student", "instructor", "admin")
+// CurrentUserID / CurrentTenantID read the authenticated identity from
+// Locals; zero UUID when absent.
+func CurrentUserID(c fiber.Ctx) uuid.UUID {
+	id, _ := c.Locals(LocalUserID).(uuid.UUID)
+	return id
+}
+
+func CurrentTenantID(c fiber.Ctx) uuid.UUID {
+	id, _ := c.Locals(LocalTenantID).(uuid.UUID)
+	return id
 }
