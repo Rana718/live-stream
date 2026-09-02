@@ -2,6 +2,9 @@ package recording
 
 import (
 	"fmt"
+	"strconv"
+
+	"live-platform/internal/middleware"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -11,160 +14,98 @@ type Handler struct {
 	service *Service
 }
 
-func NewHandler(service *Service) *Handler {
-	return &Handler{service: service}
+func NewHandler(service *Service) *Handler { return &Handler{service: service} }
+
+func (h *Handler) tenant(c fiber.Ctx) uuid.UUID { return middleware.CurrentTenantID(c) }
+
+func pagination(c fiber.Ctx) (int32, int32) {
+	limit := int32(50)
+	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 200 {
+		limit = int32(l)
+	}
+	return limit, 0
 }
 
-// UploadRecording godoc
-// @Summary Upload a recording
-// @Description Upload a recorded stream video (Instructor/Admin only)
-// @Tags recordings
-// @Accept multipart/form-data
-// @Produce json
-// @Security BearerAuth
-// @Param stream_id formData string true "Stream ID"
-// @Param file formData file true "Recording file"
-// @Success 201 {object} map[string]interface{} "Recording uploaded successfully"
-// @Failure 400 {object} map[string]interface{} "Invalid request"
-// @Failure 401 {object} map[string]interface{} "Unauthorized"
-// @Failure 500 {object} map[string]interface{} "Upload failed"
-// @Router /recordings/upload [post]
+// UploadRecording — POST /recordings/upload  (instructor/admin)
 func (h *Handler) UploadRecording(c fiber.Ctx) error {
-	streamID, err := uuid.Parse(c.FormValue("stream_id"))
+	sessionID, err := uuid.Parse(c.FormValue("session_id"))
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid stream id"})
+		if sessionID, err = uuid.Parse(c.FormValue("stream_id")); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid session id"})
+		}
 	}
-
 	file, err := c.FormFile("file")
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "file required"})
 	}
-
-	// Open the file
 	src, err := file.Open()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to open file"})
 	}
 	defer src.Close()
-
-	// Generate unique filename
-	filename := fmt.Sprintf("recordings/%s/%s.webm", streamID.String(), uuid.New().String())
-
-	// Upload to MinIO
-	recording, err := h.service.UploadRecording(c.Context(), streamID, filename, src, file.Size)
+	key := fmt.Sprintf("recordings/%s/%s.webm", sessionID.String(), uuid.New().String())
+	rec, err := h.service.UploadRecording(c.Context(), h.tenant(c), sessionID, key, src, file.Size)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"message":   "recording uploaded successfully",
-		"recording": recording,
-	})
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"message": "recording uploaded successfully", "recording": rec})
 }
 
-// GetRecording godoc
-// @Summary Get recording details
-// @Description Get details of a specific recording
-// @Tags recordings
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Param id path string true "Recording ID"
-// @Success 200 {object} map[string]interface{} "Recording details"
-// @Failure 400 {object} map[string]interface{} "Invalid recording ID"
-// @Failure 401 {object} map[string]interface{} "Unauthorized"
-// @Failure 404 {object} map[string]interface{} "Recording not found"
-// @Router /recordings/{id} [get]
+// GetRecording — GET /recordings/:id
 func (h *Handler) GetRecording(c fiber.Ctx) error {
-	recordingID, err := uuid.Parse(c.Params("id"))
+	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid recording id"})
 	}
-
-	recording, err := h.service.GetRecording(c.Context(), recordingID)
+	rec, err := h.service.Get(c.Context(), id)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "recording not found"})
 	}
-
-	return c.JSON(recording)
+	return c.JSON(rec)
 }
 
-// GetRecordingsByStream godoc
-// @Summary Get recordings by stream
-// @Description Get all recordings for a specific stream
-// @Tags recordings
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Param stream_id path string true "Stream ID"
-// @Success 200 {array} map[string]interface{} "List of recordings"
-// @Failure 400 {object} map[string]interface{} "Invalid stream ID"
-// @Failure 401 {object} map[string]interface{} "Unauthorized"
-// @Failure 500 {object} map[string]interface{} "Internal server error"
-// @Router /recordings/stream/{stream_id} [get]
+// GetRecordingsByStream — GET /recordings/stream/:stream_id
 func (h *Handler) GetRecordingsByStream(c fiber.Ctx) error {
-	streamID, err := uuid.Parse(c.Params("stream_id"))
+	id, err := uuid.Parse(c.Params("stream_id"))
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid stream id"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid session id"})
 	}
-
-	recordings, err := h.service.GetRecordingsByStream(c.Context(), streamID)
+	rows, err := h.service.BySession(c.Context(), id)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-
-	return c.JSON(recordings)
+	return c.JSON(rows)
 }
 
-// GetRecordingURL godoc
-// @Summary Get recording playback URL
-// @Description Get a presigned URL for recording playback
-// @Tags recordings
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Param id path string true "Recording ID"
-// @Success 200 {object} map[string]interface{} "Playback URL"
-// @Failure 400 {object} map[string]interface{} "Invalid recording ID"
-// @Failure 401 {object} map[string]interface{} "Unauthorized"
-// @Failure 404 {object} map[string]interface{} "Recording not found"
-// @Router /recordings/{id}/url [get]
+// GetRecordingURL — GET /recordings/:id/url
 func (h *Handler) GetRecordingURL(c fiber.Ctx) error {
-	recordingID, err := uuid.Parse(c.Params("id"))
+	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid recording id"})
 	}
-
-	url, err := h.service.GetRecordingURL(c.Context(), recordingID)
+	url, err := h.service.GetURL(c.Context(), id)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "recording not found"})
 	}
-
 	return c.JSON(fiber.Map{"url": url})
 }
 
-// GetMyRecordings godoc
-// @Summary Get instructor's recordings
-// @Description Get all recordings for the logged-in instructor
-// @Tags recordings
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Success 200 {array} map[string]interface{} "List of recordings"
-// @Failure 401 {object} map[string]interface{} "Unauthorized"
-// @Failure 500 {object} map[string]interface{} "Internal server error"
-// @Router /recordings/my [get]
+// GetMyRecordings — GET /recordings/my  (instructor: recordings of my sessions)
 func (h *Handler) GetMyRecordings(c fiber.Ctx) error {
-	userID := c.Locals("userID").(uuid.UUID)
-
-	recordings, err := h.service.GetRecordingsByInstructor(c.Context(), userID)
+	limit, offset := pagination(c)
+	rows, err := h.service.ForInstructor(c.Context(), h.tenant(c), middleware.CurrentUserID(c), limit, offset)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
+	return c.JSON(rows)
+}
 
-	if recordings == nil {
-		recordings = []map[string]interface{}{}
+// ListMine — GET /recordings/mine  (student: recordings available to me)
+func (h *Handler) ListMine(c fiber.Ctx) error {
+	limit, offset := pagination(c)
+	rows, err := h.service.ForTenant(c.Context(), h.tenant(c), limit, offset)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-
-	return c.JSON(recordings)
+	return c.JSON(rows)
 }

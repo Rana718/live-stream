@@ -299,6 +299,24 @@ RETURNING id, status, video_asset_id;
 SELECT id, video_asset_id, file_key, duration_sec, status, thumbnail_url, created_at
 FROM recordings WHERE session_id = $1 ORDER BY created_at DESC;
 
+-- name: ListRecordingsForTenant :many
+SELECT r.id, r.session_id, r.file_key, r.duration_sec, r.status, r.thumbnail_url,
+       r.created_at, s.title AS session_title, s.course_id
+FROM recordings r
+JOIN live_sessions s ON s.id = r.session_id
+WHERE r.tenant_id = $1 AND r.status = 'ready'
+ORDER BY r.created_at DESC
+LIMIT $2 OFFSET $3;
+
+-- name: ListRecordingsForInstructor :many
+SELECT r.id, r.session_id, r.file_key, r.duration_sec, r.status, r.thumbnail_url,
+       r.created_at, s.title AS session_title, s.course_id
+FROM recordings r
+JOIN live_sessions s ON s.id = r.session_id
+WHERE r.tenant_id = $1 AND s.instructor_id = $2
+ORDER BY r.created_at DESC
+LIMIT $3 OFFSET $4;
+
 -- ─────────────────────────────────────────────────── video assets / renditions
 
 -- name: CreateVideoAsset :one
@@ -397,3 +415,19 @@ SELECT c.id, c.course_id, c.serial, c.status, c.issued_at, co.title
 FROM certificates c JOIN courses co ON co.id = c.course_id
 WHERE c.tenant_id = $1 AND c.user_id = $2 AND c.status = 'issued'
 ORDER BY c.issued_at DESC;
+
+-- ─────────────────────────────────────────────────────── session_messages (chat)
+
+-- name: PostSessionMessage :one
+INSERT INTO session_messages (tenant_id, session_id, user_id, kind, body)
+VALUES ($1, $2, $3, COALESCE(sqlc.narg(kind)::text, 'chat'), $4)
+RETURNING id, session_id, user_id, kind, body, created_at;
+
+-- name: ListSessionMessages :many
+SELECT m.id, m.session_id, m.user_id, m.kind, m.body, m.created_at,
+       u.full_name, u.phone
+FROM session_messages m
+JOIN users u ON u.id = m.user_id
+WHERE m.tenant_id = $1 AND m.session_id = $2
+ORDER BY m.created_at DESC
+LIMIT $3 OFFSET $4;

@@ -1,11 +1,16 @@
+// Package stream — schema-v2. The `streams` table became `live_sessions`
+// (ingest_key was stream_key, peak_viewers was viewer_count, session_status
+// enum scheduled|live|ended|cancelled).
 package stream
 
 import (
 	"context"
 	"fmt"
+	"time"
+
 	"live-platform/internal/database/db"
 	"live-platform/internal/events"
-	"time"
+	"live-platform/internal/utils"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -13,170 +18,184 @@ import (
 )
 
 type Service struct {
-	queries  *db.Queries
+	q        *db.Queries
 	producer *events.Producer
 }
 
 func NewService(pool *pgxpool.Pool, producer *events.Producer) *Service {
-	return &Service{
-		queries:  db.New(pool),
-		producer: producer,
+	return &Service{q: db.New(pool), producer: producer}
+}
+
+func (s *Service) emit(ctx context.Context, id string, m map[string]interface{}) {
+	if s.producer != nil {
+		_ = s.producer.PublishEvent(ctx, id, m)
 	}
 }
 
 type CreateStreamRequest struct {
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	ScheduledAt time.Time `json:"scheduled_at"`
+	CourseID    *uuid.UUID `json:"course_id"`
+	BatchID     *uuid.UUID `json:"batch_id"`
+	Title       string     `json:"title"`
+	Description string     `json:"description"`
+	ScheduledAt time.Time  `json:"scheduled_at"`
 }
 
-func (s *Service) CreateStream(ctx context.Context, tenantID, instructorID uuid.UUID, req CreateStreamRequest) (*db.Stream, error) {
-	streamKey := uuid.New().String()
+type Session struct {
+	ID           string     `json:"id"`
+	TenantID     string     `json:"tenant_id"`
+	CourseID     string     `json:"course_id"`
+	Title        string     `json:"title"`
+	Description  string     `json:"description"`
+	Status       string     `json:"status"`
+	IngestKey    string     `json:"ingest_key"`
+	StreamKey    string     `json:"stream_key"` // legacy alias
+	ScheduledAt  *time.Time `json:"scheduled_at"`
+	StartedAt    *time.Time `json:"started_at"`
+	EndedAt      *time.Time `json:"ended_at"`
+	PeakViewers  int32      `json:"peak_viewers"`
+	ViewerCount  int32      `json:"viewer_count"` // legacy alias
+	InstructorID string     `json:"instructor_id"`
+	HLSURL       string     `json:"hls_url"`
+	RTMPURL      string     `json:"rtmp_url"`
+}
 
-	scheduledAt := pgtype.Timestamp{Time: req.ScheduledAt, Valid: true}
+func hlsURL(key string) string  { return "http://localhost:8080/hls/" + key + ".m3u8" }
+func rtmpURL(key string) string { return "rtmp://localhost:1935/live/" + key }
 
-	stream, err := s.queries.CreateStream(ctx, db.CreateStreamParams{
-		Title:        req.Title,
-		Description:  pgtype.Text{String: req.Description, Valid: true},
-		InstructorID: pgtype.UUID{Bytes: instructorID, Valid: true},
-		StreamKey:    streamKey,
-		ScheduledAt:  scheduledAt,
-		TenantID:     pgtype.UUID{Bytes: tenantID, Valid: true},
+func tptr(t pgtype.Timestamptz) *time.Time {
+	if !t.Valid {
+		return nil
+	}
+	return &t.Time
+}
+
+func (s *Service) CreateStream(ctx context.Context, tenantID, instructorID uuid.UUID, req CreateStreamRequest) (Session, error) {
+	key := uuid.New().String()
+	var sched pgtype.Timestamptz
+	if !req.ScheduledAt.IsZero() {
+		sched = pgtype.Timestamptz{Time: req.ScheduledAt, Valid: true}
+	}
+	row, err := s.q.CreateLiveSession(ctx, db.CreateLiveSessionParams{
+		TenantID:       utils.UUIDToPg(tenantID),
+		CourseID:       utils.UUIDPtrToPg(req.CourseID),
+		BatchID:        utils.UUIDPtrToPg(req.BatchID),
+		InstructorID:   utils.UUIDToPg(instructorID),
+		Title:          req.Title,
+		Description:    pgtype.Text{String: req.Description, Valid: req.Description != ""},
+		IngestKey:      key,
+		ScheduledStart: sched,
+	})
+	if err != nil {
+		return Session{}, err
+	}
+	id := utils.UUIDFromPg(row.ID)
+	s.emit(ctx, id, map[string]interface{}{"event": "stream_created", "stream_id": id, "timestamp": time.Now()})
+	return Session{
+		ID: id, TenantID: utils.UUIDFromPg(row.TenantID), CourseID: utils.UUIDFromPg(row.CourseID),
+		Title: row.Title, Status: string(row.Status), IngestKey: row.IngestKey, StreamKey: row.IngestKey,
+		ScheduledAt: tptr(row.ScheduledStart), InstructorID: instructorID.String(),
+		HLSURL: hlsURL(row.IngestKey), RTMPURL: rtmpURL(row.IngestKey),
+	}, nil
+}
+
+func (s *Service) Get(ctx context.Context, id uuid.UUID) (Session, error) {
+	r, err := s.q.GetLiveSession(ctx, utils.UUIDToPg(id))
+	if err != nil {
+		return Session{}, err
+	}
+	return Session{
+		ID: utils.UUIDFromPg(r.ID), TenantID: utils.UUIDFromPg(r.TenantID),
+		CourseID: utils.UUIDFromPg(r.CourseID), Title: r.Title,
+		Description: utils.TextFromPg(r.Description), Status: string(r.Status),
+		IngestKey: r.IngestKey, StreamKey: r.IngestKey,
+		ScheduledAt: tptr(r.ScheduledStart), StartedAt: tptr(r.ActualStart), EndedAt: tptr(r.ActualEnd),
+		PeakViewers: r.PeakViewers, ViewerCount: r.PeakViewers,
+		InstructorID: utils.UUIDFromPg(r.InstructorID),
+		HLSURL:       hlsURL(r.IngestKey), RTMPURL: rtmpURL(r.IngestKey),
+	}, nil
+}
+
+func (s *Service) ListLive(ctx context.Context, tenantID uuid.UUID) ([]Session, error) {
+	if tenantID == uuid.Nil {
+		return []Session{}, nil
+	}
+	rows, err := s.q.ListLiveSessions(ctx, db.ListLiveSessionsParams{
+		TenantID: utils.UUIDToPg(tenantID),
+		Statuses: []db.SessionStatus{db.SessionStatus("live"), db.SessionStatus("scheduled")},
+		Limit:    100, Offset: 0,
 	})
 	if err != nil {
 		return nil, err
 	}
-
-	s.producer.PublishEvent(ctx, uuid.UUID(stream.ID.Bytes).String(), map[string]interface{}{
-		"event":     "stream_created",
-		"stream_id": uuid.UUID(stream.ID.Bytes).String(),
-		"timestamp": time.Now(),
-	})
-
-	return &stream, nil
+	out := make([]Session, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, Session{
+			ID: utils.UUIDFromPg(r.ID), CourseID: utils.UUIDFromPg(r.CourseID),
+			Title: r.Title, Status: string(r.Status),
+			ScheduledAt: tptr(r.ScheduledStart), StartedAt: tptr(r.ActualStart),
+			PeakViewers: r.PeakViewers, ViewerCount: r.PeakViewers,
+		})
+	}
+	return out, nil
 }
 
-func (s *Service) StartStream(ctx context.Context, streamID uuid.UUID) error {
-	pgUUID := pgtype.UUID{Bytes: streamID, Valid: true}
-	stream, err := s.queries.StartStream(ctx, pgUUID)
-	if err != nil {
+func (s *Service) Start(ctx context.Context, id uuid.UUID) error {
+	if _, err := s.q.StartLiveSession(ctx, utils.UUIDToPg(id)); err != nil {
 		return err
 	}
-
-	s.producer.PublishEvent(ctx, streamID.String(), map[string]interface{}{
-		"event":     "stream_started",
-		"stream_id": uuid.UUID(stream.ID.Bytes).String(),
-		"timestamp": time.Now(),
-	})
-
+	s.emit(ctx, id.String(), map[string]interface{}{"event": "stream_started", "stream_id": id.String(), "timestamp": time.Now()})
 	return nil
 }
 
-func (s *Service) EndStream(ctx context.Context, streamID uuid.UUID) error {
-	pgUUID := pgtype.UUID{Bytes: streamID, Valid: true}
-	stream, err := s.queries.EndStream(ctx, pgUUID)
-	if err != nil {
+func (s *Service) End(ctx context.Context, id uuid.UUID) error {
+	if _, err := s.q.EndLiveSession(ctx, utils.UUIDToPg(id)); err != nil {
 		return err
 	}
-
-	s.producer.PublishEvent(ctx, streamID.String(), map[string]interface{}{
-		"event":     "stream_ended",
-		"stream_id": uuid.UUID(stream.ID.Bytes).String(),
-		"timestamp": time.Now(),
-	})
-
+	s.emit(ctx, id.String(), map[string]interface{}{"event": "stream_ended", "stream_id": id.String(), "timestamp": time.Now()})
 	return nil
 }
 
-func (s *Service) GetStream(ctx context.Context, streamID uuid.UUID) (*db.Stream, error) {
-	pgUUID := pgtype.UUID{Bytes: streamID, Valid: true}
-	stream, err := s.queries.GetStreamByID(ctx, pgUUID)
-	if err != nil {
-		return nil, err
-	}
-	return &stream, nil
-}
-
-func (s *Service) ListLiveStreams(ctx context.Context) ([]db.Stream, error) {
-	return s.queries.ListLiveStreams(ctx)
-}
-
-func (s *Service) UpdateViewerCount(ctx context.Context, streamID uuid.UUID, count int32) error {
-	return s.queries.UpdateViewerCount(ctx, db.UpdateViewerCountParams{
-		ID:          pgtype.UUID{Bytes: streamID, Valid: true},
-		ViewerCount: pgtype.Int4{Int32: count, Valid: true},
+func (s *Service) UpdateViewerCount(ctx context.Context, id uuid.UUID, count int32) error {
+	return s.q.SetLiveSessionPeakViewers(ctx, db.SetLiveSessionPeakViewersParams{
+		ID: utils.UUIDToPg(id), PeakViewers: count,
 	})
 }
 
-func (s *Service) ValidateStreamKey(ctx context.Context, streamKey string) (*db.Stream, error) {
-	stream, err := s.queries.GetStreamByKey(ctx, streamKey)
+// StartStreamByKey / EndStreamByKey — called by the unauthenticated RTMP
+// webhook. The key lookup bypasses RLS; a suspended tenant is refused.
+func (s *Service) StartStreamByKey(ctx context.Context, key string) (Session, error) {
+	r, err := s.q.GetLiveSessionByIngestKey(ctx, key)
 	if err != nil {
-		return nil, fmt.Errorf("invalid stream key")
+		return Session{}, fmt.Errorf("invalid stream key: %v", err)
 	}
-	return &stream, nil
-}
-
-// StartStreamByKey starts a stream using its stream key (called by RTMP auth callback).
-//
-// Tenant-scoping: the key→stream lookup uses GetStreamByKey which RLS does
-// not gate (the connection here has no app.tenant_id session var because
-// the RTMP webhook is unauthenticated). We treat the lookup as authoritative
-// — a key that doesn't resolve is an immediate 401. We then re-check the
-// owning tenant's status: a suspended tenant must not be allowed to ingest
-// new content even if their key is still valid.
-func (s *Service) StartStreamByKey(ctx context.Context, streamKey string) (*db.Stream, error) {
-	stream, err := s.queries.GetStreamByKey(ctx, streamKey)
-	if err != nil {
-		return nil, fmt.Errorf("invalid stream key: %v", err)
-	}
-
-	// Refuse to ingest for suspended tenants. The tenant lookup runs with
-	// is_super_admin=true so the SELECT bypasses the per-tenant RLS policy.
-	tenantID := uuid.UUID(stream.TenantID.Bytes)
-	if tenantID != uuid.Nil {
-		t, err := s.queries.GetTenantByID(ctx, stream.TenantID)
-		if err == nil && t.Status != "active" {
-			return nil, fmt.Errorf("tenant %s is %s — ingest refused", t.OrgCode, t.Status)
+	if r.TenantID.Valid {
+		if t, e := s.q.GetTenantByID(ctx, r.TenantID); e == nil && string(t.Status) != "active" {
+			return Session{}, fmt.Errorf("tenant %s is %s — ingest refused", t.OrgCode, t.Status)
 		}
 	}
-
-	updatedStream, err := s.queries.StartStream(ctx, stream.ID)
-	if err != nil {
-		return nil, err
+	id := uuid.UUID(r.ID.Bytes)
+	if err := s.Start(ctx, id); err != nil {
+		return Session{}, err
 	}
-
-	fmt.Printf("Stream started successfully: ID=%v, Status=%v\n", updatedStream.ID, updatedStream.Status)
-
-	s.producer.PublishEvent(ctx, uuid.UUID(updatedStream.ID.Bytes).String(), map[string]interface{}{
-		"event":      "stream_started",
-		"stream_id":  uuid.UUID(updatedStream.ID.Bytes).String(),
-		"stream_key": streamKey,
-		"timestamp":  time.Now(),
-	})
-
-	return &updatedStream, nil
+	return Session{ID: id.String(), IngestKey: key, StreamKey: key, Status: "live"}, nil
 }
 
-// EndStreamByKey ends a stream using its stream key (called by RTMP done callback)
-func (s *Service) EndStreamByKey(ctx context.Context, streamKey string) (*db.Stream, error) {
-	// Get stream by key first
-	stream, err := s.queries.GetStreamByKey(ctx, streamKey)
+func (s *Service) EndStreamByKey(ctx context.Context, key string) (Session, error) {
+	r, err := s.q.GetLiveSessionByIngestKey(ctx, key)
 	if err != nil {
-		return nil, fmt.Errorf("invalid stream key")
+		return Session{}, fmt.Errorf("invalid stream key")
 	}
+	id := uuid.UUID(r.ID.Bytes)
+	if err := s.End(ctx, id); err != nil {
+		return Session{}, err
+	}
+	return Session{ID: id.String(), IngestKey: key, StreamKey: key, Status: "ended"}, nil
+}
 
-	// End the stream (update status to ended)
-	updatedStream, err := s.queries.EndStream(ctx, stream.ID)
+func (s *Service) ValidateStreamKey(ctx context.Context, key string) (Session, error) {
+	r, err := s.q.GetLiveSessionByIngestKey(ctx, key)
 	if err != nil {
-		return nil, err
+		return Session{}, fmt.Errorf("invalid stream key")
 	}
-
-	s.producer.PublishEvent(ctx, uuid.UUID(updatedStream.ID.Bytes).String(), map[string]interface{}{
-		"event":      "stream_ended",
-		"stream_id":  uuid.UUID(updatedStream.ID.Bytes).String(),
-		"stream_key": streamKey,
-		"timestamp":  time.Now(),
-	})
-
-	return &updatedStream, nil
+	return Session{ID: utils.UUIDFromPg(r.ID), IngestKey: key, StreamKey: key, Status: string(r.Status)}, nil
 }
