@@ -3,9 +3,7 @@ package banners
 import (
 	"strconv"
 
-	"live-platform/internal/database/db"
 	"live-platform/internal/middleware"
-	"live-platform/internal/utils"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -15,77 +13,35 @@ type Handler struct{ service *Service }
 
 func NewHandler(s *Service) *Handler { return &Handler{service: s} }
 
-func toMap(b *db.Banner) fiber.Map {
-	return fiber.Map{
-		"id":               utils.UUIDFromPg(b.ID),
-		"title":            b.Title,
-		"subtitle":         utils.TextFromPg(b.Subtitle),
-		"image_url":        b.ImageUrl,
-		"background_color": utils.TextFromPg(b.BackgroundColor),
-		"link_type":        utils.TextFromPg(b.LinkType),
-		"link_id":          utils.UUIDFromPg(b.LinkID),
-		"link_url":         utils.TextFromPg(b.LinkUrl),
-		"display_order":    utils.Int4FromPg(b.DisplayOrder),
-		"is_active":        utils.BoolFromPg(b.IsActive),
-		"starts_at":        b.StartsAt,
-		"ends_at":          b.EndsAt,
-		"created_at":       b.CreatedAt,
-	}
-}
+func (h *Handler) tenant(c fiber.Ctx) uuid.UUID { return middleware.CurrentTenantID(c) }
 
-// ListActive godoc
-// @Summary List active home-page banners (public, respects schedule window)
-// @Tags banners
-// @Router /banners [get]
+// ListActive — GET /banners  (respects the schedule window)
 func (h *Handler) ListActive(c fiber.Ctx) error {
-	limit := int32(10)
-	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 30 {
-		limit = int32(l)
-	}
-	rows, err := h.service.ListActive(c.Context(), limit)
+	rows, err := h.service.ListActive(c.Context(), h.tenant(c))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	out := make([]fiber.Map, len(rows))
-	for i := range rows {
-		out[i] = toMap(&rows[i])
-	}
-	return c.JSON(out)
+	return c.JSON(rows)
 }
 
-// ListAll godoc
-// @Summary List all banners (admin)
-// @Tags banners
-// @Security BearerAuth
-// @Router /admin/banners [get]
+// ListAll — GET /admin/banners
 func (h *Handler) ListAll(c fiber.Ctx) error {
-	limit := int32(50)
-	offset := int32(0)
+	limit, offset := int32(50), int32(0)
 	if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 100 {
 		limit = int32(l)
 	}
 	if o, err := strconv.Atoi(c.Query("offset")); err == nil && o >= 0 {
 		offset = int32(o)
 	}
-	rows, err := h.service.ListAll(c.Context(), limit, offset)
+	rows, err := h.service.ListAll(c.Context(), h.tenant(c), limit, offset)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	out := make([]fiber.Map, len(rows))
-	for i := range rows {
-		out[i] = toMap(&rows[i])
-	}
-	return c.JSON(out)
+	return c.JSON(rows)
 }
 
-// Create godoc
-// @Summary Create a banner (admin)
-// @Tags banners
-// @Security BearerAuth
-// @Router /admin/banners [post]
+// Create — POST /admin/banners
 func (h *Handler) Create(c fiber.Ctx) error {
-	userID, _ := c.Locals("userID").(uuid.UUID)
-	tenantID, _ := c.Locals("tenantID").(uuid.UUID)
 	var req UpsertBannerRequest
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -93,18 +49,14 @@ func (h *Handler) Create(c fiber.Ctx) error {
 	if err := middleware.ValidateStruct(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	b, err := h.service.Create(c.Context(), tenantID, userID, req)
+	b, err := h.service.Create(c.Context(), h.tenant(c), middleware.CurrentUserID(c), req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.Status(fiber.StatusCreated).JSON(toMap(b))
+	return c.Status(fiber.StatusCreated).JSON(b)
 }
 
-// Update godoc
-// @Summary Update a banner (admin)
-// @Tags banners
-// @Security BearerAuth
-// @Router /admin/banners/{id} [put]
+// Update — PUT /admin/banners/:id
 func (h *Handler) Update(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
@@ -114,21 +66,14 @@ func (h *Handler) Update(c fiber.Ctx) error {
 	if err := c.Bind().JSON(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
-	if err := middleware.ValidateStruct(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-	}
 	b, err := h.service.Update(c.Context(), id, req)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(toMap(b))
+	return c.JSON(b)
 }
 
-// SetActive godoc
-// @Summary Activate / deactivate a banner (admin)
-// @Tags banners
-// @Security BearerAuth
-// @Router /admin/banners/{id}/active [post]
+// SetActive — POST /admin/banners/:id/active
 func (h *Handler) SetActive(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
@@ -137,21 +82,14 @@ func (h *Handler) SetActive(c fiber.Ctx) error {
 	var req struct {
 		Active bool `json:"active"`
 	}
-	if err := c.Bind().JSON(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
-	}
-	b, err := h.service.SetActive(c.Context(), id, req.Active)
-	if err != nil {
+	_ = c.Bind().JSON(&req)
+	if err := h.service.SetActive(c.Context(), id, req.Active); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(toMap(b))
+	return c.JSON(fiber.Map{"id": id, "is_active": req.Active})
 }
 
-// Delete godoc
-// @Summary Delete a banner (admin)
-// @Tags banners
-// @Security BearerAuth
-// @Router /admin/banners/{id} [delete]
+// Delete — DELETE /admin/banners/:id
 func (h *Handler) Delete(c fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {

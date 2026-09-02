@@ -181,6 +181,30 @@ UPDATE banners SET is_active = $2 WHERE id = $1;
 -- name: DeleteBanner :exec
 DELETE FROM banners WHERE id = $1;
 
+-- name: ListAllBanners :many
+SELECT id, title, subtitle, image_url, background_color, link_type, link_id,
+       link_url, display_order, is_active, starts_at, ends_at, created_at
+FROM banners WHERE tenant_id = $1
+ORDER BY display_order, created_at DESC
+LIMIT $2 OFFSET $3;
+
+-- name: UpdateBanner :one
+UPDATE banners SET
+    title            = COALESCE(sqlc.narg(title)::text, title),
+    subtitle         = COALESCE(sqlc.narg(subtitle)::text, subtitle),
+    image_url        = COALESCE(sqlc.narg(image_url)::text, image_url),
+    background_color = COALESCE(sqlc.narg(background_color)::text, background_color),
+    link_type        = COALESCE(sqlc.narg(link_type)::text, link_type),
+    link_id          = COALESCE(sqlc.narg(link_id)::uuid, link_id),
+    link_url         = COALESCE(sqlc.narg(link_url)::text, link_url),
+    display_order    = COALESCE(sqlc.narg(display_order)::int, display_order),
+    is_active        = COALESCE(sqlc.narg(is_active)::boolean, is_active),
+    starts_at        = COALESCE(sqlc.narg(starts_at)::timestamptz, starts_at),
+    ends_at          = COALESCE(sqlc.narg(ends_at)::timestamptz, ends_at)
+WHERE id = $1
+RETURNING id, title, subtitle, image_url, background_color, link_type, link_id,
+          link_url, display_order, is_active, starts_at, ends_at, created_at;
+
 -- name: ListBlogPosts :many
 SELECT id, slug, title, excerpt, cover_url, author_name, tags, minutes_read, published_at
 FROM blog_posts WHERE published_at IS NOT NULL AND published_at <= now()

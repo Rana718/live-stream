@@ -46,7 +46,7 @@ func NewService(pool *pgxpool.Pool) *Service { return &Service{q: db.New(pool)} 
 // the handler returns 404 if the course doesn't exist or the tenant
 // doesn't match (RLS enforces the latter).
 func (s *Service) Render(ctx context.Context, courseID uuid.UUID) ([]byte, error) {
-	course, err := s.q.GetCourseByID(ctx, pgtype.UUID{Bytes: courseID, Valid: true})
+	course, err := s.q.GetCourse(ctx, pgtype.UUID{Bytes: courseID, Valid: true})
 	if err != nil {
 		return nil, fmt.Errorf("course not found")
 	}
@@ -76,17 +76,9 @@ func (s *Service) Render(ctx context.Context, courseID uuid.UUID) ([]byte, error
 	// Course title — wrapped, big, centre-ish.
 	wrap(img, course.Title, 60, 220, W-120, 50, color.White, 4)
 
-	// Price strip.
-	priceText := "Enroll now"
-	if course.Price.Valid {
-		v, _ := course.Price.Float64Value()
-		if v.Float64 > 0 {
-			priceText = fmt.Sprintf("Rs %.0f", v.Float64)
-		} else {
-			priceText = "Free"
-		}
-	}
-	drawText(img, priceText, 60, H-50, color.White, 3)
+	// Price strip. schema-v2 keeps price in the `prices` table (Phase D) —
+	// the poster just shows a generic CTA until that's wired in.
+	drawText(img, "Enroll now", 60, H-50, color.White, 3)
 
 	// CTA right side.
 	drawText(img, tenant.OrgCode+" - "+tenant.Slug, W-360, H-50, color.RGBA{255, 255, 255, 200}, 2)
