@@ -130,10 +130,28 @@ func (h *Handler) ListByLecture(c fiber.Ctx) error {
 	return h.ListPending(c)
 }
 
-// ListPending — GET /doubts/pending  (instructor/admin)
+// ListPending — GET /doubts/pending  (instructor/admin); ?status=all for
+// every doubt (admin oversight view).
 func (h *Handler) ListPending(c fiber.Ctx) error {
 	limit, offset := parsePagination(c)
-	rows, err := h.service.ListPending(c.Context(), middleware.CurrentTenantID(c), limit, offset)
+	tenantID := middleware.CurrentTenantID(c)
+	if c.Query("status") == "all" {
+		rows, err := h.service.ListAllForTenant(c.Context(), tenantID, limit, offset)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		out := make([]fiber.Map, len(rows))
+		for i, r := range rows {
+			out[i] = fiber.Map{
+				"id": utils.UUIDFromPg(r.ID), "user_id": utils.UUIDFromPg(r.UserID),
+				"student_name": utils.TextFromPg(r.FullName), "question": r.QuestionText,
+				"question_text": r.QuestionText, "status": string(r.Status),
+				"answers_count": r.AnswersCount, "created_at": r.CreatedAt.Time,
+			}
+		}
+		return c.JSON(out)
+	}
+	rows, err := h.service.ListPending(c.Context(), tenantID, limit, offset)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}

@@ -918,6 +918,7 @@ func main() {
 	// Fees
 	fg := api.Group("/fees", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext())
 	fg.Post("/structures", middleware.AdminOnly(), feesHandler.CreateStructure)
+	fg.Get("/structures", middleware.AdminOnly(), feesHandler.ListStructures)
 	fg.Get("/structures/course/:course_id", feesHandler.ListStructuresByCourse)
 	fg.Post("/assign", middleware.AdminOnly(), feesHandler.Assign)
 	fg.Get("/my", feesHandler.ListMine)

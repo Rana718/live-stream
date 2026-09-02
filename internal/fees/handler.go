@@ -91,6 +91,25 @@ func (h *Handler) ListStructuresByCourse(c fiber.Ctx) error {
 	return c.JSON(out)
 }
 
+// ListStructures — GET /fees/structures  (admin: every fee plan for the tenant)
+func (h *Handler) ListStructures(c fiber.Ctx) error {
+	rows, err := h.service.ListStructuresForTenant(c.Context(), h.tenant(c))
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	out := make([]fiber.Map, len(rows))
+	for i, r := range rows {
+		out[i] = fiber.Map{
+			"id": utils.UUIDFromPg(r.ID), "course_id": utils.UUIDFromPg(r.CourseID),
+			"course_title": utils.TextFromPg(r.CourseTitle), "name": r.Name,
+			"total_amount": money(r.TotalMinor), "total_minor": r.TotalMinor,
+			"installments_count": r.InstallmentsCount, "installments": r.InstallmentsCount,
+			"gap_days": r.GapDays, "is_active": r.IsActive,
+		}
+	}
+	return c.JSON(out)
+}
+
 // Assign — POST /fees/assign  (admin)
 func (h *Handler) Assign(c fiber.Ctx) error {
 	var req AssignFeeRequest

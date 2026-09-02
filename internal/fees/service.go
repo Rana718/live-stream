@@ -83,6 +83,10 @@ func (s *Service) ListStructuresByCourse(ctx context.Context, tenantID, courseID
 	})
 }
 
+func (s *Service) ListStructuresForTenant(ctx context.Context, tenantID uuid.UUID) ([]db.ListFeePlansForTenantRow, error) {
+	return s.q.ListFeePlansForTenant(ctx, utils.UUIDToPg(tenantID))
+}
+
 // ── assign ──────────────────────────────────────────────────────────
 
 type AssignFeeRequest struct {

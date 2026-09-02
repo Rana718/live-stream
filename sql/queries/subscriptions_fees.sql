@@ -125,6 +125,14 @@ SELECT id, name, total_minor, installments_count, gap_days, is_active
 FROM fee_plans WHERE tenant_id = $1 AND course_id = $2 AND deleted_at IS NULL
 ORDER BY created_at DESC;
 
+-- name: ListFeePlansForTenant :many
+SELECT fp.id, fp.course_id, fp.name, fp.total_minor, fp.installments_count,
+       fp.gap_days, fp.is_active, c.title AS course_title
+FROM fee_plans fp
+LEFT JOIN courses c ON c.id = fp.course_id
+WHERE fp.tenant_id = $1 AND fp.deleted_at IS NULL
+ORDER BY fp.created_at DESC;
+
 -- ─────────────────────────────────────────────────────────── fee_accounts
 
 -- name: CreateFeeAccount :one

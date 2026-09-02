@@ -168,6 +168,12 @@ func (s *Service) ListPending(ctx context.Context, tenantID uuid.UUID, limit, of
 	})
 }
 
+func (s *Service) ListAllForTenant(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]db.ListAllDoubtsForTenantRow, error) {
+	return s.q.ListAllDoubtsForTenant(ctx, db.ListAllDoubtsForTenantParams{
+		TenantID: utils.UUIDToPg(tenantID), Limit: limit, Offset: offset,
+	})
+}
+
 func (s *Service) Accept(ctx context.Context, answerID uuid.UUID) error {
 	return s.q.AcceptDoubtAnswer(ctx, utils.UUIDToPg(answerID))
 }

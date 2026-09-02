@@ -33,7 +33,8 @@ func ntext(s string) pgtype.Text {
 type UpsertBannerRequest struct {
 	Title           string     `json:"title" validate:"required,min=2"`
 	Subtitle        string     `json:"subtitle"`
-	ImageURL        string     `json:"image_url" validate:"required,url"`
+	Description     string     `json:"description"` // alias for subtitle
+	ImageURL        string     `json:"image_url" validate:"omitempty,url"`
 	BackgroundColor string     `json:"background_color"`
 	LinkType        string     `json:"link_type"`
 	LinkID          *uuid.UUID `json:"link_id"`
@@ -49,6 +50,7 @@ type Banner struct {
 	ID              string     `json:"id"`
 	Title           string     `json:"title"`
 	Subtitle        string     `json:"subtitle"`
+	Description     string     `json:"description"` // alias for subtitle
 	ImageURL        string     `json:"image_url"`
 	BackgroundColor string     `json:"background_color"`
 	LinkType        string     `json:"link_type"`
@@ -61,6 +63,9 @@ type Banner struct {
 }
 
 func (s *Service) Create(ctx context.Context, tenantID, creator uuid.UUID, req UpsertBannerRequest) (Banner, error) {
+	if req.Subtitle == "" {
+		req.Subtitle = req.Description
+	}
 	row, err := s.q.CreateBanner(ctx, db.CreateBannerParams{
 		TenantID:        utils.UUIDToPg(tenantID),
 		Title:           req.Title,
@@ -83,6 +88,9 @@ func (s *Service) Create(ctx context.Context, tenantID, creator uuid.UUID, req U
 }
 
 func (s *Service) Update(ctx context.Context, id uuid.UUID, req UpsertBannerRequest) (Banner, error) {
+	if req.Subtitle == "" {
+		req.Subtitle = req.Description
+	}
 	row, err := s.q.UpdateBanner(ctx, db.UpdateBannerParams{
 		ID:              utils.UUIDToPg(id),
 		Title:           ntext(req.Title),
@@ -116,7 +124,7 @@ func (s *Service) ListActive(ctx context.Context, tenantID uuid.UUID) ([]Banner,
 	out := make([]Banner, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, Banner{
-			ID: utils.UUIDFromPg(r.ID), Title: r.Title, Subtitle: utils.TextFromPg(r.Subtitle),
+			ID: utils.UUIDFromPg(r.ID), Title: r.Title, Subtitle: utils.TextFromPg(r.Subtitle), Description: utils.TextFromPg(r.Subtitle),
 			ImageURL: r.ImageUrl, BackgroundColor: utils.TextFromPg(r.BackgroundColor),
 			LinkType: utils.TextFromPg(r.LinkType), LinkID: utils.UUIDFromPg(r.LinkID),
 			LinkURL: utils.TextFromPg(r.LinkUrl), DisplayOrder: r.DisplayOrder, IsActive: true,
@@ -147,7 +155,7 @@ func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 func flatten(id pgtype.UUID, title string, sub pgtype.Text, img string, bg, lt pgtype.Text,
 	lid pgtype.UUID, lurl pgtype.Text, order int32, active bool, starts, ends pgtype.Timestamptz) Banner {
 	b := Banner{
-		ID: utils.UUIDFromPg(id), Title: title, Subtitle: utils.TextFromPg(sub), ImageURL: img,
+		ID: utils.UUIDFromPg(id), Title: title, Subtitle: utils.TextFromPg(sub), Description: utils.TextFromPg(sub), ImageURL: img,
 		BackgroundColor: utils.TextFromPg(bg), LinkType: utils.TextFromPg(lt),
 		LinkID: utils.UUIDFromPg(lid), LinkURL: utils.TextFromPg(lurl),
 		DisplayOrder: order, IsActive: active,

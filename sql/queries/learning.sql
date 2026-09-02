@@ -162,6 +162,13 @@ FROM doubts d JOIN users u ON u.id = d.user_id
 WHERE d.tenant_id = $1 AND d.status = 'open'
 ORDER BY d.created_at LIMIT $2 OFFSET $3;
 
+-- name: ListAllDoubtsForTenant :many
+SELECT d.id, d.user_id, d.question_text, d.status, d.created_at, u.full_name,
+       (SELECT count(*) FROM doubt_answers a WHERE a.doubt_id = d.id) AS answers_count
+FROM doubts d JOIN users u ON u.id = d.user_id
+WHERE d.tenant_id = $1
+ORDER BY d.created_at DESC LIMIT $2 OFFSET $3;
+
 -- name: SetDoubtStatus :exec
 UPDATE doubts SET status = $2 WHERE id = $1;
 
