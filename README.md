@@ -1,610 +1,251 @@
-# PW-Style Live Class + Learning Platform
-
-A complete Go Fiber v3 backend that combines live streaming, recorded lectures,
-practice testing, AI doubt solving, subscriptions, and multi-language content
-— modelled after pw.live's feature set.
-
-## Features
-
-### Streaming & classroom
-- ✅ JWT auth with student / instructor / admin roles
-- ✅ RTMP ingest + HLS playback via Nginx-RTMP
-- ✅ Live stream lifecycle (create, start, end) with auto-start from RTMP callbacks
-- ✅ Automatic recording capture to MinIO
-- ✅ WebSocket live chat + REST fallback + chat history
-
-### PW-style learning
-- ✅ **Exam categories** (JEE/NEET/UPSC/School/…) seeded on first migration
-- ✅ **Courses**, **batches**, **enrollments** with progress tracking
-- ✅ **Subjects → Chapters → Topics** taxonomy
-- ✅ **Lectures** (live + recorded) tied to streams / recordings
-- ✅ **Study materials** (PDFs/notes) uploaded to MinIO with presigned downloads
-- ✅ **Lecture view history** for resume-watching & progress
-- ✅ **Tests** (DPPs, chapter, subject, mocks, PYQs) with auto-scoring
-
-### AI + doubts
-- ✅ **Doubt solving** with text or voice URL input
-- ✅ **Claude API** integration for instant AI answers
-- ✅ Instructor answers, answer acceptance, pending queue
-
-### Analytics
-- ✅ Aggregate user stats (avg score, time, best, watched seconds)
-- ✅ **Weak-topic detection** via per-topic accuracy
-- ✅ Difficulty-level breakdown + recent attempts summary
-
-### Subscriptions & payments
-- ✅ Pre-seeded Free / Monthly / Yearly plans
-- ✅ **Razorpay** checkout + signature verification + webhooks
-
-### Discovery & i18n
-- ✅ Postgres **full-text search** across courses + lectures
-- ✅ Multi-language content column + `Accept-Language` / `?lang=` middleware
-
-### Offline / OTT
-- ✅ **Video quality variants** registry (240p – 1080p)
-- ✅ **Time-limited download tokens** for offline use
-
-### Coaching app (student + instructor + admin)
-- ✅ **Attendance** — auto-mark from join time / watched seconds, manual override,
-    bulk marking, monthly report, subject-wise %, low-attendance alerts, CSV export,
-    geo-location + QR-code check-in for offline centers
-- ✅ **Assignments** — create/update/delete, file + text submission, grading with feedback
-- ✅ **Notifications** — per-user in-app notifications + read state + unread count
-- ✅ **Announcements** — batch/course/global, optional fan-out to enrolled students
-- ✅ **Fees management** — fee structures, student fees, installment scheduling,
-    pending/overdue alerts, revenue dashboard
-- ✅ **Bookmarks** — timestamped lecture/material bookmarks
-- ✅ **Admin dashboard** — aggregate stats, course approval workflow, CSV exports
-
-### Production hardening
-- ✅ Structured logging (`slog`, JSON output)
-- ✅ Per-IP token-bucket rate limiting
-- ✅ Request validation (`go-playground/validator`)
-- ✅ Deep health checks (`/health/deep` pings Postgres, Redis, MinIO, Kafka)
-- ✅ Graceful shutdown with configurable timeout
-- ✅ Tuned pgx connection pool
-- ✅ Optional TLS serving
-- ✅ Startup secret validation
-
-## Tech Stack
-
-- **Go Fiber v3**: High-performance web framework
-- **PostgreSQL + SQLC**: Type-safe database queries
-- **Redis**: Session storage and caching
-- **MinIO**: S3-compatible object storage
-- **Kafka**: Event streaming
-- **Nginx-RTMP**: Live streaming server
-- **Swagger**: API documentation
-- **Docker**: Containerized deployment
-
-## Project Structure
-
-```
-.
-├── cmd/server/              # Application entry point
-├── internal/
-│   ├── auth/               # Authentication (JWT, login, register)
-│   ├── users/              # User management
-│   ├── stream/             # Stream management
-│   ├── chat/               # Chat functionality
-│   ├── recording/          # Recording management
-│   ├── storage/            # MinIO client
-│   ├── events/             # Kafka producer/consumer
-│   ├── database/           # DB connections & generated code
-│   ├── middleware/         # HTTP middleware
-│   ├── config/             # Configuration
-│   └── utils/              # Utilities (JWT, password hashing)
-├── sql/
-│   ├── queries/            # SQLC query definitions
-│   └── schema/             # Database schemas
-├── migrations/             # SQL migrations
-├── docker-compose.yml      # Docker services
-├── Dockerfile              # App container
-└── Makefile                # Build commands
-```
-
-## Quick Start
-
-### Prerequisites
-
-- Go 1.25+
-- Docker & Docker Compose
-- SQLC CLI: `go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest`
-
-No separate migration CLI needed — `scripts/migrate.sh` applies every
-`migrations/*.sql` file directly via `psql` in lexical order (idempotent,
-safe to re-run). `sqlc` reads the same folder independently for codegen,
-so the two never need to agree on a migration-tool convention.
-
-### Installation
-
-1. **Install dependencies:**
-```bash
-make install
-```
-
-2. **Start all services with Docker:**
-```bash
-make docker-up
-```
-
-3. **Wait for services to be ready (30 seconds), then run migrations:**
-```bash
-./scripts/migrate.sh
-```
-
-4. **Generate SQLC code:**
-```bash
-make sqlc
-```
-
-5. **Generate Swagger documentation:**
-```bash
-make swagger
-```
-
-6. **Build and run:**
-```bash
-make build
-./bin/server
-```
-
-Or run directly:
-```bash
-make run
-```
-
-The API will be available at `http://localhost:3000`
-
-## API Documentation
-
-Interactive Swagger documentation is available at:
-```
-http://localhost:3000/swagger/index.html
-```
-
-The Swagger UI provides:
-- Complete API endpoint documentation
-- Request/response schemas
-- Try-it-out functionality
-- Authentication support
-
-To regenerate Swagger docs after making changes:
-```bash
-make swagger
-```
-
-## API Endpoints
-
-### Authentication
-
-#### Register Student
-```http
-POST /api/v1/auth/register/student
-Content-Type: application/json
-
-{
-  "email": "student@example.com",
-  "username": "student1",
-  "password": "password123",
-  "full_name": "John Student"
-}
-```
-
-#### Register Instructor
-```http
-POST /api/v1/auth/register/instructor
-Content-Type: application/json
-
-{
-  "email": "instructor@example.com",
-  "username": "instructor1",
-  "password": "password123",
-  "full_name": "Jane Instructor"
-}
-```
-
-#### Register Admin
-```http
-POST /api/v1/auth/register/admin
-Content-Type: application/json
-
-{
-  "email": "admin@example.com",
-  "username": "admin1",
-  "password": "password123",
-  "full_name": "Admin User"
-}
-```
-
-#### Login (All Roles)
-```http
-POST /api/v1/auth/login
-Content-Type: application/json
-
-{
-  "email": "student@example.com",
-  "password": "password123"
-}
-
-Response:
-{
-  "access_token": "eyJhbGc...",
-  "refresh_token": "eyJhbGc...",
-  "user": {
-    "id": "uuid",
-    "email": "student@example.com",
-    "username": "student1",
-    "full_name": "John Student",
-    "role": "student"
-  }
-}
-```
-
-#### Refresh Token
-```http
-POST /api/v1/auth/refresh
-Content-Type: application/json
-
-{
-  "refresh_token": "eyJhbGc..."
-}
-```
-
-#### Logout
-```http
-POST /api/v1/auth/logout
-Authorization: Bearer {access_token}
-```
-
-### User Management
-
-#### Get Profile
-```http
-GET /api/v1/users/profile
-Authorization: Bearer {access_token}
-```
-
-#### Update Profile
-```http
-PUT /api/v1/users/profile
-Authorization: Bearer {access_token}
-Content-Type: application/json
-
-{
-  "full_name": "Updated Name"
-}
-```
-
-#### List Users (Admin Only)
-```http
-GET /api/v1/users?limit=10&offset=0
-Authorization: Bearer {access_token}
-```
-
-### Stream Management
-
-#### List Live Streams (Public)
-```http
-GET /api/v1/streams/live
-```
-
-#### Get Stream Details (Public)
-```http
-GET /api/v1/streams/{stream_id}
-```
-
-#### Create Stream (Instructor/Admin Only)
-```http
-POST /api/v1/streams
-Authorization: Bearer {access_token}
-Content-Type: application/json
-
-{
-  "title": "Introduction to Go Programming",
-  "description": "Learn Go basics",
-  "scheduled_at": "2025-12-01T10:00:00Z"
-}
-
-Response:
-{
-  "id": "uuid",
-  "title": "Introduction to Go Programming",
-  "stream_key": "unique-stream-key",
-  "status": "scheduled",
-  ...
-}
-```
-
-#### Start Stream (Instructor/Admin Only)
-```http
-POST /api/v1/streams/{stream_id}/start
-Authorization: Bearer {access_token}
-```
-
-#### End Stream (Instructor/Admin Only)
-```http
-POST /api/v1/streams/{stream_id}/end
-Authorization: Bearer {access_token}
-```
-
-### Recordings
-
-#### Get Recording
-```http
-GET /api/v1/recordings/{recording_id}
-Authorization: Bearer {access_token}
-```
-
-#### Get Recording Playback URL
-```http
-GET /api/v1/recordings/{recording_id}/url
-Authorization: Bearer {access_token}
-
-Response:
-{
-  "url": "https://minio:9000/recordings/file.mp4?..."
-}
-```
-
-#### Get Recordings by Stream
-```http
-GET /api/v1/recordings/stream/{stream_id}
-Authorization: Bearer {access_token}
-```
-
-### Chat
-
-#### Send Chat Message
-```http
-POST /api/v1/chat/{stream_id}
-Authorization: Bearer {access_token}
-Content-Type: application/json
-
-{
-  "message": "Hello everyone!"
-}
-```
-
-## RTMP Streaming
-
-### For Instructors
-
-After creating a stream, use the `stream_key` to broadcast:
+# Live Platform — multi-tenant edtech SaaS backend
+
+A production-oriented backend for running **coaching institutes online**: each
+institute (tenant) gets a branded portal + mobile app, sells courses / bundles /
+subscriptions / instalment fee-plans, delivers live + recorded classes, runs
+tests and assignments, answers doubts (AI + instructor), and gets GST-compliant
+tax invoices for every rupee that moves.
+
+- **Go 1.25 · Fiber v3 · pgx v5 · sqlc · PostgreSQL 16 · Redis · Kafka · MinIO · Razorpay**
+- Modular monolith — ~65 packages under `internal/`, one shared `*pgxpool.Pool`.
+- **REST** (`/api/v1`, Swagger) **+ gRPC** (optional, server-reflection enabled).
+- Row-level security on every tenant table; money is `bigint` paise, never float.
+- Reference client: **`school-web`** (Next.js 15 portal — super-admin / admin /
+  instructor / student panels) in the sibling directory.
+
+> Schema-v2 rewrite status and the full design rationale live in
+> `~/.claude/plans/majestic-wiggling-dongarra.md`; the production audit trail is
+> `docs/PRODUCTION-READINESS.md`.
+
+---
+
+## The platform flow
+
+This is the journey the product models, end to end. Every step is seeded in
+`migrations/0133_full_platform_seed_demo.sql` (20 numbered phases — read it top
+to bottom and the flow reads itself), and the tables each step writes are named
+so you can follow the data.
+
+| # | Phase | What happens | Key tables |
+|---|---|---|---|
+| 0 | **Platform** | We publish marketing content, define default GST rates, and bill each tenant on a plan. | `tax_rates`, `blog_posts`, `faqs`, `cms_pages`, `platform_subscriptions`, `app_builds` |
+| 1 | **Lead → onboarding** | A website enquiry converts; a tenant + its settings + custom domain + owner account are created (self-serve). | `leads`, `tenants`, `tenant_settings`, `tenant_domains`, `users`, `auth_identities`, `tenant_users` |
+| 2 | **Team** | Owner adds an admin, instructors, front-desk staff, and parent accounts. | `tenant_users`, `user_profiles`, `course_instructors`, `device_tokens`, `notification_preferences` |
+| 3 | **Students sign up** | Phone-OTP signup (auto-`student` role), profile with class/board/exam-goal/guardian, a wallet, a referral code. | `users`, `user_profiles`, `wallets`, `referral_codes` |
+| 4 | **Curriculum** | Exam categories (platform) → subjects → chapters → topics (per tenant). | `exam_categories`, `subjects`, `chapters`, `topics` |
+| 5 | **Catalog** | Courses (free taster / flagship paid / in-review), sections, batches, a recurring weekly schedule. | `courses`, `course_sections`, `batches`, `class_schedules` |
+| 6 | **Content** | Typed content bodies, a video asset with 360/720/1080 renditions, live sessions (one ended → recording + chat), and one `course_lesson` of **every** kind (video / document / link / live_session / quiz / assignment). | `content_videos`, `content_documents`, `content_links`, `video_assets`, `video_renditions`, `live_sessions`, `recordings`, `session_messages`, `qr_check_ins`, `course_lessons` |
+| 7 | **Assessment** | A reusable question bank (all 5 kinds) with options; a DPP and a full mock built from it. | `question_bank`, `question_options`, `tests`, `test_sections`, `test_questions` |
+| 8 | **Commerce catalogue** | A `product` + active `price` for each sellable thing (course / bundle / plan / fee-plan); a 2-course bundle; a subscription plan; a fee plan; a launch coupon. | `products`, `prices`, `course_bundles`, `bundle_items`, `subscription_plans`, `fee_plans`, `coupons`, `coupon_products` |
+| 9 | **Paid course purchase** *(the core money flow)* | `order` (paid, coupon applied) → `order_item` (GST split) → `payment` (captured) + Razorpay-Route split → `entitlement` (`source=purchase`) → `enrollment` → **gapless GST invoice** + line item → `coupon_redemption` → `webhook_event` (the captured event) → `outbox` (course.purchased) → `audit_log`. | `orders`, `order_items`, `payments`, `payment_splits`, `entitlements`, `enrollments`, `invoice_number_series`, `invoices`, `invoice_line_items`, `coupon_redemptions`, `webhook_events`, `outbox`, `audit_logs` |
+| 10 | **Refund** | Partial goodwill refund → `refund` → **credit note** (own gapless numbering) → order → `partially_refunded`. Entitlement/enrolment stay. | `refunds`, `credit_note_number_series`, `credit_notes`, `credit_note_line_items` |
+| 11 | **Bundle purchase** | One order → **two** entitlements (fan-out) → two enrolments → inter-state invoice (IGST). | `orders`, `order_items`, `payments`, `entitlements`, `enrollments`, `invoices` |
+| 12 | **Subscription** | `subscription` (active, trial) + order + payment + `entitlement` (`source=subscription`, expires at period end) + invoice. | `subscriptions`, `orders`, `payments`, `entitlements`, `invoices` |
+| 13 | **Fee plan** | `fee_account` + 3 `fee_installments`; instalment 1 paid via its own order + payment. | `fee_accounts`, `fee_installments`, `orders`, `payments` |
+| 14 | **Manual grant + gift** | Admin comps a scholarship student (`source=manual_grant`); owner gifts the free course (`source=gift`, redeemed by code). | `entitlements`, `course_gifts` |
+| 15 | **Learning activity** | Lesson progress, bookmarks, a graded test attempt with responses, attendance (present/late/absent), doubts (AI + accepted instructor answer), an assignment submission (submitted + graded), a completion certificate. | `content_progress`, `lesson_bookmarks`, `test_attempts`, `test_responses`, `attendance`, `doubts`, `doubt_answers`, `assignments`, `assignment_submissions`, `certificates` |
+| 16 | **Engagement** | Course reviews, a forum thread + posts (instructor-highlighted), in-course chat, badges + grants, learning streaks, wishlists. | `course_reviews`, `forum_threads`, `forum_posts`, `course_chat_messages`, `badges`, `badge_grants`, `learning_streaks`, `wishlists` |
+| 17 | **Referral + payout** | A student who signed up via a referral link buys → referrer gets a ₹500 wallet credit; an instructor revenue-share payout is queued. | `referral_events`, `wallet_transactions`, `wallets`, `payouts`, `payout_items` |
+| 18 | **Communication** | In-app notifications (one read) + per-channel deliveries; tenant + batch announcements; a 2-way WhatsApp thread. | `notifications`, `notification_deliveries`, `announcements`, `messaging_threads`, `messaging_messages` |
+| 19 | **Platform ops** | Homepage banner, a background job, an active refresh-token session, a consumed OTP, super-admin audit rows. | `banners`, `jobs`, `refresh_tokens`, `otp_codes`, `audit_logs` |
+
+The seed guarantees **every one of the 114 tables has data** — asserted by
+`internal/database/seed_completeness_test.go`.
+
+---
+
+## Core conventions
+
+- **Money is `bigint` minor units (paise) + a `currency` column** — never
+  `float`/`numeric`. `internal/money` has the `Money` type and the GST split
+  helpers (`SplitGSTInclusive`: CGST/SGST intra-state, IGST inter-state, odd
+  paise absorbed into SGST/IGST). Prices are stored **GST-inclusive**.
+- **Access is decoupled from payment.** `entitlements` is the single
+  access-grant source (`source` = `purchase | subscription | coupon |
+  manual_grant | fee_plan | gift | bundle`). `enrollments` is a thin per-course
+  progress projection of an entitlement. Content checks read entitlements.
+- **Typed product registry.** `products(kind, course_id|bundle_id|plan_id|
+  fee_plan_id)` — exactly one ref set (DB CHECK). `prices` holds one active
+  `amount_minor` per product.
+- **Commerce flow:** `products → prices → orders → order_items → payments →
+  entitlements → enrollments → invoices`. Checkout + verify is one transaction;
+  the GST invoice is generated **inside** the capture tx (`internal/billing`),
+  so per-tenant/per-financial-year invoice numbering is gapless on the happy
+  path (`INV/2026-27/000001`). A rollback is GST-acceptable ("cancel via credit
+  note").
+- **Row-level security on every tenant table.** `internal/database/postgres.go`
+  `BeforeAcquire` sets the `app.tenant_id` / `app.user_id` / `app.is_super_admin`
+  GUCs on whichever pooled connection serves each query, from the context tags
+  `database.WithTenant` / `WithSuperAdmin` / `WithPublicLookup`. The app connects
+  as `app_user` (NOSUPERUSER NOBYPASSRLS); the server refuses to boot as a
+  superuser. Migration `0110` fails if any tenant table lacks the policies;
+  `internal/middleware/rls_matrix_test.go` re-checks + runs a cross-tenant deny
+  matrix.
+- **Auth: phone-OTP + Google only** (no passwords). Opaque DB-backed refresh
+  tokens with family rotation + reuse detection. `role` is resolved from
+  `tenant_users` per tenant; `super_admin` is not a `tenant_role` — `issueTokens`
+  promotes it when `users.is_platform_super_admin`. `switch-org` re-mints the JWT.
+
+---
+
+## Local setup
 
 ```bash
-# Using OBS Studio or FFmpeg
-ffmpeg -re -i input.mp4 -c:v libx264 -c:a aac \
-  -f flv rtmp://localhost:1935/live/{stream_key}
+# 1. infra (Postgres, Redis, Kafka, MinIO, nginx-rtmp)
+docker compose up -d
+
+# 2. migrations + seeds (idempotent; applies migrations/*.sql in order)
+./scripts/migrate.sh              # skips *_seed_demo.sql only when APP_ENV=production
+
+# 3. codegen
+make sqlc        # sqlc generate  -> internal/database/db  (gitignored)
+make proto       # buf lint + generate -> gen/proto        (gitignored)
+make swagger     # swag init -> docs
+
+# 4. run
+go run ./cmd/server              # :3000  (+ :50051 if GRPC_PORT set)
 ```
 
-### For Students
+`make bootstrap` chains steps 1–3. `make dev` runs the server with hot-reload.
+The other binaries: `cmd/scheduleworker` (materialises `class_schedules` →
+`live_sessions`), `cmd/watermarker`.
 
-Watch the HLS stream:
-
-```
-http://localhost:8080/hls/{stream_key}.m3u8
-```
-
-## Docker Services
-
-The `docker-compose.yml` includes:
-
-- **PostgreSQL** (port 5432): Database
-- **Redis** (port 6379): Cache & sessions
-- **MinIO** (ports 9000, 9001): Object storage
-- **Kafka** (port 9092): Event streaming
-- **Nginx-RTMP** (ports 1935, 8080): Streaming server
-- **App** (port 3000): Go Fiber API
-
-### Docker Commands
+The reference frontend:
 
 ```bash
-# Start all services
-make docker-up
-
-# Stop all services
-make docker-down
-
-# View logs
-make docker-logs
-
-# Rebuild containers
-make docker-build
-
-# Back up the DB to MinIO / restore a backup into a scratch DB
-make backup
-make restore
+cd ../school-web && bun install && bun run dev     # :3001, expects the API on :3000
 ```
 
-Optional overlays for things you don't need running by default in local
-dev:
+---
+
+## Dev credentials & modes
+
+All logins are phone-OTP. In dev the OTP is **`123456`** (`OTP_DEV_MODE=true`).
+
+| Who | Org code | Phone |
+|---|---|---|
+| **Platform super-admin** | `PLATFORM` | `+919000000000` |
+| Minimal demo tenant admin | `DEMO` | `+919000000001` |
+| **Full-showcase tenant** — owner/admin | `VWSTUDY` | `+919000100001` |
+| … admin | `VWSTUDY` | `+919000100002` |
+| … instructors | `VWSTUDY` | `+919000100003`, `+919000100004` |
+| … students | `VWSTUDY` | `+919000100010` … `+919000100015` |
+
+Dev-only env flags (all refused in production by `config.Validate`):
+
+- `OTP_DEV_MODE=true` — OTP delivery is faked, code is `OTP_DEV_CODE` (default `123456`).
+- `RAZORPAY_DEV_MODE=true` — the gateway is faked: `CreateOrder` returns a
+  synthetic `order_dev…` id, signature checks pass, refunds are faked. **The
+  entire checkout → invoice → refund → credit-note flow runs with no Razorpay
+  account** (the portal detects `order_dev…` and skips the hosted modal).
+- `GRPC_PORT=50051` — also start the gRPC server (off by default).
+- `APP_ENV=production` — makes `scripts/migrate.sh` skip every `*_seed_demo.sql`.
+
+---
+
+## API
+
+- **REST** — base `/api/v1`. Interactive docs at `http://localhost:3000/swagger`.
+  `/health` (liveness), `/health/deep` (Postgres/Redis/MinIO/Kafka), `/metrics`
+  (Prometheus).
+- **gRPC** — on `GRPC_PORT` when set. Server reflection is on outside production,
+  so `grpcurl -plaintext localhost:50051 list` works. Services are thin adapters
+  over the same `internal/*` service layer as REST (no logic duplication);
+  `internal/grpcserver`. `proto/live/v1/*.proto` → `gen/proto/` via `make proto`.
+  `CourseService` is implemented; the other domains follow the same
+  proto + adapter + `Register` pattern.
+
+---
+
+## Testing
 
 ```bash
-# Prometheus + Grafana + Alertmanager
-docker-compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+go test ./...                                   # unit tests, no infra needed
 
-# Caddy (TLS-terminating reverse proxy) — real deploys only, needs
-# API_DOMAIN/ACME_EMAIL and a real domain pointed at the host
-API_DOMAIN=api.example.com ACME_EMAIL=ops@example.com \
-  docker-compose -f docker-compose.yml -f docker-compose.caddy.yml up -d caddy
+# integration tests — need a migrated + seeded DB:
+TEST_DATABASE_URL='postgres://app_user:app_user_dev_password@localhost:5432/live_platform?sslmode=disable' \
+SCHEMA_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/live_platform?sslmode=disable' \
+go test ./...
 ```
 
-## Development
+Integration coverage (skipped when the env vars are unset):
 
-### Run with Hot-Reload (Recommended)
+- `internal/money` — GST split unit + 5000-case reconstitution property test.
+- `internal/middleware` — cross-tenant RLS isolation + a per-table deny matrix
+  (102 tables checked for ENABLE+FORCE+policies).
+- `internal/billing` — 50-goroutine gapless invoice-numbering test.
+- `internal/webhooks` — event-level idempotency (`ON CONFLICT DO NOTHING`).
+- `internal/database` — schema-v2 invariants (no float money, every FK indexed,
+  no FK cycles) **and `TestFullDemoSeed_EveryTablePopulated`** — every table has
+  ≥1 row after seeding.
 
-Using Air for automatic reloading on code changes:
+CI (`.github/workflows/backend.yml`) runs lint, sqlc-drift, build + test.
 
-```bash
-make dev
+---
+
+## Repo layout
+
+```
+cmd/
+  server/            REST + (optional) gRPC + Kafka consumer
+  scheduleworker/    class_schedules -> live_sessions materialiser
+  watermarker/       recording watermark worker
+internal/            ~65 domain packages (auth, courses, courseorders,
+                     billing, subscriptions, fees, tests, attendance,
+                     doubts, engagement, notifications, platformadmin, …)
+  database/          pool + BeforeAcquire RLS hook, sqlc output (gitignored)
+  money/             the Money type + GST helpers
+  billing/           GST invoices + credit notes
+  grpcserver/        gRPC adapters over the service layer
+migrations/          0001…0133 — single NNNN_name.sql files, applied in order
+sql/queries/         sqlc query definitions (12 domain files)
+proto/               buf v2 module; gen/proto/ is generated (gitignored)
+scripts/             migrate.sh, migrate-scratch.sh, setup.sh
+docs/                PRODUCTION-READINESS.md, MOBILE.md
 ```
 
-This will:
-- Watch for file changes
-- Automatically rebuild and restart the server
-- Show build errors in real-time
+---
 
-### Run Locally (without Docker)
+## Infra (docker compose)
 
-1. Start infrastructure services:
-```bash
-make docker-up
-```
+`postgres:16`, `redis:7`, `kafka` (KRaft), `minio`, `nginx-rtmp` (RTMP
+`:1935`, HLS `:8080`). Overlays: `docker-compose.observability.yml`
+(Prometheus + Grafana), `docker-compose.caddy.yml` (automatic TLS incl.
+on-demand certs for tenant custom domains).
 
-2. Run migrations:
-```bash
-make migrate-up
-```
+---
 
-3. Generate SQLC:
-```bash
-make sqlc
-```
+## Architecture decisions
 
-4. Run the server:
-```bash
-make run
-```
+- **Modular monolith** — one deployable, clear package boundaries, one pool.
+- **Type-safe data layer** — sqlc generates Go from SQL; `SELECT *` / `RETURNING *`
+  are banned so the API shape can't drift silently.
+- **RLS is the security boundary**, not application `WHERE` clauses — enforced
+  at the DB, asserted by migrations and tests, tests run as the restricted role.
+- **Event-driven where it helps** — direct Kafka emit today, `outbox` table +
+  idempotent consumers as the migration path to a transactional outbox drain.
+- **GST-first billing** — immutable invoices, gapless numbering, credit notes;
+  e-invoicing/IRN columns reserved.
 
-### Database Migrations
+## Production considerations
 
-```bash
-# Apply every migrations/*.sql in order (idempotent — safe to re-run)
-make migrate-up
-```
-
-There's no rollback path — these are plain forward-only SQL files, not
-paired up/down migrations, and only one migration in the whole history
-ever had a real (fully-commented-out) down section. To undo a bad
-migration, restore from a pre-migration backup instead — see
-`docs/runbooks/backup-restore.md` (in the monorepo root) and
-`make backup`/`make restore`.
-
-### Generate SQLC Code
-
-After modifying SQL queries or schemas:
-
-```bash
-make sqlc
-```
-
-## Environment Variables
-
-Copy `.env.example` to `.env` and configure:
-
-```env
-SERVER_PORT=3000
-ENV=development
-
-# Database
-DB_HOST=localhost
-DB_PORT=5432
-DB_USER=postgres
-DB_PASSWORD=postgres
-DB_NAME=live_platform
-
-# Redis
-REDIS_HOST=localhost
-REDIS_PORT=6379
-
-# Kafka
-KAFKA_BROKER=localhost:9092
-
-# MinIO
-MINIO_ENDPOINT=localhost:9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
-
-# JWT
-JWT_ACCESS_SECRET=your-secret-key
-JWT_REFRESH_SECRET=your-refresh-secret
-JWT_ACCESS_EXPIRY=15m
-JWT_REFRESH_EXPIRY=7d
-```
-
-## Testing with cURL
-
-### Complete Flow Example
-
-```bash
-# 1. Register an instructor
-curl -X POST http://localhost:3000/api/v1/auth/register/instructor \
-  -H "Content-Type: application/json" \
-  -d '{"email":"teacher@test.com","username":"teacher1","password":"pass123","full_name":"Test Teacher"}'
-
-# 2. Login
-TOKEN=$(curl -X POST http://localhost:3000/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"teacher@test.com","password":"pass123"}' | jq -r '.access_token')
-
-# 3. Create a stream
-STREAM=$(curl -X POST http://localhost:3000/api/v1/streams \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"title":"My First Stream","description":"Test stream","scheduled_at":"2025-12-01T10:00:00Z"}')
-
-STREAM_ID=$(echo $STREAM | jq -r '.id')
-STREAM_KEY=$(echo $STREAM | jq -r '.stream_key')
-
-# 4. Start the stream
-curl -X POST http://localhost:3000/api/v1/streams/$STREAM_ID/start \
-  -H "Authorization: Bearer $TOKEN"
-
-# 5. Start broadcasting (use OBS or FFmpeg with the stream_key)
-# rtmp://localhost:1935/live/$STREAM_KEY
-
-# 6. List live streams
-curl http://localhost:3000/api/v1/streams/live
-```
-
-## Architecture Decisions
-
-- **Modular Monolith**: Single repository with clear module boundaries
-- **Clean Architecture**: Separation of handlers, services, and repositories
-- **Type-Safe Queries**: SQLC generates Go code from SQL
-- **Dependency Injection**: Services injected into handlers
-- **Event-Driven**: Kafka for async processing
-- **Stateless API**: JWT tokens, no server-side sessions
-
-## Production Considerations
-
-This list used to undersell the backend — most of it was already done and
-just never checked off. Kept current as of 2026-07-27; see
-`docs/production-checklist.md` (in the monorepo root, one level up) for
-the full audit trail and what's still genuinely open.
-
-- [x] Enable HTTPS/TLS — `docker/Caddyfile` (automatic Let's Encrypt for
-      the main domain + on-demand TLS for tenant custom domains, gated by
-      an ask endpoint); `TLS_CERT_FILE`/`TLS_KEY_FILE` remain as a
-      manual-cert fallback for non-Caddy deploys.
-- [x] Add rate limiting — per-IP (`middleware.RateLimit`) and per-tenant
-      (`middleware.RateLimitPerTenant`, so one tenant's traffic spike
-      can't throttle another tenant sharing an IP/NAT).
-- [x] Implement proper logging (structured logs) — `slog`, JSON output.
-- [x] Add monitoring (Prometheus, Grafana) — `/metrics` +
-      `docker/observability/` (dashboard + alert rules + optional
-      `docker-compose.observability.yml` overlay).
-- [x] Set up CI/CD pipeline — `.github/workflows/backend.yml` (lint,
-      sqlc-drift check, build + test on every push/PR).
-- [x] Configure database connection pooling — tuned pgx pool
-      (`DB_MAX_CONNS`/`DB_MIN_CONNS`/etc.), plus a `db_pool_connections`
-      Prometheus gauge so saturation shows up before it causes queuing.
-- [x] Add request validation middleware — `go-playground/validator`.
-- [x] Implement graceful shutdown — configurable timeout in `cmd/server`.
-- [x] Add health checks for all services — `/health` (liveness) and
-      `/health/deep` (pings Postgres, Redis, MinIO, Kafka).
-- [ ] Use proper secrets management (AWS Secrets Manager, Vault, or
-      similar) — still plain env vars today. `docs/runbooks/rotate-secrets.md`
-      documents a solid manual rotation process (dual-secret grace
-      window), but there's no automated secret store yet; fine for a
-      single operator, worth revisiting once more people touch prod env
-      vars.
+- [x] HTTPS/TLS — `docker/Caddyfile` (Let's Encrypt + on-demand TLS for tenant
+      domains); `TLS_CERT_FILE`/`TLS_KEY_FILE` fallback.
+- [x] Rate limiting — per-IP (`middleware.RateLimit`) and per-tenant.
+- [x] Structured logging — `slog`, JSON.
+- [x] Monitoring — `/metrics` + `docker/observability/`.
+- [x] CI — `.github/workflows/backend.yml` (lint, sqlc-drift, build + test).
+- [x] Tuned pgx pool + `db_pool_connections` gauge.
+- [x] Request validation — `go-playground/validator`.
+- [x] Graceful shutdown — configurable timeout.
+- [x] Deep health checks — `/health`, `/health/deep`.
+- [x] RLS coverage — migration `0110` gate + `rls_matrix_test.go`.
+- [ ] Secrets management — plain env vars today; manual rotation runbook exists
+      (`docs/runbooks/rotate-secrets.md`), no automated store yet.
+- [ ] Transactional outbox **drain worker** — table + writer ship; direct Kafka
+      emit + idempotent consumers cover it for now.
+- [ ] The other ~29 gRPC domain services (CourseService is the template).
 
 ## License
 
 MIT
-
-## Support
-
-For issues and questions, please open a GitHub issue.
