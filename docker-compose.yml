@@ -196,8 +196,16 @@ services:
       JWT_ACCESS_EXPIRY: 15m
       JWT_REFRESH_EXPIRY: 7d
       RTMP_SERVER_URL: rtmp://nginx-rtmp:1935/live
+      # --- Local dev conveniences (config.Validate() rejects these when
+      #     ENV=production, so they are safe to leave here). ---
+      OTP_DEV_MODE: "true"          # accept OTP_DEV_CODE for any number, no SMS
+      OTP_DEV_CODE: "123456"
+      OTP_MAX_SENDS_PER_HOUR: "100000"
+      RAZORPAY_DEV_MODE: "true"     # fake the gateway — full checkout with no keys
+      GRPC_PORT: "50051"            # also serve gRPC
     ports:
       - "3000:3000"
+      - "50051:50051"
     depends_on:
       postgres:
         condition: service_healthy
