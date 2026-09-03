@@ -541,6 +541,14 @@ BEGIN
     VALUES (t_id, cpn, u_stuA, ord_A, 49990);
     UPDATE coupons SET used_count = used_count + 1 WHERE id = cpn;
 
+    -- A 100%-off promo coupon also unlocked the free companion course for
+    -- student A — a standalone coupon grant (no order). Covers the 7th
+    -- entitlement_source enum value, 'coupon'.
+    INSERT INTO entitlements (tenant_id, user_id, product_id, product_kind, source, granted_at)
+    VALUES (t_id, u_stuA, p_course_free, 'course', 'coupon', now() - interval '9 days');
+    INSERT INTO enrollments (tenant_id, user_id, course_id, batch_id, status, started_at)
+    VALUES (t_id, u_stuA, c_free, NULL, 'active', now() - interval '9 days');
+
     -- GST invoice — gapless per-tenant per-FY numbering.
     INSERT INTO invoice_number_series (tenant_id, fin_year, prefix, next_seq)
     VALUES (t_id, fy, 'VW', 2)  -- allocates seq 1, next is 2

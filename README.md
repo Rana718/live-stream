@@ -179,7 +179,8 @@ Integration coverage (skipped when the env vars are unset):
   no FK cycles) **and `TestFullDemoSeed_EveryTablePopulated`** — every table has
   ≥1 row after seeding.
 
-CI (`.github/workflows/backend.yml`) runs lint, sqlc-drift, build + test.
+CI (`.github/workflows/backend.yml`) runs `go build`/`go vet`/`go test -race`,
+sqlc-drift, and `buf lint` + `buf generate`-drift on every PR.
 
 ---
 

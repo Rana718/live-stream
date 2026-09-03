@@ -1,0 +1,104 @@
+name: backend
+
+on:
+  pull_request:
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'proto/**'
+      - 'gen/proto/**'
+      - 'sql/**'
+      - 'sqlc.yaml'
+      - 'migrations/**'
+      - '.github/workflows/backend.yml'
+  push:
+    branches: [feature/schema-v2, main]
+
+env:
+  BUF_VERSION: '1.47.2'
+  SQLC_VERSION: '1.31.0'
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: live_platform
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      PGPASSWORD: postgres
+      TEST_DATABASE_URL: postgres://app_user:app_user_dev_password@localhost:5432/live_platform?sslmode=disable
+      SCHEMA_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/live_platform?sslmode=disable
+      REDIS_URL: redis://localhost:6379/0
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # buf breaking needs branch history
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Install tools (buf, sqlc)
+        run: |
+          go install "github.com/bufbuild/buf/cmd/buf@v${BUF_VERSION}"
+          curl -fsSL "https://downloads.sqlc.dev/sqlc_${SQLC_VERSION}_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin sqlc
+
+      - name: sqlc generate — no drift
+        run: |
+          sqlc generate
+          git diff --exit-code -- internal/database/db \
+            || (echo '::error::internal/database/db is stale — run `make sqlc`' && exit 1)
+
+      - name: buf lint
+        working-directory: proto
+        run: buf lint
+
+      - name: buf generate — no drift
+        run: |
+          cd proto && buf generate && cd ..
+          git diff --exit-code -- gen/proto \
+            || (echo '::error::gen/proto is stale — run `make proto`' && exit 1)
+
+      - name: buf breaking
+        working-directory: proto
+        continue-on-error: true # flip to false once the per-domain proto restructure has landed on the base branch
+        run: buf breaking --against '.git#branch=feature/schema-v2'
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Apply migrations
+        run: |
+          for f in $(find migrations -maxdepth 1 -name '*.sql' | sort); do
+            echo "applying $(basename "$f")"
+            psql -h localhost -U postgres -d live_platform -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+
+      - name: go test
+        run: go test ./... -race -count=1
