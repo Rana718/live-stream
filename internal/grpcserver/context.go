@@ -47,6 +47,9 @@ func requireTenant(ctx context.Context) (caller, error) {
 	return c, nil
 }
 
+// permDenied is the canonical "not allowed" status for inline platform-scope checks.
+var permDenied = status.Error(codes.PermissionDenied, "insufficient permissions")
+
 // require enforces a role allowlist (super_admin always passes).
 func (c caller) require(roles ...string) error {
 	if c.Super {

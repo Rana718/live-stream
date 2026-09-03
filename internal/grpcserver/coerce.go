@@ -8,6 +8,12 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// Short aliases for the sqlc column wrappers, used across adapters.
+type (
+	pgText = pgtype.Text
+	pgUUID = pgtype.UUID
+)
+
 // Coercion helpers for the handful of service methods that still return
 // map[string]any (internal/tests attempts, parts of platformadmin/billing).
 // Each tolerates the pgtype wrappers, bare Go types, pointers and nil.

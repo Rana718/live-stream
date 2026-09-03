@@ -96,9 +96,17 @@ var publicMethods = map[string]bool{
 // under database.WithPublicLookup (the public catalog surface). With a token
 // they run fully scoped like any other method.
 var optionalAuthMethods = map[string]bool{
-	"/live.courses.v1.CourseService/ListCourses":   true,
-	"/live.courses.v1.CourseService/GetCourse":     true,
-	"/live.courses.v1.CourseService/SearchCourses": true,
+	"/live.courses.v1.CourseService/ListCourses":             true,
+	"/live.courses.v1.CourseService/GetCourse":               true,
+	"/live.courses.v1.CourseService/SearchCourses":           true,
+	"/live.exams.v1.ExamCategoryService/ListExamCategories":  true,
+	"/live.exams.v1.ExamCategoryService/GetExamCategory":     true,
+	"/live.subjects.v1.SubjectService/ListSubjects":          true,
+	"/live.subjects.v1.SubjectService/GetSubject":            true,
+	"/live.chapters.v1.ChapterService/ListChaptersBySubject": true,
+	"/live.chapters.v1.ChapterService/GetChapter":            true,
+	"/live.topics.v1.TopicService/ListTopicsByChapter":       true,
+	"/live.topics.v1.TopicService/GetTopic":                  true,
 }
 
 // authInterceptor mirrors internal/middleware auth + tenant context.

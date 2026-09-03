@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package live.exams.v1;
+
+// ExamCategoryService — platform-level exam categories (JEE › JEE Main …).
+// Public read; super-admin write. Thin transport over internal/exams.
+service ExamCategoryService {
+  rpc ListExamCategories(ListExamCategoriesRequest) returns (ListExamCategoriesResponse);
+  rpc GetExamCategory(GetExamCategoryRequest) returns (GetExamCategoryResponse);
+  rpc CreateExamCategory(CreateExamCategoryRequest) returns (CreateExamCategoryResponse);
+  rpc UpdateExamCategory(UpdateExamCategoryRequest) returns (UpdateExamCategoryResponse);
+  rpc DeleteExamCategory(DeleteExamCategoryRequest) returns (DeleteExamCategoryResponse);
+}
+
+message ExamCategory {
+  string id = 1;
+  string parent_id = 2;
+  string name = 3;
+  string slug = 4;
+  string description = 5;
+  string icon_url = 6;
+  int32 display_order = 7;
+  bool is_active = 8;
+}
+
+message ExamCategoryInput {
+  string name = 1;
+  string slug = 2;
+  string description = 3;
+  string icon_url = 4;
+  string parent_id = 5;
+  int32 display_order = 6;
+  optional bool is_active = 7;
+}
+
+message ListExamCategoriesRequest {}
+message ListExamCategoriesResponse { repeated ExamCategory categories = 1; }
+
+message GetExamCategoryRequest { string id = 1; }
+message GetExamCategoryResponse { ExamCategory category = 1; }
+
+message CreateExamCategoryRequest { ExamCategoryInput category = 1; }
+message CreateExamCategoryResponse { ExamCategory category = 1; }
+
+message UpdateExamCategoryRequest {
+  string id = 1;
+  ExamCategoryInput category = 2;
+}
+message UpdateExamCategoryResponse { ExamCategory category = 1; }
+
+message DeleteExamCategoryRequest { string id = 1; }
+message DeleteExamCategoryResponse {}

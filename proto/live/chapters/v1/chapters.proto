@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package live.chapters.v1;
+
+// ChapterService — chapters hang off a subject. Thin transport over
+// internal/chapters.
+service ChapterService {
+  rpc ListChaptersBySubject(ListChaptersBySubjectRequest) returns (ListChaptersBySubjectResponse);
+  rpc GetChapter(GetChapterRequest) returns (GetChapterResponse);
+  rpc CreateChapter(CreateChapterRequest) returns (CreateChapterResponse);
+  rpc UpdateChapter(UpdateChapterRequest) returns (UpdateChapterResponse);
+  rpc DeleteChapter(DeleteChapterRequest) returns (DeleteChapterResponse);
+}
+
+message Chapter {
+  string id = 1;
+  string subject_id = 2;
+  string name = 3;
+  string description = 4;
+  int32 display_order = 5;
+  bool is_free = 6;
+}
+
+message ChapterInput {
+  string subject_id = 1;
+  string name = 2;
+  string description = 3;
+  int32 display_order = 4;
+  bool is_free = 5;
+}
+
+message ListChaptersBySubjectRequest { string subject_id = 1; }
+message ListChaptersBySubjectResponse { repeated Chapter chapters = 1; }
+
+message GetChapterRequest { string id = 1; }
+message GetChapterResponse { Chapter chapter = 1; }
+
+message CreateChapterRequest { ChapterInput chapter = 1; }
+message CreateChapterResponse { Chapter chapter = 1; }
+
+message UpdateChapterRequest {
+  string id = 1;
+  ChapterInput chapter = 2;
+}
+message UpdateChapterResponse { Chapter chapter = 1; }
+
+message DeleteChapterRequest { string id = 1; }
+message DeleteChapterResponse {}

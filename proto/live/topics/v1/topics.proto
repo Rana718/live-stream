@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package live.topics.v1;
+
+// TopicService — topics hang off a chapter. Thin transport over internal/topics.
+service TopicService {
+  rpc ListTopicsByChapter(ListTopicsByChapterRequest) returns (ListTopicsByChapterResponse);
+  rpc GetTopic(GetTopicRequest) returns (GetTopicResponse);
+  rpc CreateTopic(CreateTopicRequest) returns (CreateTopicResponse);
+  rpc UpdateTopic(UpdateTopicRequest) returns (UpdateTopicResponse);
+  rpc DeleteTopic(DeleteTopicRequest) returns (DeleteTopicResponse);
+}
+
+message Topic {
+  string id = 1;
+  string chapter_id = 2;
+  string name = 3;
+  string description = 4;
+  int32 display_order = 5;
+  bool is_free = 6;
+}
+
+message TopicInput {
+  string chapter_id = 1;
+  string name = 2;
+  string description = 3;
+  int32 display_order = 4;
+  bool is_free = 5;
+}
+
+message ListTopicsByChapterRequest { string chapter_id = 1; }
+message ListTopicsByChapterResponse { repeated Topic topics = 1; }
+
+message GetTopicRequest { string id = 1; }
+message GetTopicResponse { Topic topic = 1; }
+
+message CreateTopicRequest { TopicInput topic = 1; }
+message CreateTopicResponse { Topic topic = 1; }
+
+message UpdateTopicRequest {
+  string id = 1;
+  TopicInput topic = 2;
+}
+message UpdateTopicResponse { Topic topic = 1; }
+
+message DeleteTopicRequest { string id = 1; }
+message DeleteTopicResponse {}

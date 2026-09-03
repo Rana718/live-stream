@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package live.subjects.v1;
+
+// SubjectService — tenant-scoped, exam-category-linked subjects, reusable
+// across courses. Thin transport over internal/subjects.
+service SubjectService {
+  rpc ListSubjects(ListSubjectsRequest) returns (ListSubjectsResponse);
+  rpc GetSubject(GetSubjectRequest) returns (GetSubjectResponse);
+  rpc CreateSubject(CreateSubjectRequest) returns (CreateSubjectResponse);
+  rpc UpdateSubject(UpdateSubjectRequest) returns (UpdateSubjectResponse);
+  rpc DeleteSubject(DeleteSubjectRequest) returns (DeleteSubjectResponse);
+}
+
+message Subject {
+  string id = 1;
+  string name = 2;
+  string code = 3;
+  string icon_url = 4;
+  string exam_category_id = 5;
+  int32 display_order = 6;
+}
+
+message SubjectInput {
+  string name = 1;
+  string code = 2;
+  string icon_url = 3;
+  string exam_category_id = 4;
+  int32 display_order = 5;
+}
+
+message ListSubjectsRequest {}
+message ListSubjectsResponse { repeated Subject subjects = 1; }
+
+message GetSubjectRequest { string id = 1; }
+message GetSubjectResponse { Subject subject = 1; }
+
+message CreateSubjectRequest { SubjectInput subject = 1; }
+message CreateSubjectResponse { Subject subject = 1; }
+
+message UpdateSubjectRequest {
+  string id = 1;
+  SubjectInput subject = 2;
+}
+message UpdateSubjectResponse { Subject subject = 1; }
+
+message DeleteSubjectRequest { string id = 1; }
+message DeleteSubjectResponse {}
