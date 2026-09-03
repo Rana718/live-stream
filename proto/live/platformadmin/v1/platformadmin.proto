@@ -1,0 +1,187 @@
+syntax = "proto3";
+
+package live.platformadmin.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// PlatformAdminService — cross-tenant platform operations. Every RPC is
+// gated to super_admin (internal/platformadmin).
+service PlatformAdminService {
+  rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse);
+  rpc SuspendTenant(SuspendTenantRequest) returns (SuspendTenantResponse);
+  rpc ReactivateTenant(ReactivateTenantRequest) returns (ReactivateTenantResponse);
+  rpc UpdateTenantPlan(UpdateTenantPlanRequest) returns (UpdateTenantPlanResponse);
+  rpc SetTenantCustomDomain(SetTenantCustomDomainRequest) returns (SetTenantCustomDomainResponse);
+  rpc SetTenantRazorpayAccount(SetTenantRazorpayAccountRequest) returns (SetTenantRazorpayAccountResponse);
+  rpc GetTenantFeatures(GetTenantFeaturesRequest) returns (GetTenantFeaturesResponse);
+  rpc SetTenantFeatures(SetTenantFeaturesRequest) returns (SetTenantFeaturesResponse);
+  rpc ListPayments(ListPaymentsRequest) returns (ListPaymentsResponse);
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+  rpc SetUserActive(SetUserActiveRequest) returns (SetUserActiveResponse);
+  rpc SetMembershipRole(SetMembershipRoleRequest) returns (SetMembershipRoleResponse);
+  rpc PlatformStats(PlatformStatsRequest) returns (PlatformStatsResponse);
+  rpc LeadStats(LeadStatsRequest) returns (LeadStatsResponse);
+  rpc RecentSignups(RecentSignupsRequest) returns (RecentSignupsResponse);
+  rpc Impersonate(ImpersonateRequest) returns (ImpersonateResponse);
+}
+
+message Tenant {
+  string id = 1;
+  string org_code = 2;
+  string name = 3;
+  string slug = 4;
+  string status = 5;
+  string plan = 6;
+  string billing_email = 7;
+  string razorpay_account_id = 8;
+  google.protobuf.Timestamp trial_ends_at = 9;
+  int64 member_count = 10;
+}
+
+message Payment {
+  string id = 1;
+  string tenant_id = 2;
+  string order_id = 3;
+  string order_code = 4;
+  string user_id = 5;
+  string full_name = 6;
+  string gateway = 7;
+  string gateway_payment_id = 8;
+  string method = 9;
+  string status = 10;
+  live.common.v1.Money amount = 11;
+  google.protobuf.Timestamp captured_at = 12;
+}
+
+message PlatformUser {
+  string id = 1;
+  string full_name = 2;
+  string email = 3;
+  string phone = 4;
+  string status = 5;
+  string role = 6;
+  string tenant_id = 7;
+  string org_code = 8;
+  string tenant_name = 9;
+  google.protobuf.Timestamp created_at = 10;
+}
+
+message Signup {
+  string id = 1;
+  string full_name = 2;
+  string email = 3;
+  string phone = 4;
+  string role = 5;
+  string org_code = 6;
+  string tenant_name = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message ListTenantsRequest {
+  string status = 1;
+  live.common.v1.PageRequest page = 2;
+}
+message ListTenantsResponse { repeated Tenant tenants = 1; }
+
+message SuspendTenantRequest { string tenant_id = 1; }
+message SuspendTenantResponse {}
+
+message ReactivateTenantRequest { string tenant_id = 1; }
+message ReactivateTenantResponse {}
+
+message UpdateTenantPlanRequest {
+  string tenant_id = 1;
+  string plan = 2;
+  string status = 3;
+  google.protobuf.Timestamp trial_ends_at = 4;
+}
+message UpdateTenantPlanResponse {}
+
+message SetTenantCustomDomainRequest {
+  string tenant_id = 1;
+  string domain = 2;
+}
+message SetTenantCustomDomainResponse {}
+
+message SetTenantRazorpayAccountRequest {
+  string tenant_id = 1;
+  string account_id = 2;
+}
+message SetTenantRazorpayAccountResponse {}
+
+message GetTenantFeaturesRequest { string tenant_id = 1; }
+message GetTenantFeaturesResponse { string features_json = 1; }
+
+message SetTenantFeaturesRequest {
+  string tenant_id = 1;
+  string features_json = 2;
+}
+message SetTenantFeaturesResponse { string features_json = 1; }
+
+message ListPaymentsRequest {
+  string status = 1;
+  string tenant_id = 2;
+  live.common.v1.PageRequest page = 3;
+}
+message ListPaymentsResponse { repeated Payment payments = 1; }
+
+message ListUsersRequest {
+  string tenant_id = 1;
+  string role = 2;
+  string query = 3;
+  live.common.v1.PageRequest page = 4;
+}
+message ListUsersResponse {
+  repeated PlatformUser users = 1;
+  int64 total = 2;
+}
+
+message SetUserActiveRequest {
+  string user_id = 1;
+  bool active = 2;
+}
+message SetUserActiveResponse {}
+
+message SetMembershipRoleRequest {
+  string tenant_id = 1;
+  string user_id = 2;
+  string role = 3;
+}
+message SetMembershipRoleResponse {}
+
+message PlatformStatsRequest {}
+message PlatformStatsResponse {
+  int64 total_tenants = 1;
+  int64 active_tenants = 2;
+  int64 trial_tenants = 3;
+  int64 suspended_tenants = 4;
+  int64 total_users = 5;
+  int64 total_memberships = 6;
+  int64 total_courses = 7;
+  int64 live_sessions_now = 8;
+  int64 mrr_minor = 9;
+}
+
+message LeadStatsRequest {}
+message LeadStatsResponse {
+  int64 total_leads = 1;
+  int64 new_leads = 2;
+  int64 contacted_leads = 3;
+  int64 qualified_leads = 4;
+  int64 converted_leads = 5;
+  int64 lost_leads = 6;
+}
+
+message RecentSignupsRequest { int32 limit = 1; }
+message RecentSignupsResponse { repeated Signup signups = 1; }
+
+message ImpersonateRequest { string tenant_id = 1; }
+message ImpersonateResponse {
+  string access_token = 1;
+  string tenant_id = 2;
+  string tenant_name = 3;
+  string org_code = 4;
+  string user_id = 5;
+  google.protobuf.Timestamp expires_at = 6;
+}

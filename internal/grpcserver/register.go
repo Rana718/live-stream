@@ -6,6 +6,7 @@ import (
 	assignmentsv1 "live-platform/gen/proto/live/assignments/v1"
 	attendancev1 "live-platform/gen/proto/live/attendance/v1"
 	auditv1 "live-platform/gen/proto/live/audit/v1"
+	authv1 "live-platform/gen/proto/live/auth/v1"
 	bannersv1 "live-platform/gen/proto/live/banners/v1"
 	batchesv1 "live-platform/gen/proto/live/batches/v1"
 	billingv1 "live-platform/gen/proto/live/billing/v1"
@@ -25,6 +26,7 @@ import (
 	leadsv1 "live-platform/gen/proto/live/leads/v1"
 	lecturesv1 "live-platform/gen/proto/live/lectures/v1"
 	notificationsv1 "live-platform/gen/proto/live/notifications/v1"
+	platformadminv1 "live-platform/gen/proto/live/platformadmin/v1"
 	referralsv1 "live-platform/gen/proto/live/referrals/v1"
 	schedulev1 "live-platform/gen/proto/live/schedule/v1"
 	searchv1 "live-platform/gen/proto/live/search/v1"
@@ -38,6 +40,7 @@ import (
 	"live-platform/internal/assignments"
 	"live-platform/internal/attendance"
 	"live-platform/internal/audit"
+	"live-platform/internal/auth"
 	"live-platform/internal/banners"
 	"live-platform/internal/batches"
 	"live-platform/internal/billing"
@@ -58,6 +61,7 @@ import (
 	"live-platform/internal/leads"
 	"live-platform/internal/lectures"
 	"live-platform/internal/notifications"
+	"live-platform/internal/platformadmin"
 	"live-platform/internal/referrals"
 	"live-platform/internal/schedule"
 	"live-platform/internal/search"
@@ -123,4 +127,10 @@ func registerAll(s *grpc.Server, cfg *config.Config, d Deps) {
 	tenantsv1.RegisterTenantServiceServer(s, NewTenantServer(tenants.NewService(d.Pool)))
 	cmsv1.RegisterCmsServiceServer(s, NewCmsServer(cms.NewService(d.Pool)))
 	engagementv1.RegisterEngagementServiceServer(s, NewEngagementServer(engagement.NewService(d.Pool)))
+
+	// --- Auth / platform ---
+	authSvc := auth.NewService(d.Pool, d.Redis, cfg).WithSMS(d.SMS).WithReferrer(referralSvc).WithGoogle(d.Google)
+	authv1.RegisterAuthServiceServer(s, NewAuthServer(authSvc))
+	platformadminv1.RegisterPlatformAdminServiceServer(s, NewPlatformAdminServer(
+		platformadmin.NewService(d.Pool).WithRazorpay(d.Razorpay), cfg.JWT.AccessSecret))
 }

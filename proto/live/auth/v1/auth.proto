@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package live.auth.v1;
+
+// AuthService — phone-OTP + Google sign-in (schema-v2 has no passwords).
+// SendOtp / VerifyOtp / GoogleLogin / RefreshToken / SwitchOrg are
+// unauthenticated (allowlisted in the interceptor); the Link* / Logout / Me
+// RPCs require a bearer token.
+service AuthService {
+  rpc SendOtp(SendOtpRequest) returns (SendOtpResponse);
+  rpc VerifyOtp(VerifyOtpRequest) returns (VerifyOtpResponse);
+  rpc GoogleLogin(GoogleLoginRequest) returns (GoogleLoginResponse);
+  rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  rpc SwitchOrg(SwitchOrgRequest) returns (SwitchOrgResponse);
+  rpc LinkPhone(LinkPhoneRequest) returns (LinkPhoneResponse);
+  rpc LinkGoogle(LinkGoogleRequest) returns (LinkGoogleResponse);
+}
+
+message UserInfo {
+  string id = 1;
+  string email = 2;
+  string phone = 3;
+  string full_name = 4;
+  string role = 5;
+  string tenant_id = 6;
+  bool is_platform_super_admin = 7;
+}
+
+message TokenBundle {
+  string access_token = 1;
+  string refresh_token = 2;
+  int32 expires_in = 3;
+  UserInfo user = 4;
+}
+
+message SendOtpRequest {
+  string phone = 1;
+  string org_code = 2;
+}
+message SendOtpResponse {
+  bool sent = 1;
+  string dev_code = 2; // only in OTP_DEV_MODE
+}
+
+message VerifyOtpRequest {
+  string phone = 1;
+  string code = 2;
+  string org_code = 3;
+  string referral_code = 4;
+}
+message VerifyOtpResponse { TokenBundle tokens = 1; }
+
+message GoogleLoginRequest {
+  string id_token = 1;
+  string org_code = 2;
+  string referral_code = 3;
+}
+message GoogleLoginResponse { TokenBundle tokens = 1; }
+
+message RefreshTokenRequest { string refresh_token = 1; }
+message RefreshTokenResponse { TokenBundle tokens = 1; }
+
+message LogoutRequest { string refresh_token = 1; }
+message LogoutResponse {}
+
+message SwitchOrgRequest { string target_tenant_id = 1; }
+message SwitchOrgResponse { TokenBundle tokens = 1; }
+
+message LinkPhoneRequest {
+  string phone = 1;
+  string code = 2;
+  string org_code = 3;
+}
+message LinkPhoneResponse {}
+
+message LinkGoogleRequest { string id_token = 1; }
+message LinkGoogleResponse {}

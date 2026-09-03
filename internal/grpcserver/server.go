@@ -85,12 +85,13 @@ func Start(ctx context.Context, s *grpc.Server, port string) error {
 
 // publicMethods skip token validation entirely (login / OTP / refresh).
 var publicMethods = map[string]bool{
-	"/live.auth.v1.AuthService/SendOtp":      true,
-	"/live.auth.v1.AuthService/VerifyOtp":    true,
-	"/live.auth.v1.AuthService/GoogleLogin":  true,
-	"/live.auth.v1.AuthService/RefreshToken": true,
-	"/live.auth.v1.AuthService/ResolveOrg":   true,
-	"/live.leads.v1.LeadService/CreateLead":  true,
+	"/live.auth.v1.AuthService/SendOtp":               true,
+	"/live.auth.v1.AuthService/VerifyOtp":             true,
+	"/live.auth.v1.AuthService/GoogleLogin":           true,
+	"/live.auth.v1.AuthService/RefreshToken":          true,
+	"/live.leads.v1.LeadService/CreateLead":           true,
+	"/live.tenants.v1.TenantService/LookupByOrgCode":  true,
+	"/live.tenants.v1.TenantService/SelfServeOnboard": true,
 }
 
 // optionalAuthMethods accept an anonymous caller — with no token they run
