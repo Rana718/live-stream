@@ -20,6 +20,18 @@ FROM course_reviews WHERE tenant_id = $1 AND course_id = $2 AND is_approved;
 -- name: SetReviewApproved :exec
 UPDATE course_reviews SET is_approved = $2 WHERE id = $1;
 
+-- name: AdminListCourseReviews :many
+SELECT r.id, r.rating, r.body, r.is_approved, r.created_at,
+       u.full_name, c.title AS course_title
+FROM course_reviews r
+JOIN users u ON u.id = r.user_id
+JOIN courses c ON c.id = r.course_id
+WHERE r.tenant_id = $1
+ORDER BY r.created_at DESC LIMIT $2 OFFSET $3;
+
+-- name: DeleteCourseReview :exec
+DELETE FROM course_reviews WHERE tenant_id = $1 AND id = $2;
+
 -- name: CreateForumThread :one
 INSERT INTO forum_threads (tenant_id, course_id, user_id, title, body)
 VALUES ($1, sqlc.narg(course_id)::uuid, $2, $3, COALESCE(sqlc.narg(body)::text, ''))
@@ -52,6 +64,12 @@ WHERE p.thread_id = $1 ORDER BY p.created_at LIMIT $2 OFFSET $3;
 -- name: HighlightForumPost :exec
 UPDATE forum_posts SET is_instructor_highlight = $2 WHERE id = $1;
 
+-- name: SetForumThreadPinned :exec
+UPDATE forum_threads SET is_pinned = $3 WHERE tenant_id = $1 AND id = $2;
+
+-- name: SetForumThreadLocked :exec
+UPDATE forum_threads SET is_locked = $3 WHERE tenant_id = $1 AND id = $2;
+
 -- name: PostCourseChat :one
 INSERT INTO course_chat_messages (tenant_id, course_id, user_id, body) VALUES ($1, $2, $3, $4)
 RETURNING id, course_id, user_id, body, created_at;
@@ -76,7 +94,7 @@ WHERE g.tenant_id = $1 AND g.user_id = $2 ORDER BY g.earned_at DESC;
 
 -- name: UpsertLearningStreak :one
 INSERT INTO learning_streaks (tenant_id, user_id, last_active_date, current_streak, longest_streak, total_points)
-VALUES ($1, $2, current_date, 1, 1, sqlc.narg(points)::int)
+VALUES ($1, $2, current_date, 1, 1, COALESCE(sqlc.narg(points)::int, 0))
 ON CONFLICT (tenant_id, user_id) DO UPDATE SET
     current_streak = CASE
         WHEN learning_streaks.last_active_date = current_date THEN learning_streaks.current_streak
@@ -91,6 +109,13 @@ RETURNING current_streak, longest_streak, total_points;
 -- name: GetLearningStreak :one
 SELECT current_streak, longest_streak, total_points, last_active_date
 FROM learning_streaks WHERE tenant_id = $1 AND user_id = $2;
+
+-- name: LeaderboardByPoints :many
+SELECT ls.user_id, u.full_name, u.avatar_url, ls.total_points, ls.current_streak
+FROM learning_streaks ls JOIN users u ON u.id = ls.user_id
+WHERE ls.tenant_id = $1
+ORDER BY ls.total_points DESC, ls.current_streak DESC, u.full_name ASC
+LIMIT $2;
 
 -- name: AddToWishlist :exec
 INSERT INTO wishlists (tenant_id, user_id, course_id) VALUES ($1, $2, $3)
@@ -114,3 +139,12 @@ RETURNING id, redemption_code, recipient_phone, recipient_email, created_at;
 UPDATE course_gifts SET redeemed_by = $2, redeemed_at = now(), entitlement_id = sqlc.narg(entitlement_id)::uuid
 WHERE redemption_code = $1 AND redeemed_at IS NULL
 RETURNING id, tenant_id, sender_id, product_id, redeemed_by;
+
+-- name: ListMyCourseGifts :many
+SELECT g.id, g.recipient_phone, g.recipient_email, g.redemption_code,
+       g.redeemed_at, g.message, g.created_at, c.title AS course_title
+FROM course_gifts g
+LEFT JOIN products p ON p.id = g.product_id
+LEFT JOIN courses c ON c.id = p.course_id
+WHERE g.tenant_id = $1 AND g.sender_id = $2
+ORDER BY g.created_at DESC;

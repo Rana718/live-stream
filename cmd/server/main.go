@@ -36,6 +36,7 @@ import (
 	"live-platform/internal/doubts"
 	"live-platform/internal/downloads"
 	"live-platform/internal/email"
+	"live-platform/internal/engagement"
 	"live-platform/internal/enrollments"
 	"live-platform/internal/events"
 	"live-platform/internal/exams"
@@ -962,6 +963,38 @@ func main() {
 	bm.Get("/", bookmarkHandler.ListMine)
 	bm.Get("/lecture/:lecture_id", bookmarkHandler.ListForLecture)
 	bm.Delete("/:id", bookmarkHandler.Delete)
+
+	// Engagement — reviews, forum, gamification, wishlist, gifts, course chat.
+	engagementHandler := engagement.NewHandler(engagement.NewService(pgPool))
+	engPub := api.Group("/engagement", catalogAuth, catalogCtx)
+	engPub.Get("/courses/:id/reviews", engagementHandler.ListReviews)
+	engPub.Get("/courses/:id/review-summary", engagementHandler.ReviewSummary)
+	engPub.Get("/badges", engagementHandler.ListBadges)
+
+	eng := api.Group("/engagement", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext())
+	eng.Post("/courses/:id/reviews", middleware.StudentOrAbove(), engagementHandler.UpsertReview)
+	eng.Get("/forum/threads", engagementHandler.ListThreads)
+	eng.Post("/forum/threads", middleware.StudentOrAbove(), engagementHandler.CreateThread)
+	eng.Get("/forum/threads/:id/posts", engagementHandler.ListPosts)
+	eng.Post("/forum/threads/:id/posts", middleware.StudentOrAbove(), engagementHandler.CreatePost)
+	eng.Get("/gamification/me", engagementHandler.MyGamification)
+	eng.Post("/gamification/check-in", engagementHandler.CheckIn)
+	eng.Get("/gamification/leaderboard", engagementHandler.Leaderboard)
+	eng.Get("/wishlist", engagementHandler.ListWishlist)
+	eng.Post("/wishlist", engagementHandler.AddWishlist)
+	eng.Delete("/wishlist/:course_id", engagementHandler.RemoveWishlist)
+	eng.Post("/gifts", engagementHandler.CreateGift)
+	eng.Get("/gifts/mine", engagementHandler.ListMyGifts)
+	eng.Post("/gifts/redeem", engagementHandler.RedeemGift)
+	eng.Get("/courses/:course_id/chat", engagementHandler.ListCourseChat)
+	eng.Post("/courses/:course_id/chat", engagementHandler.SendCourseChat)
+
+	engAdmin := api.Group("/admin/engagement", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.AdminOnly())
+	engAdmin.Get("/reviews", engagementHandler.AdminListReviews)
+	engAdmin.Post("/reviews/:id/approve", engagementHandler.SetReviewApproved)
+	engAdmin.Delete("/reviews/:id", engagementHandler.DeleteReview)
+	engAdmin.Post("/forum/threads/:id/pin", engagementHandler.SetThreadPinned)
+	engAdmin.Post("/forum/threads/:id/lock", engagementHandler.SetThreadLocked)
 
 	// Admin
 	adm := api.Group("/admin", middleware.AuthMiddleware(&cfg.JWT), middleware.TenantContext(), middleware.AdminOnly())
