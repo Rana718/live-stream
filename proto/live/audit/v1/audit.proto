@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package live.audit.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// AuditService — read-only tenant audit trail (internal/audit). Admin only.
+service AuditService {
+  rpc ListAuditLogs(ListAuditLogsRequest) returns (ListAuditLogsResponse);
+}
+
+message AuditLog {
+  string id = 1;
+  string actor_user_id = 2;
+  string actor_role = 3;
+  string action = 4;
+  string entity_type = 5;
+  string entity_id = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message ListAuditLogsRequest { live.common.v1.PageRequest page = 1; }
+message ListAuditLogsResponse { repeated AuditLog logs = 1; }

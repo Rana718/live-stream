@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package live.devices.v1;
+
+// DeviceService — push-notification device tokens (internal/devices).
+service DeviceService {
+  rpc RegisterDevice(RegisterDeviceRequest) returns (RegisterDeviceResponse);
+  rpc UnregisterDevice(UnregisterDeviceRequest) returns (UnregisterDeviceResponse);
+  rpc ListMyDeviceTokens(ListMyDeviceTokensRequest) returns (ListMyDeviceTokensResponse);
+}
+
+message RegisterDeviceRequest {
+  string token = 1;
+  string platform = 2; // android | ios | web
+}
+message RegisterDeviceResponse {}
+
+message UnregisterDeviceRequest { string token = 1; }
+message UnregisterDeviceResponse {}
+
+message ListMyDeviceTokensRequest {}
+message ListMyDeviceTokensResponse { repeated string tokens = 1; }

@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package live.admin.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// AdminService — tenant-admin operations: dashboard, member management,
+// course approvals (internal/admin). Admin only.
+service AdminService {
+  rpc DashboardStats(DashboardStatsRequest) returns (DashboardStatsResponse);
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
+  rpc UpdateMember(UpdateMemberRequest) returns (UpdateMemberResponse);
+  rpc SetMemberRole(SetMemberRoleRequest) returns (SetMemberRoleResponse);
+  rpc SetMemberActive(SetMemberActiveRequest) returns (SetMemberActiveResponse);
+  rpc DeleteMember(DeleteMemberRequest) returns (DeleteMemberResponse);
+  rpc ListPendingCourses(ListPendingCoursesRequest) returns (ListPendingCoursesResponse);
+  rpc ApproveCourse(ApproveCourseRequest) returns (ApproveCourseResponse);
+  rpc RejectCourse(RejectCourseRequest) returns (RejectCourseResponse);
+}
+
+message DashboardStats {
+  int64 total_courses = 1;
+  int64 published_courses = 2;
+  int64 total_students = 3;
+  int64 total_instructors = 4;
+  int64 total_enrollments = 5;
+  int64 revenue_minor = 6;
+  int64 paid_orders = 7;
+}
+
+message Member {
+  string user_id = 1;
+  string full_name = 2;
+  string email = 3;
+  string phone = 4;
+  string role = 5;
+  string status = 6;
+  string membership_status = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp last_login_at = 9;
+}
+
+message PendingCourse {
+  string id = 1;
+  string title = 2;
+  string slug = 3;
+  string created_by = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message DashboardStatsRequest {}
+message DashboardStatsResponse { DashboardStats stats = 1; }
+
+message ListMembersRequest {
+  string role = 1;
+  string query = 2;
+  live.common.v1.PageRequest page = 3;
+}
+message ListMembersResponse { repeated Member members = 1; }
+
+message UpdateMemberRequest {
+  string user_id = 1;
+  string full_name = 2;
+  string email = 3;
+  string phone = 4;
+}
+message UpdateMemberResponse { Member member = 1; }
+
+message SetMemberRoleRequest {
+  string user_id = 1;
+  string role = 2;
+}
+message SetMemberRoleResponse {}
+
+message SetMemberActiveRequest {
+  string user_id = 1;
+  bool active = 2;
+}
+message SetMemberActiveResponse {}
+
+message DeleteMemberRequest { string user_id = 1; }
+message DeleteMemberResponse {}
+
+message ListPendingCoursesRequest { live.common.v1.PageRequest page = 1; }
+message ListPendingCoursesResponse { repeated PendingCourse courses = 1; }
+
+message ApproveCourseRequest { string course_id = 1; }
+message ApproveCourseResponse {}
+
+message RejectCourseRequest {
+  string course_id = 1;
+  string reason = 2;
+}
+message RejectCourseResponse {}

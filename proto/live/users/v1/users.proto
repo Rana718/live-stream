@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package live.users.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// UserService — the caller's own profile + onboarding, and (admin) the
+// tenant member list. internal/users.
+service UserService {
+  rpc GetMyProfile(GetMyProfileRequest) returns (GetMyProfileResponse);
+  rpc UpdateMyBasics(UpdateMyBasicsRequest) returns (UpdateMyBasicsResponse);
+  rpc CompleteOnboarding(CompleteOnboardingRequest) returns (CompleteOnboardingResponse);
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
+}
+
+message Profile {
+  string id = 1;
+  string email = 2;
+  string phone = 3;
+  string full_name = 4;
+  string avatar_url = 5;
+  string role = 6;
+  string tenant_id = 7;
+  string class_level = 8;
+  string board = 9;
+  string exam_goal = 10;
+  string guardian_name = 11;
+  string guardian_phone = 12;
+  bool onboarding_completed = 13;
+}
+
+message Member {
+  string user_id = 1;
+  string full_name = 2;
+  string email = 3;
+  string phone = 4;
+  string role = 5;
+  string status = 6;
+  google.protobuf.Timestamp joined_at = 7;
+}
+
+message GetMyProfileRequest {}
+message GetMyProfileResponse { Profile profile = 1; }
+
+message UpdateMyBasicsRequest {
+  string full_name = 1;
+  string avatar_url = 2;
+}
+message UpdateMyBasicsResponse {}
+
+message CompleteOnboardingRequest {
+  string full_name = 1;
+  string class_level = 2;
+  string board = 3;
+  string exam_goal = 4;
+  string guardian_name = 5;
+  string guardian_phone = 6;
+}
+message CompleteOnboardingResponse {}
+
+message ListMembersRequest {
+  string role = 1; // optional filter
+  live.common.v1.PageRequest page = 2;
+}
+message ListMembersResponse { repeated Member members = 1; }

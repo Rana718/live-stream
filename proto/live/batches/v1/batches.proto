@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package live.batches.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// BatchService — course cohorts (internal/batches).
+service BatchService {
+  rpc ListBatchesByCourse(ListBatchesByCourseRequest) returns (ListBatchesByCourseResponse);
+  rpc ListMyBatches(ListMyBatchesRequest) returns (ListMyBatchesResponse);
+  rpc GetBatch(GetBatchRequest) returns (GetBatchResponse);
+  rpc CreateBatch(CreateBatchRequest) returns (CreateBatchResponse);
+  rpc UpdateBatch(UpdateBatchRequest) returns (UpdateBatchResponse);
+  rpc DeleteBatch(DeleteBatchRequest) returns (DeleteBatchResponse);
+}
+
+message Batch {
+  string id = 1;
+  string course_id = 2;
+  string name = 3;
+  string description = 4;
+  string instructor_id = 5;
+  google.protobuf.Timestamp starts_on = 6;
+  google.protobuf.Timestamp ends_on = 7;
+  int32 max_students = 8;
+  bool is_active = 9;
+}
+
+message BatchInput {
+  string course_id = 1;
+  string name = 2;
+  string description = 3;
+  string instructor_id = 4;
+  google.protobuf.Timestamp starts_on = 5;
+  google.protobuf.Timestamp ends_on = 6;
+  int32 max_students = 7;
+  bool is_active = 8;
+}
+
+message ListBatchesByCourseRequest { string course_id = 1; }
+message ListBatchesByCourseResponse { repeated Batch batches = 1; }
+
+message ListMyBatchesRequest { live.common.v1.PageRequest page = 1; }
+message ListMyBatchesResponse { repeated Batch batches = 1; }
+
+message GetBatchRequest { string id = 1; }
+message GetBatchResponse { Batch batch = 1; }
+
+message CreateBatchRequest { BatchInput batch = 1; }
+message CreateBatchResponse { Batch batch = 1; }
+
+message UpdateBatchRequest {
+  string id = 1;
+  BatchInput batch = 2;
+}
+message UpdateBatchResponse { Batch batch = 1; }
+
+message DeleteBatchRequest { string id = 1; }
+message DeleteBatchResponse {}
