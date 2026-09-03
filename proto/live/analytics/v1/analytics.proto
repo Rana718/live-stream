@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package live.analytics.v1;
+
+// AnalyticsService — learner stats + tenant dashboards (internal/analytics).
+service AnalyticsService {
+  rpc GetMyStats(GetMyStatsRequest) returns (GetMyStatsResponse);
+  rpc GetMyWeakTopics(GetMyWeakTopicsRequest) returns (GetMyWeakTopicsResponse);
+  rpc GetMyDifficultyBreakdown(GetMyDifficultyBreakdownRequest) returns (GetMyDifficultyBreakdownResponse);
+  rpc GetMyRecentAttempts(GetMyRecentAttemptsRequest) returns (GetMyRecentAttemptsResponse);
+  rpc GetTenantDashboard(GetTenantDashboardRequest) returns (GetTenantDashboardResponse);
+  rpc GetTenantTopCourses(GetTenantTopCoursesRequest) returns (GetTenantTopCoursesResponse);
+}
+
+message UserStats {
+  int64 total_attempts = 1;
+  int64 completed_attempts = 2;
+  double average_score = 3;
+  double best_score = 4;
+  int64 total_time_seconds = 5;
+  double avg_time_per_question_seconds = 6;
+  int64 watched_seconds = 7;
+  int64 completed_lectures = 8;
+}
+
+message TopicAccuracy {
+  string topic_id = 1;
+  int64 total_answers = 2;
+  int64 correct_answers = 3;
+  double accuracy_percent = 4;
+}
+
+message DifficultyBreakdown {
+  string difficulty = 1;
+  int64 total_answers = 2;
+  int64 correct_answers = 3;
+}
+
+message RecentAttempt {
+  string id = 1;
+  string test_id = 2;
+  string test_title = 3;
+  double score = 4;
+  int32 correct_count = 5;
+  int32 wrong_count = 6;
+  int32 time_taken_seconds = 7;
+  string status = 8;
+}
+
+message TenantDashboard {
+  int64 total_courses = 1;
+  int64 published_courses = 2;
+  int64 total_students = 3;
+  int64 total_instructors = 4;
+  int64 total_enrollments = 5;
+  int64 revenue_minor = 6;
+  int64 paid_orders = 7;
+}
+
+message TopCourse {
+  string course_id = 1;
+  string title = 2;
+  int64 enrollments = 3;
+  int64 revenue_minor = 4;
+}
+
+message GetMyStatsRequest {}
+message GetMyStatsResponse { UserStats stats = 1; }
+
+message GetMyWeakTopicsRequest { int32 limit = 1; }
+message GetMyWeakTopicsResponse { repeated TopicAccuracy topics = 1; }
+
+message GetMyDifficultyBreakdownRequest {}
+message GetMyDifficultyBreakdownResponse { repeated DifficultyBreakdown rows = 1; }
+
+message GetMyRecentAttemptsRequest { int32 limit = 1; }
+message GetMyRecentAttemptsResponse { repeated RecentAttempt attempts = 1; }
+
+message GetTenantDashboardRequest {}
+message GetTenantDashboardResponse { TenantDashboard dashboard = 1; }
+
+message GetTenantTopCoursesRequest { int32 limit = 1; }
+message GetTenantTopCoursesResponse { repeated TopCourse courses = 1; }

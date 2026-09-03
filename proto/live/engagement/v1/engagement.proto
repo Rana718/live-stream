@@ -1,0 +1,237 @@
+syntax = "proto3";
+
+package live.engagement.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// EngagementService — course reviews, forum, gamification, wishlist, gifts
+// and course chat (internal/engagement). Mirrors the /engagement/* REST routes.
+service EngagementService {
+  rpc ListReviews(ListReviewsRequest) returns (ListReviewsResponse);
+  rpc GetReviewSummary(GetReviewSummaryRequest) returns (GetReviewSummaryResponse);
+  rpc UpsertReview(UpsertReviewRequest) returns (UpsertReviewResponse);
+  rpc AdminListReviews(AdminListReviewsRequest) returns (AdminListReviewsResponse);
+  rpc SetReviewApproved(SetReviewApprovedRequest) returns (SetReviewApprovedResponse);
+  rpc DeleteReview(DeleteReviewRequest) returns (DeleteReviewResponse);
+
+  rpc ListThreads(ListThreadsRequest) returns (ListThreadsResponse);
+  rpc CreateThread(CreateThreadRequest) returns (CreateThreadResponse);
+  rpc ListPosts(ListPostsRequest) returns (ListPostsResponse);
+  rpc CreatePost(CreatePostRequest) returns (CreatePostResponse);
+  rpc SetThreadPinned(SetThreadPinnedRequest) returns (SetThreadPinnedResponse);
+  rpc SetThreadLocked(SetThreadLockedRequest) returns (SetThreadLockedResponse);
+
+  rpc ListBadges(ListBadgesRequest) returns (ListBadgesResponse);
+  rpc GetMyGamification(GetMyGamificationRequest) returns (GetMyGamificationResponse);
+  rpc CheckIn(CheckInRequest) returns (CheckInResponse);
+  rpc Leaderboard(LeaderboardRequest) returns (LeaderboardResponse);
+
+  rpc ListWishlist(ListWishlistRequest) returns (ListWishlistResponse);
+  rpc AddWishlist(AddWishlistRequest) returns (AddWishlistResponse);
+  rpc RemoveWishlist(RemoveWishlistRequest) returns (RemoveWishlistResponse);
+
+  rpc CreateGift(CreateGiftRequest) returns (CreateGiftResponse);
+  rpc ListMyGifts(ListMyGiftsRequest) returns (ListMyGiftsResponse);
+  rpc RedeemGift(RedeemGiftRequest) returns (RedeemGiftResponse);
+
+  rpc ListCourseChat(ListCourseChatRequest) returns (ListCourseChatResponse);
+  rpc SendCourseChat(SendCourseChatRequest) returns (SendCourseChatResponse);
+}
+
+message Review {
+  string id = 1;
+  int32 rating = 2;
+  string body = 3;
+  string full_name = 4;
+  bool is_approved = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+message Thread {
+  string id = 1;
+  string title = 2;
+  bool is_pinned = 3;
+  bool is_locked = 4;
+  int32 reply_count = 5;
+  string full_name = 6;
+  google.protobuf.Timestamp last_reply_at = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message Post {
+  string id = 1;
+  string body = 2;
+  bool is_instructor_highlight = 3;
+  string full_name = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message Badge {
+  string id = 1;
+  string code = 2;
+  string name = 3;
+  string description = 4;
+  string icon = 5;
+  int32 points = 6;
+  google.protobuf.Timestamp earned_at = 7;
+}
+
+message Gamification {
+  int32 current_streak = 1;
+  int32 longest_streak = 2;
+  int32 total_points = 3;
+  repeated Badge badges = 4;
+}
+
+message LeaderRow {
+  string user_id = 1;
+  string full_name = 2;
+  int32 points = 3;
+  int32 streak = 4;
+}
+
+message WishlistItem {
+  string course_id = 1;
+  string title = 2;
+  string slug = 3;
+  string thumbnail_url = 4;
+}
+
+message Gift {
+  string id = 1;
+  string recipient_phone = 2;
+  string recipient_email = 3;
+  string redemption_code = 4;
+  string course_title = 5;
+  google.protobuf.Timestamp redeemed_at = 6;
+}
+
+message ChatMessage {
+  string id = 1;
+  string body = 2;
+  string full_name = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message ListReviewsRequest {
+  string course_id = 1;
+  live.common.v1.PageRequest page = 2;
+}
+message ListReviewsResponse { repeated Review reviews = 1; }
+
+message GetReviewSummaryRequest { string course_id = 1; }
+message GetReviewSummaryResponse {
+  double average = 1;
+  int64 count = 2;
+}
+
+message UpsertReviewRequest {
+  string course_id = 1;
+  int32 rating = 2;
+  string body = 3;
+}
+message UpsertReviewResponse { Review review = 1; }
+
+message AdminListReviewsRequest { live.common.v1.PageRequest page = 1; }
+message AdminListReviewsResponse { repeated Review reviews = 1; }
+
+message SetReviewApprovedRequest {
+  string review_id = 1;
+  bool approved = 2;
+}
+message SetReviewApprovedResponse {}
+
+message DeleteReviewRequest { string review_id = 1; }
+message DeleteReviewResponse {}
+
+message ListThreadsRequest {
+  string course_id = 1;
+  live.common.v1.PageRequest page = 2;
+}
+message ListThreadsResponse { repeated Thread threads = 1; }
+
+message CreateThreadRequest {
+  string course_id = 1;
+  string title = 2;
+  string body = 3;
+}
+message CreateThreadResponse { string id = 1; }
+
+message ListPostsRequest {
+  string thread_id = 1;
+  live.common.v1.PageRequest page = 2;
+}
+message ListPostsResponse { repeated Post posts = 1; }
+
+message CreatePostRequest {
+  string thread_id = 1;
+  string body = 2;
+}
+message CreatePostResponse {
+  string id = 1;
+  bool is_instructor_highlight = 2;
+}
+
+message SetThreadPinnedRequest {
+  string thread_id = 1;
+  bool pinned = 2;
+}
+message SetThreadPinnedResponse {}
+
+message SetThreadLockedRequest {
+  string thread_id = 1;
+  bool locked = 2;
+}
+message SetThreadLockedResponse {}
+
+message ListBadgesRequest {}
+message ListBadgesResponse { repeated Badge badges = 1; }
+
+message GetMyGamificationRequest {}
+message GetMyGamificationResponse { Gamification gamification = 1; }
+
+message CheckInRequest {}
+message CheckInResponse { Gamification gamification = 1; }
+
+message LeaderboardRequest { int32 limit = 1; }
+message LeaderboardResponse { repeated LeaderRow rows = 1; }
+
+message ListWishlistRequest {}
+message ListWishlistResponse { repeated WishlistItem items = 1; }
+
+message AddWishlistRequest { string course_id = 1; }
+message AddWishlistResponse {}
+
+message RemoveWishlistRequest { string course_id = 1; }
+message RemoveWishlistResponse {}
+
+message CreateGiftRequest {
+  string product_id = 1;
+  string order_id = 2;
+  string recipient_phone = 3;
+  string recipient_email = 4;
+  string message = 5;
+}
+message CreateGiftResponse {
+  string id = 1;
+  string code = 2;
+}
+
+message ListMyGiftsRequest {}
+message ListMyGiftsResponse { repeated Gift gifts = 1; }
+
+message RedeemGiftRequest { string code = 1; }
+message RedeemGiftResponse { string product_id = 1; }
+
+message ListCourseChatRequest {
+  string course_id = 1;
+  live.common.v1.PageRequest page = 2;
+}
+message ListCourseChatResponse { repeated ChatMessage messages = 1; }
+
+message SendCourseChatRequest {
+  string course_id = 1;
+  string body = 2;
+}
+message SendCourseChatResponse { string id = 1; }

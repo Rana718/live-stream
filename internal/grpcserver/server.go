@@ -113,6 +113,12 @@ var optionalAuthMethods = map[string]bool{
 	"/live.lectures.v1.LectureService/ListSections":          true,
 	"/live.batches.v1.BatchService/ListBatchesByCourse":      true,
 	"/live.batches.v1.BatchService/GetBatch":                 true,
+	"/live.tenants.v1.TenantService/LookupByOrgCode":         true,
+	"/live.tenants.v1.TenantService/SelfServeOnboard":        true,
+	"/live.cms.v1.CmsService/ListPublishedPosts":             true,
+	"/live.cms.v1.CmsService/GetPostBySlug":                  true,
+	"/live.cms.v1.CmsService/GetCmsPage":                     true,
+	"/live.cms.v1.CmsService/ListFaqs":                       true,
 }
 
 // authInterceptor mirrors internal/middleware auth + tenant context.

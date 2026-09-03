@@ -1,0 +1,117 @@
+syntax = "proto3";
+
+package live.cms.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// CmsService — marketing blog posts, FAQs and CMS pages (internal/cms).
+// Public reads; super-admin writes.
+service CmsService {
+  rpc ListPublishedPosts(ListPublishedPostsRequest) returns (ListPublishedPostsResponse);
+  rpc GetPostBySlug(GetPostBySlugRequest) returns (GetPostBySlugResponse);
+  rpc AdminListPosts(AdminListPostsRequest) returns (AdminListPostsResponse);
+  rpc UpsertPost(UpsertPostRequest) returns (UpsertPostResponse);
+  rpc DeletePost(DeletePostRequest) returns (DeletePostResponse);
+  rpc ListFaqs(ListFaqsRequest) returns (ListFaqsResponse);
+  rpc UpsertFaq(UpsertFaqRequest) returns (UpsertFaqResponse);
+  rpc DeleteFaq(DeleteFaqRequest) returns (DeleteFaqResponse);
+  rpc GetCmsPage(GetCmsPageRequest) returns (GetCmsPageResponse);
+  rpc UpsertCmsPage(UpsertCmsPageRequest) returns (UpsertCmsPageResponse);
+}
+
+message BlogPost {
+  string id = 1;
+  string slug = 2;
+  string title = 3;
+  string excerpt = 4;
+  string body_html = 5;
+  string cover_url = 6;
+  string author_name = 7;
+  repeated string tags = 8;
+  int32 minutes_read = 9;
+  google.protobuf.Timestamp published_at = 10;
+}
+
+message Faq {
+  string id = 1;
+  string category = 2;
+  string question = 3;
+  string answer_html = 4;
+  bool show_on_home = 5;
+  bool is_active = 6;
+  int32 display_order = 7;
+}
+
+message CmsPage {
+  string slug = 1;
+  string title = 2;
+  string body_html = 3;
+  string seo_title = 4;
+  string seo_desc = 5;
+  bool is_published = 6;
+}
+
+message ListPublishedPostsRequest { live.common.v1.PageRequest page = 1; }
+message ListPublishedPostsResponse { repeated BlogPost posts = 1; }
+
+message GetPostBySlugRequest { string slug = 1; }
+message GetPostBySlugResponse { BlogPost post = 1; }
+
+message AdminListPostsRequest { live.common.v1.PageRequest page = 1; }
+message AdminListPostsResponse { repeated BlogPost posts = 1; }
+
+message UpsertPostRequest {
+  string id = 1; // empty to create
+  string slug = 2;
+  string title = 3;
+  string excerpt = 4;
+  string body_html = 5;
+  string body_json = 6;
+  string cover_url = 7;
+  string author_name = 8;
+  repeated string tags = 9;
+  int32 minutes_read = 10;
+  string seo_title = 11;
+  string seo_desc = 12;
+  google.protobuf.Timestamp published_at = 13;
+}
+message UpsertPostResponse { BlogPost post = 1; }
+
+message DeletePostRequest { string id = 1; }
+message DeletePostResponse {}
+
+message ListFaqsRequest {
+  string category = 1;
+  bool home_only = 2;
+  bool admin = 3;
+}
+message ListFaqsResponse { repeated Faq faqs = 1; }
+
+message UpsertFaqRequest {
+  string id = 1; // empty to create
+  string category = 2;
+  string question = 3;
+  string answer_html = 4;
+  bool show_on_home = 5;
+  optional bool is_active = 6;
+  int32 display_order = 7;
+}
+message UpsertFaqResponse { Faq faq = 1; }
+
+message DeleteFaqRequest { string id = 1; }
+message DeleteFaqResponse {}
+
+message GetCmsPageRequest { string slug = 1; }
+message GetCmsPageResponse { CmsPage page = 1; }
+
+message UpsertCmsPageRequest {
+  string slug = 1;
+  string title = 2;
+  string body_html = 3;
+  string body_json = 4;
+  string seo_title = 5;
+  string seo_desc = 6;
+  optional bool is_published = 7;
+}
+message UpsertCmsPageResponse { CmsPage page = 1; }

@@ -2,6 +2,7 @@ package grpcserver
 
 import (
 	adminv1 "live-platform/gen/proto/live/admin/v1"
+	analyticsv1 "live-platform/gen/proto/live/analytics/v1"
 	assignmentsv1 "live-platform/gen/proto/live/assignments/v1"
 	attendancev1 "live-platform/gen/proto/live/attendance/v1"
 	auditv1 "live-platform/gen/proto/live/audit/v1"
@@ -11,11 +12,13 @@ import (
 	bookmarksv1 "live-platform/gen/proto/live/bookmarks/v1"
 	bundlesv1 "live-platform/gen/proto/live/bundles/v1"
 	chaptersv1 "live-platform/gen/proto/live/chapters/v1"
+	cmsv1 "live-platform/gen/proto/live/cms/v1"
 	couponsv1 "live-platform/gen/proto/live/coupons/v1"
 	courseordersv1 "live-platform/gen/proto/live/courseorders/v1"
 	coursesv1 "live-platform/gen/proto/live/courses/v1"
 	devicesv1 "live-platform/gen/proto/live/devices/v1"
 	doubtsv1 "live-platform/gen/proto/live/doubts/v1"
+	engagementv1 "live-platform/gen/proto/live/engagement/v1"
 	enrollmentsv1 "live-platform/gen/proto/live/enrollments/v1"
 	examsv1 "live-platform/gen/proto/live/exams/v1"
 	feesv1 "live-platform/gen/proto/live/fees/v1"
@@ -27,9 +30,11 @@ import (
 	searchv1 "live-platform/gen/proto/live/search/v1"
 	subjectsv1 "live-platform/gen/proto/live/subjects/v1"
 	subscriptionsv1 "live-platform/gen/proto/live/subscriptions/v1"
+	tenantsv1 "live-platform/gen/proto/live/tenants/v1"
 	topicsv1 "live-platform/gen/proto/live/topics/v1"
 	usersv1 "live-platform/gen/proto/live/users/v1"
 	"live-platform/internal/admin"
+	"live-platform/internal/analytics"
 	"live-platform/internal/assignments"
 	"live-platform/internal/attendance"
 	"live-platform/internal/audit"
@@ -38,6 +43,7 @@ import (
 	"live-platform/internal/billing"
 	"live-platform/internal/bookmarks"
 	"live-platform/internal/chapters"
+	"live-platform/internal/cms"
 	"live-platform/internal/config"
 	"live-platform/internal/coupons"
 	"live-platform/internal/coursebundles"
@@ -45,6 +51,7 @@ import (
 	"live-platform/internal/courses"
 	"live-platform/internal/devices"
 	"live-platform/internal/doubts"
+	"live-platform/internal/engagement"
 	"live-platform/internal/enrollments"
 	"live-platform/internal/exams"
 	"live-platform/internal/fees"
@@ -56,6 +63,7 @@ import (
 	"live-platform/internal/search"
 	"live-platform/internal/subjects"
 	"live-platform/internal/subscriptions"
+	"live-platform/internal/tenants"
 	"live-platform/internal/topics"
 	"live-platform/internal/users"
 
@@ -109,4 +117,10 @@ func registerAll(s *grpc.Server, cfg *config.Config, d Deps) {
 	feesv1.RegisterFeeServiceServer(s, NewFeeServer(fees.NewService(d.Pool, d.Razorpay), keyID))
 	couponsv1.RegisterCouponServiceServer(s, NewCouponServer(coupons.NewService(d.Pool)))
 	billingv1.RegisterBillingServiceServer(s, NewBillingServer(billing.NewService(d.Pool)))
+
+	// --- Analytics / tenant / cms / engagement ---
+	analyticsv1.RegisterAnalyticsServiceServer(s, NewAnalyticsServer(analytics.NewService(d.Pool)))
+	tenantsv1.RegisterTenantServiceServer(s, NewTenantServer(tenants.NewService(d.Pool)))
+	cmsv1.RegisterCmsServiceServer(s, NewCmsServer(cms.NewService(d.Pool)))
+	engagementv1.RegisterEngagementServiceServer(s, NewEngagementServer(engagement.NewService(d.Pool)))
 }
