@@ -5,6 +5,7 @@ import (
 	assignmentsv1 "live-platform/gen/proto/live/assignments/v1"
 	attendancev1 "live-platform/gen/proto/live/attendance/v1"
 	auditv1 "live-platform/gen/proto/live/audit/v1"
+	bannersv1 "live-platform/gen/proto/live/banners/v1"
 	batchesv1 "live-platform/gen/proto/live/batches/v1"
 	bookmarksv1 "live-platform/gen/proto/live/bookmarks/v1"
 	chaptersv1 "live-platform/gen/proto/live/chapters/v1"
@@ -13,7 +14,12 @@ import (
 	doubtsv1 "live-platform/gen/proto/live/doubts/v1"
 	enrollmentsv1 "live-platform/gen/proto/live/enrollments/v1"
 	examsv1 "live-platform/gen/proto/live/exams/v1"
+	leadsv1 "live-platform/gen/proto/live/leads/v1"
 	lecturesv1 "live-platform/gen/proto/live/lectures/v1"
+	notificationsv1 "live-platform/gen/proto/live/notifications/v1"
+	referralsv1 "live-platform/gen/proto/live/referrals/v1"
+	schedulev1 "live-platform/gen/proto/live/schedule/v1"
+	searchv1 "live-platform/gen/proto/live/search/v1"
 	subjectsv1 "live-platform/gen/proto/live/subjects/v1"
 	topicsv1 "live-platform/gen/proto/live/topics/v1"
 	usersv1 "live-platform/gen/proto/live/users/v1"
@@ -21,6 +27,7 @@ import (
 	"live-platform/internal/assignments"
 	"live-platform/internal/attendance"
 	"live-platform/internal/audit"
+	"live-platform/internal/banners"
 	"live-platform/internal/batches"
 	"live-platform/internal/bookmarks"
 	"live-platform/internal/chapters"
@@ -30,7 +37,12 @@ import (
 	"live-platform/internal/doubts"
 	"live-platform/internal/enrollments"
 	"live-platform/internal/exams"
+	"live-platform/internal/leads"
 	"live-platform/internal/lectures"
+	"live-platform/internal/notifications"
+	"live-platform/internal/referrals"
+	"live-platform/internal/schedule"
+	"live-platform/internal/search"
 	"live-platform/internal/subjects"
 	"live-platform/internal/topics"
 	"live-platform/internal/users"
@@ -63,4 +75,12 @@ func registerAll(s *grpc.Server, cfg *config.Config, d Deps) {
 	devicesv1.RegisterDeviceServiceServer(s, NewDeviceServer(devices.NewService(d.Pool)))
 	auditv1.RegisterAuditServiceServer(s, NewAuditServer(audit.NewService(d.Pool)))
 	adminv1.RegisterAdminServiceServer(s, NewAdminServer(admin.NewService(d.Pool)))
+	referralsv1.RegisterReferralServiceServer(s, NewReferralServer(referrals.NewService(d.Pool)))
+
+	// --- Engagement / comms / growth ---
+	searchv1.RegisterSearchServiceServer(s, NewSearchServer(search.NewService(d.Pool)))
+	notificationsv1.RegisterNotificationServiceServer(s, NewNotificationServer(notifications.NewService(d.Pool)))
+	bannersv1.RegisterBannerServiceServer(s, NewBannerServer(banners.NewService(d.Pool)))
+	leadsv1.RegisterLeadServiceServer(s, NewLeadServer(leads.NewService(d.Pool)))
+	schedulev1.RegisterScheduleServiceServer(s, NewScheduleServer(schedule.NewService(d.Pool)))
 }

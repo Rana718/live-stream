@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package live.schedule.v1;
+
+// ScheduleService — recurring class schedules that materialise into
+// live_sessions (internal/schedule). Admin-managed.
+service ScheduleService {
+  rpc ListSchedules(ListSchedulesRequest) returns (ListSchedulesResponse);
+  rpc CreateSchedule(CreateScheduleRequest) returns (CreateScheduleResponse);
+  rpc SetScheduleActive(SetScheduleActiveRequest) returns (SetScheduleActiveResponse);
+  rpc DeleteSchedule(DeleteScheduleRequest) returns (DeleteScheduleResponse);
+}
+
+message Schedule {
+  string id = 1;
+  string course_id = 2;
+  string batch_id = 3;
+  string instructor_id = 4;
+  string title = 5;
+  repeated int32 by_weekday = 6; // 0=Sunday .. 6=Saturday
+  string start_local = 7;        // "HH:MM"
+  int32 duration_min = 8;
+  string timezone = 9;
+  string starts_on = 10;         // "YYYY-MM-DD"
+  string ends_on = 11;
+  bool is_active = 12;
+}
+
+message ListSchedulesRequest {}
+message ListSchedulesResponse { repeated Schedule schedules = 1; }
+
+message CreateScheduleRequest {
+  string instructor_id = 1;
+  string course_id = 2;
+  string batch_id = 3;
+  string title = 4;
+  string description = 5;
+  repeated int32 by_weekday = 6;
+  string start_local = 7;
+  int32 duration_min = 8;
+  string timezone = 9;
+  string starts_on = 10;
+  string ends_on = 11;
+}
+message CreateScheduleResponse { Schedule schedule = 1; }
+
+message SetScheduleActiveRequest {
+  string id = 1;
+  bool active = 2;
+}
+message SetScheduleActiveResponse {}
+
+message DeleteScheduleRequest { string id = 1; }
+message DeleteScheduleResponse {}

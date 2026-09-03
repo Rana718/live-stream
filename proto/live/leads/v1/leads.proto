@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package live.leads.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// LeadService — sales leads / self-serve interest (internal/leads).
+// CreateLead is public (marketing site); the rest are platform super-admin.
+service LeadService {
+  rpc CreateLead(CreateLeadRequest) returns (CreateLeadResponse);
+  rpc ListLeads(ListLeadsRequest) returns (ListLeadsResponse);
+  rpc UpdateLeadStatus(UpdateLeadStatusRequest) returns (UpdateLeadStatusResponse);
+}
+
+message Lead {
+  string id = 1;
+  string name = 2;
+  string phone = 3;
+  string email = 4;
+  string institute_name = 5;
+  string city = 6;
+  int32 students_count = 7;
+  string source = 8;
+  string status = 9;
+  string assigned_to = 10;
+  google.protobuf.Timestamp created_at = 11;
+}
+
+message CreateLeadRequest {
+  string name = 1;
+  string phone = 2;
+  string email = 3;
+  string institute_name = 4;
+  string city = 5;
+  int32 students_count = 6;
+  string source = 7;
+}
+message CreateLeadResponse {
+  string id = 1;
+  string status = 2;
+}
+
+message ListLeadsRequest {
+  string status = 1;
+  live.common.v1.PageRequest page = 2;
+}
+message ListLeadsResponse { repeated Lead leads = 1; }
+
+message UpdateLeadStatusRequest {
+  string id = 1;
+  string status = 2;
+  string assigned_to = 3;
+  string notes = 4;
+}
+message UpdateLeadStatusResponse {}

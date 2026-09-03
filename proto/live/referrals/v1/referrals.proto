@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package live.referrals.v1;
+
+// ReferralService — the caller's referral code + tally (internal/referrals).
+service ReferralService {
+  rpc GetMyReferral(GetMyReferralRequest) returns (GetMyReferralResponse);
+}
+
+message GetMyReferralRequest {}
+message GetMyReferralResponse {
+  string code = 1;
+  int32 uses = 2;
+  int64 pending_count = 3;
+  int64 rewarded_count = 4;
+  int64 total_rewarded_minor = 5;
+}

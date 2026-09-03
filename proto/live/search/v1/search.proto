@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package live.search.v1;
+
+import "live/common/v1/types.proto";
+
+// SearchService — unified catalog search (internal/search).
+service SearchService {
+  rpc Search(SearchRequest) returns (SearchResponse);
+}
+
+message SearchResult {
+  string type = 1;
+  string id = 2;
+  string title = 3;
+  string description = 4;
+  string snippet = 5;
+  string thumbnail_url = 6;
+}
+
+message SearchRequest {
+  string query = 1;
+  live.common.v1.PageRequest page = 2;
+}
+message SearchResponse { repeated SearchResult results = 1; }

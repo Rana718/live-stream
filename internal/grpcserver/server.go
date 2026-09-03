@@ -90,6 +90,7 @@ var publicMethods = map[string]bool{
 	"/live.auth.v1.AuthService/GoogleLogin":  true,
 	"/live.auth.v1.AuthService/RefreshToken": true,
 	"/live.auth.v1.AuthService/ResolveOrg":   true,
+	"/live.leads.v1.LeadService/CreateLead":  true,
 }
 
 // optionalAuthMethods accept an anonymous caller — with no token they run

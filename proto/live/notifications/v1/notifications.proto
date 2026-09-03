@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+package live.notifications.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// NotificationService — in-app notifications + tenant announcements
+// (internal/notifications).
+service NotificationService {
+  rpc ListMyNotifications(ListMyNotificationsRequest) returns (ListMyNotificationsResponse);
+  rpc UnreadCount(UnreadCountRequest) returns (UnreadCountResponse);
+  rpc MarkRead(MarkReadRequest) returns (MarkReadResponse);
+  rpc MarkAllRead(MarkAllReadRequest) returns (MarkAllReadResponse);
+  rpc DeleteNotification(DeleteNotificationRequest) returns (DeleteNotificationResponse);
+  rpc CreateAnnouncement(CreateAnnouncementRequest) returns (CreateAnnouncementResponse);
+  rpc ListAnnouncements(ListAnnouncementsRequest) returns (ListAnnouncementsResponse);
+  rpc DeleteAnnouncement(DeleteAnnouncementRequest) returns (DeleteAnnouncementResponse);
+}
+
+message Notification {
+  string id = 1;
+  string template_key = 2;
+  string title = 3;
+  string body = 4;
+  string entity_type = 5;
+  string entity_id = 6;
+  google.protobuf.Timestamp read_at = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message Announcement {
+  string id = 1;
+  string course_id = 2;
+  string batch_id = 3;
+  string title = 4;
+  string body = 5;
+  string priority = 6;
+  google.protobuf.Timestamp published_at = 7;
+  google.protobuf.Timestamp expires_at = 8;
+}
+
+message ListMyNotificationsRequest { live.common.v1.PageRequest page = 1; }
+message ListMyNotificationsResponse { repeated Notification notifications = 1; }
+
+message UnreadCountRequest {}
+message UnreadCountResponse { int64 count = 1; }
+
+message MarkReadRequest { string id = 1; }
+message MarkReadResponse {}
+
+message MarkAllReadRequest {}
+message MarkAllReadResponse {}
+
+message DeleteNotificationRequest { string id = 1; }
+message DeleteNotificationResponse {}
+
+message CreateAnnouncementRequest {
+  string title = 1;
+  string body = 2;
+  string priority = 3;
+  string course_id = 4;
+  string batch_id = 5;
+  google.protobuf.Timestamp expires_at = 6;
+  bool fan_out = 7; // also create a per-user notification for each recipient
+}
+message CreateAnnouncementResponse { Announcement announcement = 1; }
+
+message ListAnnouncementsRequest {
+  string course_id = 1;
+  string batch_id = 2;
+  live.common.v1.PageRequest page = 3;
+}
+message ListAnnouncementsResponse { repeated Announcement announcements = 1; }
+
+message DeleteAnnouncementRequest { string id = 1; }
+message DeleteAnnouncementResponse {}

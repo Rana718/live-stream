@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package live.banners.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// BannerService — promotional banners (internal/banners).
+service BannerService {
+  rpc ListActiveBanners(ListActiveBannersRequest) returns (ListActiveBannersResponse);
+  rpc ListAllBanners(ListAllBannersRequest) returns (ListAllBannersResponse);
+  rpc CreateBanner(CreateBannerRequest) returns (CreateBannerResponse);
+  rpc UpdateBanner(UpdateBannerRequest) returns (UpdateBannerResponse);
+  rpc SetBannerActive(SetBannerActiveRequest) returns (SetBannerActiveResponse);
+  rpc DeleteBanner(DeleteBannerRequest) returns (DeleteBannerResponse);
+}
+
+message Banner {
+  string id = 1;
+  string title = 2;
+  string subtitle = 3;
+  string image_url = 4;
+  string background_color = 5;
+  string link_type = 6;
+  string link_id = 7;
+  string link_url = 8;
+  int32 display_order = 9;
+  bool is_active = 10;
+  google.protobuf.Timestamp starts_at = 11;
+  google.protobuf.Timestamp ends_at = 12;
+}
+
+message BannerInput {
+  string title = 1;
+  string subtitle = 2;
+  string image_url = 3;
+  string background_color = 4;
+  string link_type = 5;
+  string link_id = 6;
+  string link_url = 7;
+  int32 display_order = 8;
+  bool is_active = 9;
+  google.protobuf.Timestamp starts_at = 10;
+  google.protobuf.Timestamp ends_at = 11;
+}
+
+message ListActiveBannersRequest {}
+message ListActiveBannersResponse { repeated Banner banners = 1; }
+
+message ListAllBannersRequest { live.common.v1.PageRequest page = 1; }
+message ListAllBannersResponse { repeated Banner banners = 1; }
+
+message CreateBannerRequest { BannerInput banner = 1; }
+message CreateBannerResponse { Banner banner = 1; }
+
+message UpdateBannerRequest {
+  string id = 1;
+  BannerInput banner = 2;
+}
+message UpdateBannerResponse { Banner banner = 1; }
+
+message SetBannerActiveRequest {
+  string id = 1;
+  bool active = 2;
+}
+message SetBannerActiveResponse {}
+
+message DeleteBannerRequest { string id = 1; }
+message DeleteBannerResponse {}
