@@ -44,7 +44,11 @@ buf). CI runs `buf lint`, `buf generate` + `git diff --exit-code`, and
 
 ## Not exposed over gRPC (REST-only, by design)
 
-Binary uploads (`materials.Upload`, `recording.UploadRecording`,
-`bulkimport.Import`), the social-share PNG (`share.Render`), and realtime chat /
-live-stream fan-out (WebSocket). gRPC covers their list/get/delete/metadata +
-status control-plane RPCs only.
+Binary uploads (`materials.Upload`, `recording` ingest, `bulkimport.Import`),
+the social-share PNG (`share.Render`), the offline-download token flow
+(`downloads`), and realtime chat / live-stream fan-out (WebSocket). gRPC covers
+those domains' list/get/delete/metadata + status control-plane RPCs only.
+
+`internal/tests` still returns `map[string]any` for attempts; the `tests`
+adapter transcribes those keys into explicit `Attempt` / `AttemptAnswer`
+messages (`internal/grpcserver/tests.go`) — typing the service is a follow-up.

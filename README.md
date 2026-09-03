@@ -153,11 +153,13 @@ Dev-only env flags (all refused in production by `config.Validate`):
   over the same `internal/*` service layer as REST (no logic duplication);
   `internal/grpcserver`. One versioned package per domain —
   `proto/live/<domain>/v1/*.proto` (+ `live/common/v1` for `PageRequest` /
-  `Money`) → `gen/proto/` via `make proto` (committed). Auth = the same bearer
-  token in the `authorization` metadata key; `AuthService` login/OTP/refresh are
-  unauthenticated; errors use standard gRPC codes (`internal/grpcserver/errors.go`),
-  don't parse messages. `make install` installs a pinned `buf`. See
-  `proto/README.md` for the add-a-domain recipe.
+  `Money`) → `gen/proto/` via `make proto` (committed). Every `internal/*`
+  domain has an adapter (39 services). Auth = the same bearer token in the
+  `authorization` metadata key; `AuthService` login/OTP/refresh + `CreateLead`
+  + tenant-lookup are unauthenticated, catalog reads accept anonymous; errors
+  use standard gRPC codes (`internal/grpcserver/errors.go`), don't parse
+  messages. `make install` installs a pinned `buf`. See `proto/README.md` for
+  the add-a-domain recipe.
 
 ---
 
@@ -249,7 +251,11 @@ on-demand certs for tenant custom domains).
       (`docs/runbooks/rotate-secrets.md`), no automated store yet.
 - [ ] Transactional outbox **drain worker** — table + writer ship; direct Kafka
       emit + idempotent consumers cover it for now.
-- [ ] The other ~29 gRPC domain services (CourseService is the template).
+- [x] gRPC coverage — every `internal/*` domain has an adapter (39 services);
+      binary uploads (`materials`, `bulkimport`, `share`, `recording` ingest)
+      stay REST-only by design (see `proto/README.md`).
+- [ ] Type the `internal/tests` service returns (still `map[string]any`; the
+      gRPC adapter transcribes them, guarded only by smoke tests).
 
 ## License
 

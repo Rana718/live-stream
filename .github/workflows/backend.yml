@@ -73,8 +73,7 @@ jobs:
             || (echo '::error::internal/database/db is stale — run `make sqlc`' && exit 1)
 
       - name: buf lint
-        working-directory: proto
-        run: buf lint
+        run: buf lint proto
 
       - name: buf generate — no drift
         run: |
@@ -83,9 +82,7 @@ jobs:
             || (echo '::error::gen/proto is stale — run `make proto`' && exit 1)
 
       - name: buf breaking
-        working-directory: proto
-        continue-on-error: true # flip to false once the per-domain proto restructure has landed on the base branch
-        run: buf breaking --against '.git#branch=feature/schema-v2'
+        run: buf breaking proto --against '.git#branch=feature/schema-v2,subdir=proto'
 
       - name: go build
         run: go build ./...
