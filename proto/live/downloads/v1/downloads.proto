@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package live.downloads.v1;
+
+// DownloadService — video renditions for offline download (internal/downloads).
+// The signed-token fetch flow is REST-only (and currently deferred).
+service DownloadService {
+  rpc CreateRendition(CreateRenditionRequest) returns (CreateRenditionResponse);
+  rpc ListRenditionsForVideo(ListRenditionsForVideoRequest) returns (ListRenditionsForVideoResponse);
+}
+
+message Rendition {
+  int32 height = 1;
+  string quality = 2;
+  int32 bitrate_kbps = 3;
+  string codec = 4;
+  string file_key = 5;
+  int64 file_size = 6;
+}
+
+message CreateRenditionRequest {
+  string video_asset_id = 1;
+  int32 height = 2;
+  string file_key = 3;
+  int64 file_size = 4;
+  int32 bitrate_kbps = 5;
+  string codec = 6;
+}
+message CreateRenditionResponse { Rendition rendition = 1; }
+
+message ListRenditionsForVideoRequest { string video_asset_id = 1; }
+message ListRenditionsForVideoResponse { repeated Rendition renditions = 1; }

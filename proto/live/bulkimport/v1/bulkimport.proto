@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package live.bulkimport.v1;
+
+// BulkImportService — CSV bulk user provisioning (internal/bulkimport).
+// The CSV is passed inline as bytes (admin-console action, files are small).
+service BulkImportService {
+  rpc ImportUsers(ImportUsersRequest) returns (ImportUsersResponse);
+}
+
+message RowError {
+  int32 row = 1;
+  string phone = 2;
+  string error = 3;
+}
+
+message ImportUsersRequest {
+  bytes csv = 1;
+}
+message ImportUsersResponse {
+  int32 created = 1;
+  int32 updated = 2;
+  int32 skipped = 3;
+  repeated RowError row_errors = 4;
+}

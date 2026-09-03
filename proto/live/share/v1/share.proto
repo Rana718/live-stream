@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package live.share.v1;
+
+// ShareService — social-share course poster (internal/share). Returns a PNG
+// as bytes. The REST route serves it with image/png for OG tags / CDNs.
+service ShareService {
+  rpc RenderCoursePoster(RenderCoursePosterRequest) returns (RenderCoursePosterResponse);
+}
+
+message RenderCoursePosterRequest { string course_id = 1; }
+message RenderCoursePosterResponse { bytes png = 1; }

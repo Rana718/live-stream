@@ -12,6 +12,7 @@ import (
 	batchesv1 "live-platform/gen/proto/live/batches/v1"
 	billingv1 "live-platform/gen/proto/live/billing/v1"
 	bookmarksv1 "live-platform/gen/proto/live/bookmarks/v1"
+	bulkimportv1 "live-platform/gen/proto/live/bulkimport/v1"
 	bundlesv1 "live-platform/gen/proto/live/bundles/v1"
 	chaptersv1 "live-platform/gen/proto/live/chapters/v1"
 	cmsv1 "live-platform/gen/proto/live/cms/v1"
@@ -20,6 +21,7 @@ import (
 	coursesv1 "live-platform/gen/proto/live/courses/v1"
 	devicesv1 "live-platform/gen/proto/live/devices/v1"
 	doubtsv1 "live-platform/gen/proto/live/doubts/v1"
+	downloadsv1 "live-platform/gen/proto/live/downloads/v1"
 	engagementv1 "live-platform/gen/proto/live/engagement/v1"
 	enrollmentsv1 "live-platform/gen/proto/live/enrollments/v1"
 	examsv1 "live-platform/gen/proto/live/exams/v1"
@@ -33,6 +35,7 @@ import (
 	referralsv1 "live-platform/gen/proto/live/referrals/v1"
 	schedulev1 "live-platform/gen/proto/live/schedule/v1"
 	searchv1 "live-platform/gen/proto/live/search/v1"
+	sharev1 "live-platform/gen/proto/live/share/v1"
 	streamsv1 "live-platform/gen/proto/live/streams/v1"
 	subjectsv1 "live-platform/gen/proto/live/subjects/v1"
 	subscriptionsv1 "live-platform/gen/proto/live/subscriptions/v1"
@@ -51,6 +54,7 @@ import (
 	"live-platform/internal/batches"
 	"live-platform/internal/billing"
 	"live-platform/internal/bookmarks"
+	"live-platform/internal/bulkimport"
 	"live-platform/internal/chapters"
 	"live-platform/internal/cms"
 	"live-platform/internal/config"
@@ -60,6 +64,7 @@ import (
 	"live-platform/internal/courses"
 	"live-platform/internal/devices"
 	"live-platform/internal/doubts"
+	"live-platform/internal/downloads"
 	"live-platform/internal/engagement"
 	"live-platform/internal/enrollments"
 	"live-platform/internal/exams"
@@ -73,6 +78,7 @@ import (
 	"live-platform/internal/referrals"
 	"live-platform/internal/schedule"
 	"live-platform/internal/search"
+	"live-platform/internal/share"
 	"live-platform/internal/stream"
 	"live-platform/internal/subjects"
 	"live-platform/internal/subscriptions"
@@ -150,4 +156,7 @@ func registerAll(s *grpc.Server, cfg *config.Config, d Deps) {
 	recordingsv1.RegisterRecordingServiceServer(s, NewRecordingServer(recording.NewService(d.Pool, d.MinIO, d.Kafka)))
 	streamsv1.RegisterStreamServiceServer(s, NewStreamServer(stream.NewService(d.Pool, d.Kafka)))
 	appbuildsv1.RegisterAppBuildServiceServer(s, NewAppBuildServer(appbuilds.NewService(d.Pool, d.Codemagic, d.Log)))
+	downloadsv1.RegisterDownloadServiceServer(s, NewDownloadServer(downloads.NewService(d.Pool, d.MinIO.Raw(), cfg.MinIO.DownloadsBucket, cfg.App.BaseURL)))
+	bulkimportv1.RegisterBulkImportServiceServer(s, NewBulkImportServer(bulkimport.NewService(d.Pool, d.Log)))
+	sharev1.RegisterShareServiceServer(s, NewShareServer(share.NewService(d.Pool)))
 }
