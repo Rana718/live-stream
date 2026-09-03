@@ -2,6 +2,8 @@ package grpcserver
 
 import (
 	adminv1 "live-platform/gen/proto/live/admin/v1"
+	assignmentsv1 "live-platform/gen/proto/live/assignments/v1"
+	attendancev1 "live-platform/gen/proto/live/attendance/v1"
 	auditv1 "live-platform/gen/proto/live/audit/v1"
 	batchesv1 "live-platform/gen/proto/live/batches/v1"
 	bookmarksv1 "live-platform/gen/proto/live/bookmarks/v1"
@@ -16,6 +18,8 @@ import (
 	topicsv1 "live-platform/gen/proto/live/topics/v1"
 	usersv1 "live-platform/gen/proto/live/users/v1"
 	"live-platform/internal/admin"
+	"live-platform/internal/assignments"
+	"live-platform/internal/attendance"
 	"live-platform/internal/audit"
 	"live-platform/internal/batches"
 	"live-platform/internal/bookmarks"
@@ -51,6 +55,8 @@ func registerAll(s *grpc.Server, cfg *config.Config, d Deps) {
 	bookmarksv1.RegisterBookmarkServiceServer(s, NewBookmarkServer(bookmarks.NewService(d.Pool)))
 	lecturesv1.RegisterLectureServiceServer(s, NewLectureServer(lectures.NewService(d.Pool)))
 	doubtsv1.RegisterDoubtServiceServer(s, NewDoubtServer(doubts.NewService(d.Pool, d.Claude)))
+	attendancev1.RegisterAttendanceServiceServer(s, NewAttendanceServer(attendance.NewService(d.Pool)))
+	assignmentsv1.RegisterAssignmentServiceServer(s, NewAssignmentServer(assignments.NewService(d.Pool)))
 
 	// --- Identity / tenant ops ---
 	usersv1.RegisterUserServiceServer(s, NewUserServer(users.NewService(d.Pool)))

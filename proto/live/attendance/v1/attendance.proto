@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package live.attendance.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// AttendanceService — live-session attendance (internal/attendance).
+service AttendanceService {
+  rpc AutoMark(AutoMarkRequest) returns (AutoMarkResponse);
+  rpc ManualMark(ManualMarkRequest) returns (ManualMarkResponse);
+  rpc BulkMark(BulkMarkRequest) returns (BulkMarkResponse);
+  rpc ListBySession(ListBySessionRequest) returns (ListBySessionResponse);
+  rpc ListMyAttendance(ListMyAttendanceRequest) returns (ListMyAttendanceResponse);
+  rpc MyStats(MyStatsRequest) returns (MyStatsResponse);
+  rpc CreateQrCode(CreateQrCodeRequest) returns (CreateQrCodeResponse);
+  rpc QrCheckIn(QrCheckInRequest) returns (QrCheckInResponse);
+}
+
+message AttendanceRecord {
+  string user_id = 1;
+  string session_id = 2;
+  string status = 3;
+  int32 watched_sec = 4;
+  string method = 5;
+  string full_name = 6;
+}
+
+message Stats {
+  int64 total = 1;
+  int64 present = 2;
+  int64 absent = 3;
+  int32 percentage = 4;
+}
+
+message AutoMarkRequest {
+  string session_id = 1;
+  string batch_id = 2;
+  google.protobuf.Timestamp join_time = 3;
+  int32 watched_seconds = 4;
+}
+message AutoMarkResponse { AttendanceRecord record = 1; }
+
+message ManualMarkRequest {
+  string user_id = 1;
+  string session_id = 2;
+  string status = 3;
+  string notes = 4;
+}
+message ManualMarkResponse { AttendanceRecord record = 1; }
+
+message BulkMarkRequest {
+  string session_id = 1;
+  message Item {
+    string user_id = 1;
+    string status = 2;
+  }
+  repeated Item items = 2;
+}
+message BulkMarkResponse { int32 marked = 1; }
+
+message ListBySessionRequest { string session_id = 1; }
+message ListBySessionResponse { repeated AttendanceRecord records = 1; }
+
+message ListMyAttendanceRequest { live.common.v1.PageRequest page = 1; }
+message ListMyAttendanceResponse {
+  message Row {
+    string session_id = 1;
+    string status = 2;
+    int32 watched_sec = 3;
+    string title = 4;
+    google.protobuf.Timestamp scheduled_start = 5;
+  }
+  repeated Row rows = 1;
+}
+
+message MyStatsRequest {}
+message MyStatsResponse { Stats stats = 1; }
+
+message CreateQrCodeRequest {
+  string session_id = 1;
+  int32 ttl_minutes = 2;
+}
+message CreateQrCodeResponse {
+  string code = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+message QrCheckInRequest { string code = 1; }
+message QrCheckInResponse { AttendanceRecord record = 1; }

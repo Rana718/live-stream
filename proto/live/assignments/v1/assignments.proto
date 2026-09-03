@@ -1,0 +1,110 @@
+syntax = "proto3";
+
+package live.assignments.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// AssignmentService — assignments + submissions + grading (internal/assignments).
+service AssignmentService {
+  rpc ListAssignments(ListAssignmentsRequest) returns (ListAssignmentsResponse);
+  rpc GetAssignment(GetAssignmentRequest) returns (GetAssignmentResponse);
+  rpc CreateAssignment(CreateAssignmentRequest) returns (CreateAssignmentResponse);
+  rpc UpdateAssignment(UpdateAssignmentRequest) returns (UpdateAssignmentResponse);
+  rpc SetAssignmentPublished(SetAssignmentPublishedRequest) returns (SetAssignmentPublishedResponse);
+  rpc DeleteAssignment(DeleteAssignmentRequest) returns (DeleteAssignmentResponse);
+  rpc SubmitAssignment(SubmitAssignmentRequest) returns (SubmitAssignmentResponse);
+  rpc GetMySubmission(GetMySubmissionRequest) returns (GetMySubmissionResponse);
+  rpc ListSubmissions(ListSubmissionsRequest) returns (ListSubmissionsResponse);
+  rpc ListMySubmissions(ListMySubmissionsRequest) returns (ListMySubmissionsResponse);
+  rpc GradeSubmission(GradeSubmissionRequest) returns (GradeSubmissionResponse);
+}
+
+message Assignment {
+  string id = 1;
+  string course_id = 2;
+  string batch_id = 3;
+  string title = 4;
+  string description = 5;
+  string attachment_url = 6;
+  google.protobuf.Timestamp due_at = 7;
+  double max_marks = 8;
+  string status = 9;
+}
+
+message Submission {
+  string id = 1;
+  string assignment_id = 2;
+  string user_id = 3;
+  string submission_text = 4;
+  string file_key = 5;
+  double marks_obtained = 6;
+  string feedback = 7;
+  string status = 8;
+  string full_name = 9;
+  google.protobuf.Timestamp submitted_at = 10;
+}
+
+message AssignmentInput {
+  string course_id = 1;
+  string batch_id = 2;
+  string lesson_id = 3;
+  string title = 4;
+  string description = 5;
+  string attachment_url = 6;
+  google.protobuf.Timestamp due_at = 7;
+  double max_marks = 8;
+  bool is_published = 9;
+}
+
+message ListAssignmentsRequest {
+  string course_id = 1;
+  string batch_id = 2;
+  bool mine_only = 3; // instructor: only my authored ones
+  live.common.v1.PageRequest page = 4;
+}
+message ListAssignmentsResponse { repeated Assignment assignments = 1; }
+
+message GetAssignmentRequest { string id = 1; }
+message GetAssignmentResponse { Assignment assignment = 1; }
+
+message CreateAssignmentRequest { AssignmentInput assignment = 1; }
+message CreateAssignmentResponse { Assignment assignment = 1; }
+
+message UpdateAssignmentRequest {
+  string id = 1;
+  AssignmentInput assignment = 2;
+}
+message UpdateAssignmentResponse { Assignment assignment = 1; }
+
+message SetAssignmentPublishedRequest {
+  string id = 1;
+  bool published = 2;
+}
+message SetAssignmentPublishedResponse {}
+
+message DeleteAssignmentRequest { string id = 1; }
+message DeleteAssignmentResponse {}
+
+message SubmitAssignmentRequest {
+  string assignment_id = 1;
+  string submission_text = 2;
+  string file_key = 3;
+}
+message SubmitAssignmentResponse { Submission submission = 1; }
+
+message GetMySubmissionRequest { string assignment_id = 1; }
+message GetMySubmissionResponse { Submission submission = 1; }
+
+message ListSubmissionsRequest { string assignment_id = 1; }
+message ListSubmissionsResponse { repeated Submission submissions = 1; }
+
+message ListMySubmissionsRequest { live.common.v1.PageRequest page = 1; }
+message ListMySubmissionsResponse { repeated Submission submissions = 1; }
+
+message GradeSubmissionRequest {
+  string submission_id = 1;
+  double marks_obtained = 2;
+  string feedback = 3;
+}
+message GradeSubmissionResponse { Submission submission = 1; }
