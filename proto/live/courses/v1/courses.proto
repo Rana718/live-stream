@@ -1,0 +1,132 @@
+syntax = "proto3";
+
+package live.courses.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// CourseService is the gRPC surface for the catalog's course domain. Every
+// RPC is a thin transport over the same internal/courses service layer the
+// REST handlers use — no business logic lives here.
+service CourseService {
+  rpc ListCourses(ListCoursesRequest) returns (ListCoursesResponse);
+  rpc GetCourse(GetCourseRequest) returns (GetCourseResponse);
+  rpc SearchCourses(SearchCoursesRequest) returns (SearchCoursesResponse);
+  rpc ListPendingCourses(ListPendingCoursesRequest) returns (ListPendingCoursesResponse);
+  rpc CreateCourse(CreateCourseRequest) returns (CreateCourseResponse);
+  rpc UpdateCourse(UpdateCourseRequest) returns (UpdateCourseResponse);
+  rpc SetCoursePublished(SetCoursePublishedRequest) returns (SetCoursePublishedResponse);
+  rpc SetCoursePrice(SetCoursePriceRequest) returns (SetCoursePriceResponse);
+  rpc ApproveCourse(ApproveCourseRequest) returns (ApproveCourseResponse);
+  rpc RejectCourse(RejectCourseRequest) returns (RejectCourseResponse);
+  rpc DeleteCourse(DeleteCourseRequest) returns (DeleteCourseResponse);
+}
+
+message Course {
+  string id = 1;
+  string title = 2;
+  string slug = 3;
+  string summary = 4;
+  string thumbnail_url = 5;
+  string language = 6;
+  string level = 7;
+  string status = 8; // publish_status enum label
+  bool is_published = 9;
+  string approval_status = 10;
+  live.common.v1.Money price = 11;
+  google.protobuf.Timestamp created_at = 12;
+}
+
+message ListCoursesRequest {
+  // When true and the caller is an instructor/admin, drafts + pending are included.
+  bool include_unpublished = 1;
+  live.common.v1.PageRequest page = 2;
+}
+message ListCoursesResponse {
+  repeated Course courses = 1;
+  live.common.v1.PageResponse page = 2;
+}
+
+message GetCourseRequest {
+  string id = 1;   // uuid
+  string slug = 2; // alternative to id
+}
+message GetCourseResponse {
+  Course course = 1;
+}
+
+message SearchCoursesRequest {
+  string query = 1;
+  live.common.v1.PageRequest page = 2;
+}
+message SearchCoursesResponse {
+  repeated Course courses = 1;
+}
+
+message ListPendingCoursesRequest {
+  live.common.v1.PageRequest page = 1;
+}
+message ListPendingCoursesResponse {
+  repeated Course courses = 1;
+}
+
+message CreateCourseRequest {
+  string title = 1;
+  string summary = 2;
+  string language = 3;
+  string level = 4;
+  int64 price_minor = 5;
+  string hsn_sac = 6;
+  int32 tax_rate_bps = 7;
+  string exam_category_id = 8;
+}
+message CreateCourseResponse {
+  Course course = 1;
+}
+
+message UpdateCourseRequest {
+  string id = 1;
+  string title = 2;
+  string summary = 3;
+  string language = 4;
+  string level = 5;
+  int64 price_minor = 6;
+  string hsn_sac = 7;
+  int32 tax_rate_bps = 8;
+}
+message UpdateCourseResponse {
+  Course course = 1;
+}
+
+message SetCoursePublishedRequest {
+  string id = 1;
+  bool published = 2;
+}
+message SetCoursePublishedResponse {}
+
+message SetCoursePriceRequest {
+  string id = 1;
+  int64 amount_minor = 2;
+  int32 tax_rate_bps = 3;
+}
+message SetCoursePriceResponse {}
+
+message ApproveCourseRequest {
+  string id = 1;
+}
+message ApproveCourseResponse {
+  Course course = 1;
+}
+
+message RejectCourseRequest {
+  string id = 1;
+  string reason = 2;
+}
+message RejectCourseResponse {
+  Course course = 1;
+}
+
+message DeleteCourseRequest {
+  string id = 1;
+}
+message DeleteCourseResponse {}

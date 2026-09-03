@@ -151,9 +151,13 @@ Dev-only env flags (all refused in production by `config.Validate`):
 - **gRPC** — on `GRPC_PORT` when set. Server reflection is on outside production,
   so `grpcurl -plaintext localhost:50051 list` works. Services are thin adapters
   over the same `internal/*` service layer as REST (no logic duplication);
-  `internal/grpcserver`. `proto/live/v1/*.proto` → `gen/proto/` via `make proto`.
-  `CourseService` is implemented; the other domains follow the same
-  proto + adapter + `Register` pattern.
+  `internal/grpcserver`. One versioned package per domain —
+  `proto/live/<domain>/v1/*.proto` (+ `live/common/v1` for `PageRequest` /
+  `Money`) → `gen/proto/` via `make proto` (committed). Auth = the same bearer
+  token in the `authorization` metadata key; `AuthService` login/OTP/refresh are
+  unauthenticated; errors use standard gRPC codes (`internal/grpcserver/errors.go`),
+  don't parse messages. `make install` installs a pinned `buf`. See
+  `proto/README.md` for the add-a-domain recipe.
 
 ---
 

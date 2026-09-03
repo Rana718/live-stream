@@ -1074,7 +1074,11 @@ func main() {
 
 	// --- gRPC server (optional — set GRPC_PORT to enable) ---
 	if cfg.Server.GRPCPort != "" {
-		grpcSrv := grpcserver.New(cfg, pgPool)
+		grpcSrv := grpcserver.New(cfg, grpcserver.Deps{
+			Pool: pgPool, Redis: redisClient, Kafka: kafkaProducer, Razorpay: razorpay,
+			MinIO: minioClient, Claude: claude, SMS: smsClient, Email: emailClient,
+			Google: googleVerifier, Codemagic: cfg.Codemagic, Log: log,
+		})
 		go func() {
 			log.Info("gRPC listening", "addr", ":"+cfg.Server.GRPCPort)
 			if err := grpcserver.Start(ctx, grpcSrv, cfg.Server.GRPCPort); err != nil {

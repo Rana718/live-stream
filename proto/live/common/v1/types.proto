@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package live.common.v1;
+
+// PageRequest is offset pagination — mirrors every internal service's
+// (limit, offset int32) signature. The server clamps limit to [1, 100]
+// (default 20 unless a service documents otherwise).
+message PageRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+}
+
+// PageResponse echoes the applied window. total is -1 when the service does
+// not compute a count.
+message PageResponse {
+  int32 limit = 1;
+  int32 offset = 2;
+  int64 total = 3;
+}
+
+// Money is minor units + ISO-4217, mirroring internal/money.Money
+// {Minor int64, Currency string}. All amounts on the wire are minor units
+// (paise for INR) — never a float.
+message Money {
+  int64 minor = 1;
+  string currency = 2;
+}
+
+enum SortOrder {
+  SORT_ORDER_UNSPECIFIED = 0;
+  SORT_ORDER_ASC = 1;
+  SORT_ORDER_DESC = 2;
+}

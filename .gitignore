@@ -52,6 +52,3 @@ docs/swagger.yaml
 
 # Local DB backups (uploaded to MinIO by scripts/backup-db.sh, not committed)
 backups/
-
-# Generated protobuf (regenerate with 'make proto')
-gen/proto/

@@ -1,4 +1,4 @@
-.PHONY: help install sqlc proto swagger migrate-up migrate-down docker-up docker-down docker-build docker-logs dev run build clean backup restore
+.PHONY: help install sqlc proto proto-breaking swagger migrate-up migrate-down docker-up docker-down docker-build docker-logs dev run build clean backup restore
 
 help:
 	@echo "Available commands:"
@@ -19,6 +19,7 @@ help:
 	@echo "  make restore       - Restore latest backup into a scratch DB (see docs/runbooks/backup-restore.md)"
 
 SQLC_VERSION := 1.31.0
+BUF_VERSION := 1.47.2
 SQLC_OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 SQLC_ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 
@@ -26,6 +27,7 @@ install:
 	go mod download
 	go mod tidy
 	curl -fsSL https://downloads.sqlc.dev/sqlc_$(SQLC_VERSION)_$(SQLC_OS)_$(SQLC_ARCH).tar.gz | tar -xz -C $(shell go env GOPATH)/bin sqlc
+	go install github.com/bufbuild/buf/cmd/buf@v$(BUF_VERSION)
 	go install github.com/swaggo/swag/cmd/swag@latest
 	go install github.com/air-verse/air@latest
 
@@ -42,6 +44,9 @@ sqlc:
 
 proto:
 	cd proto && buf lint && buf generate
+
+proto-breaking:
+	cd proto && buf breaking --against '.git#branch=feature/schema-v2'
 
 swagger:
 	swag init -g cmd/server/main.go -o docs
