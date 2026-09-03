@@ -33,6 +33,7 @@ import (
 	subjectsv1 "live-platform/gen/proto/live/subjects/v1"
 	subscriptionsv1 "live-platform/gen/proto/live/subscriptions/v1"
 	tenantsv1 "live-platform/gen/proto/live/tenants/v1"
+	testsv1 "live-platform/gen/proto/live/tests/v1"
 	topicsv1 "live-platform/gen/proto/live/topics/v1"
 	usersv1 "live-platform/gen/proto/live/users/v1"
 	"live-platform/internal/admin"
@@ -68,6 +69,7 @@ import (
 	"live-platform/internal/subjects"
 	"live-platform/internal/subscriptions"
 	"live-platform/internal/tenants"
+	"live-platform/internal/tests"
 	"live-platform/internal/topics"
 	"live-platform/internal/users"
 
@@ -133,4 +135,5 @@ func registerAll(s *grpc.Server, cfg *config.Config, d Deps) {
 	authv1.RegisterAuthServiceServer(s, NewAuthServer(authSvc))
 	platformadminv1.RegisterPlatformAdminServiceServer(s, NewPlatformAdminServer(
 		platformadmin.NewService(d.Pool).WithRazorpay(d.Razorpay), cfg.JWT.AccessSecret))
+	testsv1.RegisterTestServiceServer(s, NewTestServer(tests.NewService(d.Pool)))
 }

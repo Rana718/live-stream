@@ -1,0 +1,187 @@
+syntax = "proto3";
+
+package live.tests.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// TestService — tests (DPPs, mocks), questions, and attempts
+// (internal/tests). Some service methods return map[string]any today; the
+// messages below are transcribed from those map keys (see the adapter).
+service TestService {
+  rpc ListTests(ListTestsRequest) returns (ListTestsResponse);
+  rpc GetTest(GetTestRequest) returns (GetTestResponse);
+  rpc CreateTest(CreateTestRequest) returns (CreateTestResponse);
+  rpc UpdateTest(UpdateTestRequest) returns (UpdateTestResponse);
+  rpc SetTestPublished(SetTestPublishedRequest) returns (SetTestPublishedResponse);
+  rpc DeleteTest(DeleteTestRequest) returns (DeleteTestResponse);
+  rpc CreateQuestion(CreateQuestionRequest) returns (CreateQuestionResponse);
+  rpc DeleteQuestion(DeleteQuestionRequest) returns (DeleteQuestionResponse);
+  rpc StartAttempt(StartAttemptRequest) returns (StartAttemptResponse);
+  rpc SubmitAnswer(SubmitAnswerRequest) returns (SubmitAnswerResponse);
+  rpc SubmitAttempt(SubmitAttemptRequest) returns (SubmitAttemptResponse);
+  rpc GetAttempt(GetAttemptRequest) returns (GetAttemptResponse);
+  rpc ListMyAttempts(ListMyAttemptsRequest) returns (ListMyAttemptsResponse);
+}
+
+message Option {
+  string id = 1;
+  string option_text = 2;
+  string image_url = 3;
+}
+
+message Question {
+  string id = 1;
+  string question_text = 2;
+  string question_type = 3;
+  string image_url = 4;
+  double marks = 5;
+  repeated Option options = 6;
+}
+
+message Test {
+  string id = 1;
+  string title = 2;
+  string description = 3;
+  string kind = 4;
+  int32 duration_minutes = 5;
+  double total_marks = 6;
+  bool negative_marking = 7;
+  bool is_published = 8;
+  string status = 9;
+  int32 question_count = 10;
+  repeated Question questions = 11;
+}
+
+message Attempt {
+  string attempt_id = 1;
+  string test_id = 2;
+  int32 attempt_no = 3;
+  string status = 4;
+  double score = 5;
+  double max_score = 6;
+  int32 correct_count = 7;
+  int32 wrong_count = 8;
+  int32 skipped_count = 9;
+  google.protobuf.Timestamp started_at = 10;
+}
+
+message AttemptAnswer {
+  string question_id = 1;
+  repeated string selected_option_ids = 2;
+  double numerical_answer = 3;
+  string subjective_answer = 4;
+  bool is_correct = 5;
+  double marks = 6;
+}
+
+message TestListItem {
+  string id = 1;
+  string title = 2;
+  string kind = 3;
+  int32 duration_min = 4;
+  double total_marks = 5;
+  bool is_free = 6;
+  string status = 7;
+}
+
+message ListTestsRequest {
+  string course_id = 1;
+  live.common.v1.PageRequest page = 2;
+}
+message ListTestsResponse { repeated TestListItem tests = 1; }
+
+message GetTestRequest {
+  string id = 1;
+  bool with_questions = 2;
+}
+message GetTestResponse { Test test = 1; }
+
+message CreateTestRequest {
+  string course_id = 1;
+  string subject_id = 2;
+  string chapter_id = 3;
+  string topic_id = 4;
+  string title = 5;
+  string description = 6;
+  string kind = 7;
+  int32 duration_minutes = 8;
+  double total_marks = 9;
+  double passing_marks = 10;
+  bool negative_marking = 11;
+  bool shuffle_questions = 12;
+}
+message CreateTestResponse { Test test = 1; }
+
+message UpdateTestRequest {
+  string id = 1;
+  string title = 2;
+  string description = 3;
+  string kind = 4;
+  int32 duration_minutes = 5;
+  double total_marks = 6;
+  bool negative_marking = 7;
+}
+message UpdateTestResponse {}
+
+message SetTestPublishedRequest {
+  string id = 1;
+  bool published = 2;
+}
+message SetTestPublishedResponse {}
+
+message DeleteTestRequest { string id = 1; }
+message DeleteTestResponse {}
+
+message QuestionOptionInput {
+  string option_text = 1;
+  string image_url = 2;
+  bool is_correct = 3;
+  int32 display_order = 4;
+}
+
+message CreateQuestionRequest {
+  string test_id = 1;
+  string subject_id = 2;
+  string topic_id = 3;
+  string question_text = 4;
+  string question_type = 5;
+  string image_url = 6;
+  double marks = 7;
+  double negative_marks = 8;
+  string difficulty = 9;
+  string explanation = 10;
+  double correct_numerical_answer = 11;
+  double numeric_tolerance = 12;
+  int32 display_order = 13;
+  repeated QuestionOptionInput options = 14;
+}
+message CreateQuestionResponse { string question_id = 1; }
+
+message DeleteQuestionRequest { string id = 1; }
+message DeleteQuestionResponse {}
+
+message StartAttemptRequest { string test_id = 1; }
+message StartAttemptResponse { Attempt attempt = 1; }
+
+message SubmitAnswerRequest {
+  string attempt_id = 1;
+  string question_id = 2;
+  string selected_option_id = 3;
+  double numerical_answer = 4;
+  string subjective_answer = 5;
+  int32 time_taken_seconds = 6;
+}
+message SubmitAnswerResponse {}
+
+message SubmitAttemptRequest { string attempt_id = 1; }
+message SubmitAttemptResponse { Attempt attempt = 1; }
+
+message GetAttemptRequest { string attempt_id = 1; }
+message GetAttemptResponse {
+  Attempt attempt = 1;
+  repeated AttemptAnswer answers = 2;
+}
+
+message ListMyAttemptsRequest { live.common.v1.PageRequest page = 1; }
+message ListMyAttemptsResponse { repeated Attempt attempts = 1; }

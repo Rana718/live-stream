@@ -120,6 +120,8 @@ var optionalAuthMethods = map[string]bool{
 	"/live.cms.v1.CmsService/GetPostBySlug":                  true,
 	"/live.cms.v1.CmsService/GetCmsPage":                     true,
 	"/live.cms.v1.CmsService/ListFaqs":                       true,
+	"/live.tests.v1.TestService/ListTests":                   true,
+	"/live.tests.v1.TestService/GetTest":                     true,
 }
 
 // authInterceptor mirrors internal/middleware auth + tenant context.
