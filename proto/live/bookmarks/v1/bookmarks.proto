@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package live.bookmarks.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// BookmarkService — user-owned lesson bookmarks (internal/bookmarks).
+service BookmarkService {
+  rpc ListMyBookmarks(ListMyBookmarksRequest) returns (ListMyBookmarksResponse);
+  rpc CreateBookmark(CreateBookmarkRequest) returns (CreateBookmarkResponse);
+  rpc DeleteBookmark(DeleteBookmarkRequest) returns (DeleteBookmarkResponse);
+}
+
+message Bookmark {
+  string id = 1;
+  string lesson_id = 2;
+  int32 position_sec = 3;
+  string note = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message ListMyBookmarksRequest {}
+message ListMyBookmarksResponse { repeated Bookmark bookmarks = 1; }
+
+message CreateBookmarkRequest {
+  string lesson_id = 1;
+  int32 position_sec = 2;
+  string note = 3;
+}
+message CreateBookmarkResponse { Bookmark bookmark = 1; }
+
+message DeleteBookmarkRequest { string id = 1; }
+message DeleteBookmarkResponse {}

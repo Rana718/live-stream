@@ -12,6 +12,7 @@ import (
 type (
 	pgText = pgtype.Text
 	pgUUID = pgtype.UUID
+	pgTs   = pgtype.Timestamptz
 )
 
 // Coercion helpers for the handful of service methods that still return

@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package live.enrollments.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// EnrollmentService — thin per-course progress projection over
+// internal/enrollments (access itself comes from entitlements).
+service EnrollmentService {
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+  rpc GetEnrollment(GetEnrollmentRequest) returns (GetEnrollmentResponse);
+  rpc ListMyEnrollments(ListMyEnrollmentsRequest) returns (ListMyEnrollmentsResponse);
+  rpc ListCourseRoster(ListCourseRosterRequest) returns (ListCourseRosterResponse);
+  rpc UpdateProgress(UpdateProgressRequest) returns (UpdateProgressResponse);
+  rpc CancelEnrollment(CancelEnrollmentRequest) returns (CancelEnrollmentResponse);
+}
+
+message Enrollment {
+  string id = 1;
+  string course_id = 2;
+  string batch_id = 3;
+  string status = 4;
+  int32 progress_bps = 5;
+  google.protobuf.Timestamp started_at = 6;
+  google.protobuf.Timestamp completed_at = 7;
+  string course_title = 8;
+  string course_slug = 9;
+  string thumbnail_url = 10;
+}
+
+message RosterEntry {
+  string enrollment_id = 1;
+  string user_id = 2;
+  string batch_id = 3;
+  string status = 4;
+  int32 progress_bps = 5;
+  string full_name = 6;
+  string email = 7;
+  string phone = 8;
+}
+
+message EnrollRequest {
+  string course_id = 1;
+  string batch_id = 2;
+}
+message EnrollResponse { Enrollment enrollment = 1; }
+
+message GetEnrollmentRequest { string course_id = 1; }
+message GetEnrollmentResponse { Enrollment enrollment = 1; }
+
+message ListMyEnrollmentsRequest {}
+message ListMyEnrollmentsResponse { repeated Enrollment enrollments = 1; }
+
+message ListCourseRosterRequest {
+  string course_id = 1;
+  live.common.v1.PageRequest page = 2;
+}
+message ListCourseRosterResponse { repeated RosterEntry entries = 1; }
+
+message UpdateProgressRequest {
+  string course_id = 1;
+  double progress_percent = 2;
+}
+message UpdateProgressResponse {}
+
+message CancelEnrollmentRequest { string course_id = 1; }
+message CancelEnrollmentResponse {}
