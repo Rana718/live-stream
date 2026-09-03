@@ -122,6 +122,8 @@ var optionalAuthMethods = map[string]bool{
 	"/live.cms.v1.CmsService/ListFaqs":                       true,
 	"/live.tests.v1.TestService/ListTests":                   true,
 	"/live.tests.v1.TestService/GetTest":                     true,
+	"/live.streams.v1.StreamService/ListLiveStreams":         true,
+	"/live.streams.v1.StreamService/GetStream":               true,
 }
 
 // authInterceptor mirrors internal/middleware auth + tenant context.

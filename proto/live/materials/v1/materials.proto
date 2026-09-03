@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package live.materials.v1;
+
+import "live/common/v1/types.proto";
+
+// MaterialService — study-material metadata (internal/materials). Uploads
+// stay on REST (multipart); this surface is list / get / signed-URL / delete.
+service MaterialService {
+  rpc ListMaterials(ListMaterialsRequest) returns (ListMaterialsResponse);
+  rpc GetMaterial(GetMaterialRequest) returns (GetMaterialResponse);
+  rpc GetMaterialDownloadUrl(GetMaterialDownloadUrlRequest) returns (GetMaterialDownloadUrlResponse);
+  rpc DeleteMaterial(DeleteMaterialRequest) returns (DeleteMaterialResponse);
+}
+
+message Material {
+  string id = 1;
+  string title = 2;
+  string file_key = 3;
+  int64 file_size = 4;
+  string mime = 5;
+  string file_type = 6;
+}
+
+message ListMaterialsRequest { live.common.v1.PageRequest page = 1; }
+message ListMaterialsResponse { repeated Material materials = 1; }
+
+message GetMaterialRequest { string id = 1; }
+message GetMaterialResponse { Material material = 1; }
+
+message GetMaterialDownloadUrlRequest {
+  string id = 1;
+  int32 ttl_seconds = 2;
+}
+message GetMaterialDownloadUrlResponse { string url = 1; }
+
+message DeleteMaterialRequest { string id = 1; }
+message DeleteMaterialResponse {}

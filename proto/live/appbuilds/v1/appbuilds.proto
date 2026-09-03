@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package live.appbuilds.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// AppBuildService — white-label mobile app builds (internal/appbuilds).
+// Trigger + SetStatus are super-admin; List is super-admin.
+service AppBuildService {
+  rpc TriggerBuild(TriggerBuildRequest) returns (TriggerBuildResponse);
+  rpc ListBuilds(ListBuildsRequest) returns (ListBuildsResponse);
+  rpc SetBuildStatus(SetBuildStatusRequest) returns (SetBuildStatusResponse);
+}
+
+message Build {
+  string id = 1;
+  string tenant_id = 2;
+  string platform = 3;
+  string status = 4;
+  string package_id = 5;
+  string version_name = 6;
+  string build_url = 7;
+  string store_url = 8;
+  string tenant_name = 9;
+  string org_code = 10;
+  google.protobuf.Timestamp created_at = 11;
+}
+
+message TriggerBuildRequest {
+  string tenant_id = 1;
+  string platform = 2; // android | ios
+  string package_id = 3;
+  string version_name = 4;
+}
+message TriggerBuildResponse { Build build = 1; }
+
+message ListBuildsRequest {
+  string status = 1;
+  live.common.v1.PageRequest page = 2;
+}
+message ListBuildsResponse { repeated Build builds = 1; }
+
+message SetBuildStatusRequest {
+  string id = 1;
+  string status = 2; // queued | building | succeeded | published | failed
+  string build_url = 3;
+  string store_url = 4;
+  string error_log = 5;
+}
+message SetBuildStatusResponse { Build build = 1; }

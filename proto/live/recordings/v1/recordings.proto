@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package live.recordings.v1;
+
+import "live/common/v1/types.proto";
+
+// RecordingService — live-session recording metadata (internal/recording).
+// Ingestion happens via the RTMP record-done hook, not this API.
+service RecordingService {
+  rpc ListMyRecordings(ListMyRecordingsRequest) returns (ListMyRecordingsResponse);
+  rpc ListSessionRecordings(ListSessionRecordingsRequest) returns (ListSessionRecordingsResponse);
+  rpc GetRecording(GetRecordingRequest) returns (GetRecordingResponse);
+  rpc GetRecordingPlayUrl(GetRecordingPlayUrlRequest) returns (GetRecordingPlayUrlResponse);
+}
+
+message Recording {
+  string id = 1;
+  string session_id = 2;
+  string course_id = 3;
+  string title = 4;
+  string status = 5;
+  int32 duration_seconds = 6;
+  string thumbnail_url = 7;
+}
+
+message ListMyRecordingsRequest { live.common.v1.PageRequest page = 1; }
+message ListMyRecordingsResponse { repeated Recording recordings = 1; }
+
+message ListSessionRecordingsRequest { string session_id = 1; }
+message ListSessionRecordingsResponse { repeated Recording recordings = 1; }
+
+message GetRecordingRequest { string id = 1; }
+message GetRecordingResponse { Recording recording = 1; }
+
+message GetRecordingPlayUrlRequest { string id = 1; }
+message GetRecordingPlayUrlResponse { string url = 1; }

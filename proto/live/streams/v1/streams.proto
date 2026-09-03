@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package live.streams.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// StreamService — live-session control plane (internal/stream). The RTMP
+// ingest + HLS playback and the realtime chat stay outside gRPC.
+service StreamService {
+  rpc CreateStream(CreateStreamRequest) returns (CreateStreamResponse);
+  rpc GetStream(GetStreamRequest) returns (GetStreamResponse);
+  rpc ListLiveStreams(ListLiveStreamsRequest) returns (ListLiveStreamsResponse);
+  rpc StartStream(StartStreamRequest) returns (StartStreamResponse);
+  rpc EndStream(EndStreamRequest) returns (EndStreamResponse);
+  rpc UpdateViewerCount(UpdateViewerCountRequest) returns (UpdateViewerCountResponse);
+}
+
+message Session {
+  string id = 1;
+  string course_id = 2;
+  string title = 3;
+  string description = 4;
+  string status = 5;
+  string ingest_key = 6;
+  string hls_url = 7;
+  string rtmp_url = 8;
+  int32 peak_viewers = 9;
+  string instructor_id = 10;
+  google.protobuf.Timestamp scheduled_at = 11;
+  google.protobuf.Timestamp started_at = 12;
+  google.protobuf.Timestamp ended_at = 13;
+}
+
+message CreateStreamRequest {
+  string course_id = 1;
+  string batch_id = 2;
+  string title = 3;
+  string description = 4;
+  google.protobuf.Timestamp scheduled_at = 5;
+}
+message CreateStreamResponse { Session session = 1; }
+
+message GetStreamRequest { string id = 1; }
+message GetStreamResponse { Session session = 1; }
+
+message ListLiveStreamsRequest {}
+message ListLiveStreamsResponse { repeated Session sessions = 1; }
+
+message StartStreamRequest { string id = 1; }
+message StartStreamResponse {}
+
+message EndStreamRequest { string id = 1; }
+message EndStreamResponse {}
+
+message UpdateViewerCountRequest {
+  string id = 1;
+  int32 count = 2;
+}
+message UpdateViewerCountResponse {}

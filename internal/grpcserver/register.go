@@ -3,6 +3,7 @@ package grpcserver
 import (
 	adminv1 "live-platform/gen/proto/live/admin/v1"
 	analyticsv1 "live-platform/gen/proto/live/analytics/v1"
+	appbuildsv1 "live-platform/gen/proto/live/appbuilds/v1"
 	assignmentsv1 "live-platform/gen/proto/live/assignments/v1"
 	attendancev1 "live-platform/gen/proto/live/attendance/v1"
 	auditv1 "live-platform/gen/proto/live/audit/v1"
@@ -25,11 +26,14 @@ import (
 	feesv1 "live-platform/gen/proto/live/fees/v1"
 	leadsv1 "live-platform/gen/proto/live/leads/v1"
 	lecturesv1 "live-platform/gen/proto/live/lectures/v1"
+	materialsv1 "live-platform/gen/proto/live/materials/v1"
 	notificationsv1 "live-platform/gen/proto/live/notifications/v1"
 	platformadminv1 "live-platform/gen/proto/live/platformadmin/v1"
+	recordingsv1 "live-platform/gen/proto/live/recordings/v1"
 	referralsv1 "live-platform/gen/proto/live/referrals/v1"
 	schedulev1 "live-platform/gen/proto/live/schedule/v1"
 	searchv1 "live-platform/gen/proto/live/search/v1"
+	streamsv1 "live-platform/gen/proto/live/streams/v1"
 	subjectsv1 "live-platform/gen/proto/live/subjects/v1"
 	subscriptionsv1 "live-platform/gen/proto/live/subscriptions/v1"
 	tenantsv1 "live-platform/gen/proto/live/tenants/v1"
@@ -38,6 +42,7 @@ import (
 	usersv1 "live-platform/gen/proto/live/users/v1"
 	"live-platform/internal/admin"
 	"live-platform/internal/analytics"
+	"live-platform/internal/appbuilds"
 	"live-platform/internal/assignments"
 	"live-platform/internal/attendance"
 	"live-platform/internal/audit"
@@ -61,11 +66,14 @@ import (
 	"live-platform/internal/fees"
 	"live-platform/internal/leads"
 	"live-platform/internal/lectures"
+	"live-platform/internal/materials"
 	"live-platform/internal/notifications"
 	"live-platform/internal/platformadmin"
+	"live-platform/internal/recording"
 	"live-platform/internal/referrals"
 	"live-platform/internal/schedule"
 	"live-platform/internal/search"
+	"live-platform/internal/stream"
 	"live-platform/internal/subjects"
 	"live-platform/internal/subscriptions"
 	"live-platform/internal/tenants"
@@ -136,4 +144,10 @@ func registerAll(s *grpc.Server, cfg *config.Config, d Deps) {
 	platformadminv1.RegisterPlatformAdminServiceServer(s, NewPlatformAdminServer(
 		platformadmin.NewService(d.Pool).WithRazorpay(d.Razorpay), cfg.JWT.AccessSecret))
 	testsv1.RegisterTestServiceServer(s, NewTestServer(tests.NewService(d.Pool)))
+
+	// --- Media / builds (metadata; binary upload + streaming stay on REST) ---
+	materialsv1.RegisterMaterialServiceServer(s, NewMaterialServer(materials.NewService(d.Pool, d.MinIO.Raw(), cfg.MinIO.MaterialsBucket)))
+	recordingsv1.RegisterRecordingServiceServer(s, NewRecordingServer(recording.NewService(d.Pool, d.MinIO, d.Kafka)))
+	streamsv1.RegisterStreamServiceServer(s, NewStreamServer(stream.NewService(d.Pool, d.Kafka)))
+	appbuildsv1.RegisterAppBuildServiceServer(s, NewAppBuildServer(appbuilds.NewService(d.Pool, d.Codemagic, d.Log)))
 }

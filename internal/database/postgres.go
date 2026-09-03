@@ -44,6 +44,29 @@ func NewPostgresPool(cfg *config.DatabaseConfig) (*pgxpool.Pool, error) {
 		tm := conn.TypeMap()
 		tm.RegisterType(&pgtype.Type{Name: "tsvector", OID: 3614, Codec: pgtype.TextCodec{}})
 		tm.RegisterType(&pgtype.Type{Name: "tsquery", OID: 3615, Codec: pgtype.TextCodec{}})
+		// Load every native enum + its array type so queries that bind a
+		// []db.<Enum> slice (e.g. stream.ListLive) encode without first having
+		// run a scalar query against that enum on the same connection.
+		rows, err := conn.Query(ctx,
+			`SELECT typname FROM pg_type WHERE typtype = 'e' AND typnamespace = 'public'::regnamespace`)
+		if err == nil {
+			var names []string
+			for rows.Next() {
+				var n string
+				if rows.Scan(&n) == nil {
+					names = append(names, n)
+				}
+			}
+			rows.Close()
+			for _, n := range names {
+				if t, err := conn.LoadType(ctx, n); err == nil {
+					tm.RegisterType(t)
+					if at, err := conn.LoadType(ctx, "_"+n); err == nil {
+						tm.RegisterType(at)
+					}
+				}
+			}
+		}
 		return nil
 	}
 
