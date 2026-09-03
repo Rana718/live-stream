@@ -31,6 +31,10 @@ type CreateLeadInput struct {
 }
 
 func (s *Service) Create(ctx context.Context, in CreateLeadInput) (db.CreateLeadRow, error) {
+	// leads is platform-level (nullable tenant_id) with a public-INSERT policy
+	// but no non-super SELECT policy — so INSERT ... RETURNING needs the
+	// super-admin scope to read the row back. No tenant data is involved.
+	ctx = database.WithSuperAdmin(ctx)
 	return s.q.CreateLead(ctx, db.CreateLeadParams{
 		Name:          utils.TextToPg(in.Name),
 		Phone:         utils.TextToPg(in.Phone),
