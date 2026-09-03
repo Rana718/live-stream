@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package live.lectures.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// LectureService — course_lessons + course_sections + watch progress
+// (internal/lectures). "Lecture" is the legacy name for a lesson.
+service LectureService {
+  rpc ListLectures(ListLecturesRequest) returns (ListLecturesResponse);
+  rpc GetLecture(GetLectureRequest) returns (GetLectureResponse);
+  rpc CreateLecture(CreateLectureRequest) returns (CreateLectureResponse);
+  rpc UpdateLecture(UpdateLectureRequest) returns (UpdateLectureResponse);
+  rpc DeleteLecture(DeleteLectureRequest) returns (DeleteLectureResponse);
+  rpc ListSections(ListSectionsRequest) returns (ListSectionsResponse);
+  rpc CreateSection(CreateSectionRequest) returns (CreateSectionResponse);
+  rpc UpdateSection(UpdateSectionRequest) returns (UpdateSectionResponse);
+  rpc DeleteSection(DeleteSectionRequest) returns (DeleteSectionResponse);
+  rpc RecordWatch(RecordWatchRequest) returns (RecordWatchResponse);
+}
+
+message Lecture {
+  string id = 1;
+  string course_id = 2;
+  string course_title = 3;
+  string section_id = 4;
+  string title = 5;
+  string content_kind = 6;
+  string video_url = 7;
+  string hls_url = 8;
+  string document_url = 9;
+  string link_url = 10;
+  int32 duration_seconds = 11;
+  bool is_preview = 12;
+  bool is_free = 13;
+  bool is_published = 14;
+  int32 display_order = 15;
+  google.protobuf.Timestamp available_at = 16;
+}
+
+message Section {
+  string id = 1;
+  string course_id = 2;
+  string title = 3;
+  int32 display_order = 4;
+  int32 drip_after_days = 5;
+}
+
+message LectureInput {
+  string course_id = 1;
+  string section_id = 2;
+  string title = 3;
+  string description = 4;
+  string video_url = 5;
+  string document_url = 6;
+  string link_url = 7;
+  string thumbnail_url = 8;
+  int32 duration_seconds = 9;
+  bool is_free = 10;
+  bool is_published = 11;
+  int32 display_order = 12;
+}
+
+message ListLecturesRequest {
+  string course_id = 1; // optional filter
+  live.common.v1.PageRequest page = 2;
+}
+message ListLecturesResponse { repeated Lecture lectures = 1; }
+
+message GetLectureRequest { string id = 1; }
+message GetLectureResponse { Lecture lecture = 1; }
+
+message CreateLectureRequest { LectureInput lecture = 1; }
+message CreateLectureResponse { Lecture lecture = 1; }
+
+message UpdateLectureRequest {
+  string id = 1;
+  LectureInput lecture = 2;
+}
+message UpdateLectureResponse {}
+
+message DeleteLectureRequest { string id = 1; }
+message DeleteLectureResponse {}
+
+message ListSectionsRequest { string course_id = 1; }
+message ListSectionsResponse { repeated Section sections = 1; }
+
+message SectionInput {
+  string course_id = 1;
+  string title = 2;
+  int32 display_order = 3;
+  int32 drip_after_days = 4;
+}
+message CreateSectionRequest { SectionInput section = 1; }
+message CreateSectionResponse { Section section = 1; }
+
+message UpdateSectionRequest {
+  string id = 1;
+  SectionInput section = 2;
+}
+message UpdateSectionResponse {}
+
+message DeleteSectionRequest { string id = 1; }
+message DeleteSectionResponse {}
+
+message RecordWatchRequest {
+  string lesson_id = 1;
+  int32 watched_seconds = 2;
+  int32 position_seconds = 3;
+  bool completed = 4;
+}
+message RecordWatchResponse {}

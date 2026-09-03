@@ -107,6 +107,9 @@ var optionalAuthMethods = map[string]bool{
 	"/live.chapters.v1.ChapterService/GetChapter":            true,
 	"/live.topics.v1.TopicService/ListTopicsByChapter":       true,
 	"/live.topics.v1.TopicService/GetTopic":                  true,
+	"/live.lectures.v1.LectureService/ListLectures":          true,
+	"/live.lectures.v1.LectureService/GetLecture":            true,
+	"/live.lectures.v1.LectureService/ListSections":          true,
 }
 
 // authInterceptor mirrors internal/middleware auth + tenant context.

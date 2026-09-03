@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package live.doubts.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// DoubtService — student Q&A with AI auto-answer + instructor answers
+// (internal/doubts).
+service DoubtService {
+  rpc AskDoubt(AskDoubtRequest) returns (AskDoubtResponse);
+  rpc GetDoubt(GetDoubtRequest) returns (GetDoubtResponse);
+  rpc ListMyDoubts(ListMyDoubtsRequest) returns (ListMyDoubtsResponse);
+  rpc ListPendingDoubts(ListPendingDoubtsRequest) returns (ListPendingDoubtsResponse);
+  rpc ListAllDoubts(ListAllDoubtsRequest) returns (ListAllDoubtsResponse);
+  rpc AnswerDoubt(AnswerDoubtRequest) returns (AnswerDoubtResponse);
+  rpc AcceptAnswer(AcceptAnswerRequest) returns (AcceptAnswerResponse);
+  rpc SetDoubtStatus(SetDoubtStatusRequest) returns (SetDoubtStatusResponse);
+}
+
+message Doubt {
+  string id = 1;
+  string user_id = 2;
+  string question_text = 3;
+  string status = 4;
+  string full_name = 5;
+  int64 answers_count = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message DoubtAnswer {
+  string id = 1;
+  string answer_text = 2;
+  string answer_type = 3;
+  string answered_by = 4;
+  bool is_accepted = 5;
+  string model_name = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message AskDoubtRequest {
+  string lesson_id = 1;
+  string chapter_id = 2;
+  string topic_id = 3;
+  string question_text = 4;
+  string input_type = 5;
+  string attachment_url = 6;
+  string language = 7;
+  bool use_ai = 8;
+}
+message AskDoubtResponse {
+  Doubt doubt = 1;
+  DoubtAnswer ai_answer = 2;
+}
+
+message GetDoubtRequest { string id = 1; }
+message GetDoubtResponse {
+  Doubt doubt = 1;
+  repeated DoubtAnswer answers = 2;
+}
+
+message ListMyDoubtsRequest { live.common.v1.PageRequest page = 1; }
+message ListMyDoubtsResponse { repeated Doubt doubts = 1; }
+
+message ListPendingDoubtsRequest { live.common.v1.PageRequest page = 1; }
+message ListPendingDoubtsResponse { repeated Doubt doubts = 1; }
+
+message ListAllDoubtsRequest { live.common.v1.PageRequest page = 1; }
+message ListAllDoubtsResponse { repeated Doubt doubts = 1; }
+
+message AnswerDoubtRequest {
+  string doubt_id = 1;
+  string answer_text = 2;
+}
+message AnswerDoubtResponse { DoubtAnswer answer = 1; }
+
+message AcceptAnswerRequest { string answer_id = 1; }
+message AcceptAnswerResponse {}
+
+message SetDoubtStatusRequest {
+  string id = 1;
+  string status = 2;
+}
+message SetDoubtStatusResponse {}
