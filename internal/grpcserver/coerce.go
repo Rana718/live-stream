@@ -13,6 +13,9 @@ type (
 	pgText = pgtype.Text
 	pgUUID = pgtype.UUID
 	pgTs   = pgtype.Timestamptz
+	pgDate = pgtype.Date
+	pgInt4 = pgtype.Int4
+	pgInt8 = pgtype.Int8
 )
 
 // Coercion helpers for the handful of service methods that still return

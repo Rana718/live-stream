@@ -28,6 +28,31 @@ type Service struct {
 
 func NewService(pool *pgxpool.Pool) *Service { return &Service{pool: pool, q: db.New(pool)} }
 
+// --- read side (shared by the REST handler and the gRPC adapter) ---
+
+func (s *Service) ListForUser(ctx context.Context, tenantID, userID uuid.UUID, limit, offset int32) ([]db.ListInvoicesForUserRow, error) {
+	return s.q.ListInvoicesForUser(ctx, db.ListInvoicesForUserParams{
+		TenantID: utils.UUIDToPg(tenantID), UserID: utils.UUIDToPg(userID), Limit: limit, Offset: offset,
+	})
+}
+
+func (s *Service) ListForTenant(ctx context.Context, tenantID uuid.UUID, limit, offset int32) ([]db.ListTenantInvoicesRow, error) {
+	return s.q.ListTenantInvoices(ctx, db.ListTenantInvoicesParams{
+		TenantID: utils.UUIDToPg(tenantID), Limit: limit, Offset: offset,
+	})
+}
+
+func (s *Service) GetForUser(ctx context.Context, id, userID uuid.UUID) (db.GetInvoiceForUserRow, []db.ListInvoiceLineItemsRow, error) {
+	inv, err := s.q.GetInvoiceForUser(ctx, db.GetInvoiceForUserParams{
+		ID: utils.UUIDToPg(id), UserID: utils.UUIDToPg(userID),
+	})
+	if err != nil {
+		return inv, nil, err
+	}
+	lines, err := s.q.ListInvoiceLineItems(ctx, inv.ID)
+	return inv, lines, err
+}
+
 // finYear returns the Indian financial year string ("2026-27") for t.
 func finYear(t time.Time) string {
 	y := t.Year()

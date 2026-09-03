@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package live.courseorders.v1;
+
+import "live/common/v1/types.proto";
+
+// CourseOrderService — single-course purchase via Razorpay (internal/courseorders).
+service CourseOrderService {
+  rpc BuyCourse(BuyCourseRequest) returns (BuyCourseResponse);
+  rpc VerifyPayment(VerifyPaymentRequest) returns (VerifyPaymentResponse);
+}
+
+message BuyCourseRequest {
+  string course_id = 1;
+  string coupon_code = 2;
+  int64 amount_minor = 3; // fallback when the product has no active price
+}
+message BuyCourseResponse {
+  string order_id = 1;
+  live.common.v1.Money amount = 2;
+  string payment_record_id = 3;
+  string razorpay_key_id = 4;
+}
+
+message VerifyPaymentRequest {
+  string razorpay_order_id = 1;
+  string razorpay_payment_id = 2;
+  string razorpay_signature = 3;
+}
+message VerifyPaymentResponse {
+  string status = 1;
+  string order_id = 2;
+}

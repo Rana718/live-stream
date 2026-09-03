@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package live.bundles.v1;
+
+import "live/common/v1/types.proto";
+
+// BundleService — course bundles: browse + buy, admin CRUD
+// (internal/coursebundles).
+service BundleService {
+  rpc ListBundles(ListBundlesRequest) returns (ListBundlesResponse);
+  rpc BuyBundle(BuyBundleRequest) returns (BuyBundleResponse);
+  rpc VerifyBundlePayment(VerifyBundlePaymentRequest) returns (VerifyBundlePaymentResponse);
+  rpc AdminListBundles(AdminListBundlesRequest) returns (AdminListBundlesResponse);
+  rpc AdminCreateBundle(AdminCreateBundleRequest) returns (AdminCreateBundleResponse);
+  rpc AdminSetBundleActive(AdminSetBundleActiveRequest) returns (AdminSetBundleActiveResponse);
+  rpc AdminDeleteBundle(AdminDeleteBundleRequest) returns (AdminDeleteBundleResponse);
+}
+
+message Bundle {
+  string id = 1;
+  string title = 2;
+  string description = 3;
+  string cover_url = 4;
+  live.common.v1.Money price = 5;
+  bool is_active = 6;
+  repeated string course_ids = 7;
+}
+
+message ListBundlesRequest {}
+message ListBundlesResponse { repeated Bundle bundles = 1; }
+
+message BuyBundleRequest { string bundle_id = 1; }
+message BuyBundleResponse {
+  string order_id = 1;
+  live.common.v1.Money amount = 2;
+  string payment_record_id = 3;
+  string razorpay_key_id = 4;
+}
+
+message VerifyBundlePaymentRequest {
+  string razorpay_order_id = 1;
+  string razorpay_payment_id = 2;
+  string razorpay_signature = 3;
+}
+message VerifyBundlePaymentResponse { string status = 1; }
+
+message AdminListBundlesRequest {}
+message AdminListBundlesResponse { repeated Bundle bundles = 1; }
+
+message AdminCreateBundleRequest {
+  string title = 1;
+  string description = 2;
+  string cover_url = 3;
+  int64 price_minor = 4;
+  int32 display_order = 5;
+  repeated string course_ids = 6;
+  optional bool is_active = 7;
+}
+message AdminCreateBundleResponse { Bundle bundle = 1; }
+
+message AdminSetBundleActiveRequest {
+  string id = 1;
+  bool active = 2;
+}
+message AdminSetBundleActiveResponse {}
+
+message AdminDeleteBundleRequest { string id = 1; }
+message AdminDeleteBundleResponse {}

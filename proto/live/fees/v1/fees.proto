@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package live.fees.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// FeeService — fee plans + installment accounts + installment checkout
+// (internal/fees).
+service FeeService {
+  rpc ListFeePlans(ListFeePlansRequest) returns (ListFeePlansResponse);
+  rpc CreateFeePlan(CreateFeePlanRequest) returns (CreateFeePlanResponse);
+  rpc AssignFeePlan(AssignFeePlanRequest) returns (AssignFeePlanResponse);
+  rpc ListMyInstallments(ListMyInstallmentsRequest) returns (ListMyInstallmentsResponse);
+  rpc GetAccountInstallments(GetAccountInstallmentsRequest) returns (GetAccountInstallmentsResponse);
+  rpc StartInstallmentCheckout(StartInstallmentCheckoutRequest) returns (StartInstallmentCheckoutResponse);
+  rpc VerifyInstallmentPayment(VerifyInstallmentPaymentRequest) returns (VerifyInstallmentPaymentResponse);
+}
+
+message FeePlan {
+  string id = 1;
+  string course_id = 2;
+  string course_title = 3;
+  string name = 4;
+  live.common.v1.Money total = 5;
+  int32 installments_count = 6;
+  int32 gap_days = 7;
+  bool is_active = 8;
+}
+
+message Installment {
+  string id = 1;
+  string fee_account_id = 2;
+  int32 seq = 3;
+  live.common.v1.Money amount = 4;
+  string due_on = 5; // YYYY-MM-DD
+  string status = 6;
+  google.protobuf.Timestamp paid_at = 7;
+  string course_title = 8;
+}
+
+message ListFeePlansRequest { string course_id = 1; }
+message ListFeePlansResponse { repeated FeePlan plans = 1; }
+
+message CreateFeePlanRequest {
+  string course_id = 1;
+  string batch_id = 2;
+  string name = 3;
+  int64 total_minor = 4;
+  int32 installments_count = 5;
+  int32 installment_gap_days = 6;
+  int64 late_fee_minor = 7;
+}
+message CreateFeePlanResponse { FeePlan plan = 1; }
+
+message AssignFeePlanRequest {
+  string user_id = 1;
+  string fee_plan_id = 2;
+  string course_id = 3;
+  string batch_id = 4;
+  int64 total_minor = 5;
+  int32 installments = 6;
+  int32 gap_days = 7;
+  google.protobuf.Timestamp first_due_date = 8;
+}
+message AssignFeePlanResponse {
+  string fee_account_id = 1;
+  repeated Installment installments = 2;
+}
+
+message ListMyInstallmentsRequest {}
+message ListMyInstallmentsResponse { repeated Installment installments = 1; }
+
+message GetAccountInstallmentsRequest { string fee_account_id = 1; }
+message GetAccountInstallmentsResponse { repeated Installment installments = 1; }
+
+message StartInstallmentCheckoutRequest { string installment_id = 1; }
+message StartInstallmentCheckoutResponse {
+  string installment_id = 1;
+  string order_id = 2;
+  string razorpay_order_id = 3;
+  live.common.v1.Money amount = 4;
+  string razorpay_key_id = 5;
+}
+
+message VerifyInstallmentPaymentRequest {
+  string installment_id = 1;
+  string razorpay_order_id = 2;
+  string razorpay_payment_id = 3;
+  string razorpay_signature = 4;
+}
+message VerifyInstallmentPaymentResponse {}

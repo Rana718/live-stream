@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package live.billing.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// BillingService — read access to GST invoices (internal/billing). Invoices
+// are generated inside the payment-capture transaction, not via this API.
+service BillingService {
+  rpc ListMyInvoices(ListMyInvoicesRequest) returns (ListMyInvoicesResponse);
+  rpc GetInvoice(GetInvoiceRequest) returns (GetInvoiceResponse);
+  rpc AdminListInvoices(AdminListInvoicesRequest) returns (AdminListInvoicesResponse);
+}
+
+message Invoice {
+  string id = 1;
+  string number = 2;
+  string order_id = 3;
+  string status = 4;
+  string supply_type = 5;
+  string fin_year = 6;
+  int64 taxable_minor = 7;
+  int64 cgst_minor = 8;
+  int64 sgst_minor = 9;
+  int64 igst_minor = 10;
+  int64 round_off_minor = 11;
+  int64 total_minor = 12;
+  google.protobuf.Timestamp issued_at = 13;
+}
+
+message InvoiceLine {
+  string description = 1;
+  string hsn_sac = 2;
+  int32 qty = 3;
+  int64 unit_minor = 4;
+  int64 taxable_minor = 5;
+  int32 rate_bps = 6;
+  int64 cgst_minor = 7;
+  int64 sgst_minor = 8;
+  int64 igst_minor = 9;
+  int64 total_minor = 10;
+}
+
+message ListMyInvoicesRequest { live.common.v1.PageRequest page = 1; }
+message ListMyInvoicesResponse { repeated Invoice invoices = 1; }
+
+message GetInvoiceRequest { string id = 1; }
+message GetInvoiceResponse {
+  Invoice invoice = 1;
+  repeated InvoiceLine lines = 2;
+}
+
+message AdminListInvoicesRequest { live.common.v1.PageRequest page = 1; }
+message AdminListInvoicesResponse { repeated Invoice invoices = 1; }

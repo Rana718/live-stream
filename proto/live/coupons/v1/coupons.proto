@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package live.coupons.v1;
+
+import "live/common/v1/types.proto";
+
+// CouponService — discount coupons: admin CRUD + apply at checkout
+// (internal/coupons).
+service CouponService {
+  rpc ListCoupons(ListCouponsRequest) returns (ListCouponsResponse);
+  rpc CreateCoupon(CreateCouponRequest) returns (CreateCouponResponse);
+  rpc SetCouponActive(SetCouponActiveRequest) returns (SetCouponActiveResponse);
+  rpc DeleteCoupon(DeleteCouponRequest) returns (DeleteCouponResponse);
+  rpc ApplyCoupon(ApplyCouponRequest) returns (ApplyCouponResponse);
+}
+
+message Coupon {
+  string id = 1;
+  string code = 2;
+  string type = 3; // percent | flat
+  int32 percent_bps = 4;
+  int64 value_minor = 5;
+  int64 max_discount_minor = 6;
+  int64 min_order_minor = 7;
+  string applies_to = 8;
+  int32 usage_limit = 9;
+  int32 per_user_limit = 10;
+  int32 used_count = 11;
+  bool is_active = 12;
+}
+
+message ListCouponsRequest { live.common.v1.PageRequest page = 1; }
+message ListCouponsResponse { repeated Coupon coupons = 1; }
+
+message CreateCouponRequest {
+  string code = 1;
+  string discount_type = 2; // percent | flat
+  int32 discount_value = 3;  // bps for percent, paise for flat
+  int64 max_discount = 4;
+  string scope = 5;
+  int64 min_amount = 6;
+  int32 usage_limit = 7;
+  int32 per_user_limit = 8;
+  repeated string course_ids = 9;
+}
+message CreateCouponResponse { Coupon coupon = 1; }
+
+message SetCouponActiveRequest {
+  string id = 1;
+  bool active = 2;
+}
+message SetCouponActiveResponse {}
+
+message DeleteCouponRequest { string id = 1; }
+message DeleteCouponResponse {}
+
+message ApplyCouponRequest {
+  string code = 1;
+  int64 amount_minor = 2;
+  string course_id = 3;
+  bool is_subscription = 4;
+}
+message ApplyCouponResponse {
+  string coupon_id = 1;
+  string code = 2;
+  int64 amount_off_minor = 3;
+  int64 final_amount_minor = 4;
+}

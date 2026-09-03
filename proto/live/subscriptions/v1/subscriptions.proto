@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package live.subscriptions.v1;
+
+import "google/protobuf/timestamp.proto";
+import "live/common/v1/types.proto";
+
+// SubscriptionService — subscription plans + checkout + the caller's
+// subscription state (internal/subscriptions).
+service SubscriptionService {
+  rpc ListActivePlans(ListActivePlansRequest) returns (ListActivePlansResponse);
+  rpc CreatePlan(CreatePlanRequest) returns (CreatePlanResponse);
+  rpc SetPlanActive(SetPlanActiveRequest) returns (SetPlanActiveResponse);
+  rpc StartCheckout(StartCheckoutRequest) returns (StartCheckoutResponse);
+  rpc VerifyCheckout(VerifyCheckoutRequest) returns (VerifyCheckoutResponse);
+  rpc GetActiveSubscription(GetActiveSubscriptionRequest) returns (GetActiveSubscriptionResponse);
+  rpc ListMySubscriptions(ListMySubscriptionsRequest) returns (ListMySubscriptionsResponse);
+  rpc CancelSubscription(CancelSubscriptionRequest) returns (CancelSubscriptionResponse);
+}
+
+message Plan {
+  string id = 1;
+  string name = 2;
+  string slug = 3;
+  string description = 4;
+  live.common.v1.Money price = 5;
+  int32 duration_days = 6;
+  int32 trial_days = 7;
+  repeated string features = 8;
+}
+
+message Subscription {
+  string id = 1;
+  string plan_id = 2;
+  string plan_name = 3;
+  string status = 4;
+  google.protobuf.Timestamp expires_at = 5;
+}
+
+message ListActivePlansRequest {}
+message ListActivePlansResponse { repeated Plan plans = 1; }
+
+message CreatePlanRequest {
+  string name = 1;
+  string slug = 2;
+  string description = 3;
+  int64 price_minor = 4;
+  int32 duration_days = 5;
+  int32 trial_days = 6;
+  repeated string features = 7;
+  int32 display_order = 8;
+}
+message CreatePlanResponse { Plan plan = 1; }
+
+message SetPlanActiveRequest {
+  string id = 1;
+  bool active = 2;
+}
+message SetPlanActiveResponse {}
+
+message StartCheckoutRequest { string plan_id = 1; }
+message StartCheckoutResponse {
+  string order_id = 1;
+  string razorpay_order_id = 2;
+  live.common.v1.Money amount = 3;
+  string plan_name = 4;
+  string razorpay_key_id = 5;
+}
+
+message VerifyCheckoutRequest {
+  string razorpay_order_id = 1;
+  string razorpay_payment_id = 2;
+  string razorpay_signature = 3;
+}
+message VerifyCheckoutResponse { Subscription subscription = 1; }
+
+message GetActiveSubscriptionRequest {}
+message GetActiveSubscriptionResponse { Subscription subscription = 1; } // empty when none
+
+message ListMySubscriptionsRequest {}
+message ListMySubscriptionsResponse { repeated Subscription subscriptions = 1; }
+
+message CancelSubscriptionRequest { string subscription_id = 1; }
+message CancelSubscriptionResponse {}

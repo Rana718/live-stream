@@ -100,7 +100,7 @@ func TestInvoiceNumberingIsGaplessUnderConcurrency(t *testing.T) {
 	wg.Wait()
 
 	seen := map[int64]bool{}
-	var min, max int64 = 1<<62, 0
+	var min, max int64 = 1 << 62, 0
 	for _, s := range seqs {
 		if seen[s] {
 			t.Fatalf("duplicate sequence %d", s)
